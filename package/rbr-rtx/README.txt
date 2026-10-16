@@ -20,19 +20,20 @@ Recommended game settings (RSF launcher / in-game options)
   players race anyway; Alt+Pause (below) switches dust live.
   (Particle quality Low currently shows no dust at all under RBR-RTX.)
 
-Keys (in game)
-  Scroll Lock   RBR-RTX camera/objects/sun layer on/off
-  Shift+Scroll Lock   Remix sun only on/off
-  Shift+Pause   cockpit windscreen on (default) / off
-  Pause         sky: Remix sky (default) <-> no sky (for comparison)
-  Alt+Scroll Lock   foliage: fuller cut-outs (default) -> with soft-edge pass -> game original (for comparison)
-  Alt+Pause     gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
-  Alt+Home      debug sun: manual sun on/off (starts at the game's sun); while on, hold Alt+Page Up / Page Down to
-                raise / lower it and Alt+Insert / End to turn it around. Only the lighting moves, not the sky.
-  Ctrl+Scroll Lock   test builds: record everything drawn in the next frame into rbr-rtx\logs (for bug reports)
+Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your controls)
+  Only while the game window is active and Ctrl/Alt are not held. Alt+X = RTX Remix menu.
+  O        RBR-RTX camera/objects/sun layer on/off (comparison; path tracing itself stays on)
+  L        Remix sun only on/off
+  I        cockpit windscreen on (default) / off
+  N        sky: Remix sky (default) <-> no sky (for comparison)
+  J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original (for comparison)
+  U        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
+  H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
+           [ / ] to turn it around. Only the lighting moves, not the sky.
+  P        test builds: record everything drawn in the next frame into rbr-rtx\logs (for bug reports)
 
-Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, Ctrl+Scroll Lock frame dump, crash
-  dumps) into rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
+Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, P frame dump, crash dumps) into
+  rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
 
 Uninstall
   Run rbr-rtx\uninstall.cmd. It removes d3d9.dll (only if it is still the RBR-RTX one), the files Remix

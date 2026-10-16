@@ -19,3 +19,15 @@ void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader);
 
 // exception_trace.cpp
 void rbrrtx_exception_trace_install();
+
+// keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
+enum RbrKey {
+  RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
+  RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_COUNT
+};
+void rbrrtx_keys_load();
+// True once per press (call every frame), only while the game window has the focus and Ctrl/Alt are up.
+bool rbrrtx_key_pressed(int action);
+// True while held (same conditions).
+bool rbrrtx_key_held(int action);
+const wchar_t* rbrrtx_key_name(int action);

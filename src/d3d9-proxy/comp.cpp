@@ -10,8 +10,8 @@
 //     (Remix: rtx.useWorldMatricesForShaders, rtx.useVertexCapture, both default on);
 //  4. adds a Remix distant light along the game's sun direction c41 through the Remix API (RBRRTX_SUN, default on;
 //     needs exposeRemixApi = True in .trex\bridge.conf). Radiance: RBRRTX_SUN_RADIANCE="r,g,b".
-// Scroll Lock toggles 3 and 4 at runtime, Shift+Scroll Lock only 4, Ctrl+Scroll Lock dumps the next frame's draws;
-// Pause cycles the sky mode, Shift+Pause the windscreen. Diagnostics go to <RBRRTX_LOG_DIR>\rbrrtx_comp.log.
+// Hotkeys (keys.cpp / keys.ini, defaults): O toggles 3 and 4 at runtime, L only 4, P dumps the next frame's draws;
+// N cycles the sky mode, I the windscreen. Diagnostics go to <RBRRTX_LOG_DIR>\rbrrtx_comp.log.
 
 #define CINTERFACE
 #define REMIX_ALLOW_X86
@@ -232,7 +232,7 @@ const DWORD kTssWanted[6] = { D3DTOP_MODULATE, D3DTA_TEXTURE, D3DTA_DIFFUSE, D3D
 const DWORD kTssDefault[6] = { D3DTOP_MODULATE, D3DTA_TEXTURE, D3DTA_CURRENT, D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTA_CURRENT };
 DWORD g_tss0[6] = { D3DTOP_MODULATE, D3DTA_TEXTURE, D3DTA_CURRENT, D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTA_CURRENT };
 DWORD g_lighting = TRUE;
-bool g_hintEnabled = false, g_hintKeyDown = false;
+bool g_hintEnabled = false;
 int g_testMode = 0;
 const wchar_t* kTestModes[4] = { L"mode 0: ours V+P+W", L"mode 1: ours V+P, game W", L"mode 2: game V+P, ours W",
                                  L"mode 3: game V+P+W (pass-through)" };
@@ -243,7 +243,7 @@ const D3DTRANSFORMSTATETYPE kXf[3] = { D3DTS_WORLD, D3DTS_VIEW, D3DTS_PROJECTION
 D3DMATRIX g_dev[3] = {}, g_game[3] = {};
 bool g_devValid[3] = {}, g_gameSet[3] = {};
 
-bool g_enabled = true, g_hotkeyDown = false;
+bool g_enabled = true;
 unsigned g_frame = 0, g_detailFrames = 0;
 
 remixapi_Interface g_api = {};
@@ -254,7 +254,7 @@ unsigned g_sunCreates = 0;
 // Debug sun (user 2026-10-16, judging normal maps needs low, raking light): Alt+Home switches to a manual sun that
 // starts where the game's sun is; while it is on, hold Alt+Page Up/Page Down to raise/lower it and Alt+Insert/End to
 // turn it around (0.5 degrees per frame). Alt+Home again = the game's sun. Only the light moves, not the sky picture.
-bool g_sunManual = false, g_sunHomeDown = false, g_sunMoving = false;
+bool g_sunManual = false, g_sunMoving = false;
 float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon
 
 struct Stats {
@@ -280,7 +280,7 @@ bool g_uiTriggerOn = true, g_uiTriggered = false;
 
 // Sky. RBR draws SkyDome.vso and Clouds*.vso as real meshes around the stage; under Remix such a shell is ray
 // traced as an opaque occluder that blocks the sun and sky light (the stage went dark, the menu backdrop without a dome
-// was lit, 2026-10-15). Modes (RBRRTX_SKY = 0..2; Pause/Break toggles 2 <-> 1 live; primary target only):
+// was lit, 2026-10-15). Modes (RBRRTX_SKY = 0..2; the sky key (N) toggles 2 <-> 1 live; primary target only):
 //   2 = draw them as Remix sky: viewport depth range 1..1 for these draws. Remix categorises a draw whose viewport
 //       MinZ >= rtx.skyMinZThreshold (default 1.0) as Sky (rtx_types.cpp) and rasterises it into the sky and the sky
 //       probe instead of the BVH. On screen nothing changes: the sky sits at the far plane and writes no depth.
@@ -296,7 +296,7 @@ bool is_sky_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo-
 // navy sky and smears through the windscreen, worst in low light (2026-10-15). RSF "Windscreen: Hide" / RBRHUD opacity 0
 // still draw it (transparent), so that does not help. Skipping all CarGlass*.vso also removed the mirrors (CarGlass.vso,
 // 512x512 + cube map). Default (user, 2026-10-15): windscreen skipped (also its crack texture); RBRRTX_GLASS=1 draws
-// it, Shift+Pause toggles live. "On" still hides/smears things behind it (open issue: make it real Remix glass).
+// it, the windscreen key (I) toggles live. "On" still hides/smears things behind it (open issue: make it real Remix glass).
 // Fixed 2026-10-16 late (user): rtx.enableStochasticAlphaBlend = True (the world behind the blended glass gets its own
 // samples) + glossy glass materials (tools/pbr/make_car_glass_mod.py) -> windscreen drawn by default again;
 // RBRRTX_GLASS=0 skips it.
@@ -308,7 +308,7 @@ bool is_glass_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInf
 // alpha-tested with ALPHAREF 200 (0.78; RLSingleTextureSway/RLSingleTexture/IOSingleTexture) and foliage a second time
 // alpha-blended with zwrite off and ALPHAREF 0 for soft edges (RLSingleTextureSway, 841 such draws in the 03:0x dumps).
 // Remix takes the cut-off straight from ALPHAREF (d3d9_rtx_utils.cpp), so trees came out thin, and it ray traces the
-// soft pass as a second, blended copy of every leaf card. Modes (RBRRTX_FOLIAGE, Alt+Scroll Lock cycles live):
+// soft pass as a second, blended copy of every leaf card. Modes (RBRRTX_FOLIAGE, the foliage key (J) cycles live):
 //   1 = scenery cut-outs use ALPHAREF g_cutoutRef (RBRRTX_ALPHAREF, default 96) and the soft pass is skipped (default)
 //   2 = lower ALPHAREF, soft pass kept      0 = game values (old behaviour)
 int g_foliageMode = 1;
@@ -318,13 +318,13 @@ unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQu
 // Dust/smoke (Valstagna replay 05:57, user): RBR draws gravel dust as Particle.vso batches of alpha-tested, blended
 // sprites. Path traced, hundreds of stacked translucent quads cost a lot and fill the screen as a brown wall (onboard
 // replays at slow hairpins). Only the first g_dustKeep percent of each batch's triangles is drawn (rounded to whole
-// quads). RBRRTX_DUST=<percent> (100 = all, 0 = none); Alt+Pause cycles them live.
+// quads). RBRRTX_DUST=<percent> (100 = all, 0 = none); the dust key (U) cycles them live.
 // Run 06:19 (user): with the sprites tagged as Remix particles (rtx.conf) full dust looked best; 15% left a few flat
 // sprite planes trailing the car. Run 16:52 (user): full dust is far too expensive (the test install has ParticleMod by
 // Kahoo: many fine sprites); wanted: cheap and not too dense. ParticleQuality = low (the 2004 PS_*_LOW.ini) drew no
 // dust at all under Remix (run 18:26, Alt+Pause had nothing to trim), so ParticleMod's sprites. Trimming keeps the
 // first part of each batch, which in a TV-cam replay (run 18:41) cut the trail into dust / gap / dust instead of
-// thinning it, so the default is 100 again until thinning is spread evenly. Alt+Pause 100 -> 0 -> 25 -> 50.
+// thinning it, so the default is 100 again until thinning is spread evenly. Dust key (U): 100 -> 0 -> 25 -> 50.
 // g_dustQuads counts drawn quads for the log.
 unsigned g_dustKeep = 100, g_dustTrimmed = 0, g_dustQuads = 0, g_dustFrames = 0;
 UINT g_primCap = UINT_MAX, g_pendingPrims = 0;                             // set per draw by comp_draw, applied by the draw hooks
@@ -578,10 +578,9 @@ void log_draw_state(IDirect3DDevice9* dev, const ShaderInfo* key) {
   clog(L"state: %s : %s", fs::path(key->name).filename().c_str(), s.c_str());
 }
 
-// Frame dump (Ctrl+Scroll Lock): one log line per draw of the next frame, to see what RBR draws in a given screen
+// Frame dump (dump key, default P): one log line per draw of the next frame, to see what RBR draws in a given screen
 // (e.g. the in-stage ESC menu, invisible under Remix, 2026-10-15). Capped so a dump cannot flood the log.
 unsigned g_dumpFrames = 0, g_dumpDraws = 0;
-bool g_dumpKeyDown = false;
 
 void tex_desc(IDirect3DDevice9* dev, DWORD stage, wchar_t* out, size_t n) {
   IDirect3DBaseTexture9* bt = nullptr;
@@ -825,73 +824,72 @@ void log_frame(const wchar_t* why) {
 }
 
 void end_frame(IDirect3DDevice9* dev) {
-  // Toggle: Scroll Lock (its keyboard LED shows the state). Ctrl+F10 never reached us in RBR (2026-10-15).
-  // Shift+Scroll Lock: only the Remix sun on/off (camera and sky stay).
-  // Ctrl+Scroll Lock (or Ctrl+Pause): dump every draw of the next frame (dump_draw). Windows reports Ctrl+Scroll Lock
-  // as Ctrl+Break = VK_CANCEL, not VK_SCROLL (no key event reached us on 2026-10-15 22:55).
-  const bool down = (GetAsyncKeyState(VK_SCROLL) & 0x8000) != 0;
-  const bool dumpDown = (GetAsyncKeyState(VK_CANCEL) & 0x8000) != 0;
+  // Hotkeys (keys.cpp, rbr-rtx\config\keys.ini; defaults P O L J U I N H [ ] ; '). Until 2026-10-17 they were
+  // Scroll Lock / Pause with Ctrl/Alt/Shift, which compact keyboards do not have. Every key is read every frame.
+  const bool kDump = rbrrtx_key_pressed(RBRKEY_DUMP), kLayer = rbrrtx_key_pressed(RBRKEY_LAYER),
+             kSun = rbrrtx_key_pressed(RBRKEY_SUN), kFoliage = rbrrtx_key_pressed(RBRKEY_FOLIAGE),
+             kDust = rbrrtx_key_pressed(RBRKEY_DUST), kGlass = rbrrtx_key_pressed(RBRKEY_WINDSCREEN),
+             kSky = rbrrtx_key_pressed(RBRKEY_SKY), kDebugSun = rbrrtx_key_pressed(RBRKEY_DEBUG_SUN);
+  wchar_t why[128];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
-  if (dumpDown && !g_dumpKeyDown) {
+  if (kDump) {                                         // dump every draw of the next frame (dump_draw)
     g_dumpFrames = 1;                                  // the whole next frame, ended at its end_frame
     g_dumpDraws = 0;
-    log_frame(L"Ctrl+Scroll Lock: frame dump of the next frame");
+    swprintf_s(why, L"%s: frame dump of the next frame", rbrrtx_key_name(RBRKEY_DUMP));
+    log_frame(why);
   }
-  g_dumpKeyDown = dumpDown;
-  if (down && !g_hotkeyDown && (GetAsyncKeyState(VK_MENU) & 0x8000)) {   // Alt+Scroll Lock: foliage mode 1 -> 2 -> 0
-    // (Ctrl+Shift+Scroll Lock arrived as Shift+Scroll Lock and toggled the sun, run 04:42)
+  if (kFoliage) {                                      // foliage mode 1 -> 2 -> 0
     g_foliageMode = g_foliageMode == 1 ? 2 : g_foliageMode == 2 ? 0 : 1;
-    log_frame(g_foliageMode == 1 ? L"Alt+Scroll Lock: foliage mode 1 (low ALPHAREF, soft pass skipped)" : g_foliageMode == 2 ? L"Alt+Scroll Lock: foliage mode 2 (low ALPHAREF, soft pass kept)" : L"Alt+Scroll Lock: foliage mode 0 (game values)");
-  } else if (down && !g_hotkeyDown && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+    swprintf_s(why, L"%s: %s", rbrrtx_key_name(RBRKEY_FOLIAGE), g_foliageMode == 1 ? L"foliage mode 1 (low ALPHAREF, soft pass skipped)" : g_foliageMode == 2 ? L"foliage mode 2 (low ALPHAREF, soft pass kept)" : L"foliage mode 0 (game values)");
+    log_frame(why);
+  }
+  if (kSun) {                                          // only the Remix sun on/off (camera and sky stay)
     g_sunOn = !g_sunOn;
     if (!g_sunOn) destroy_sun(L"sun key off");
-    log_frame(g_sunOn ? L"Shift+Scroll Lock: sun ON" : L"Shift+Scroll Lock: sun OFF");
-  } else if (down && !g_hotkeyDown) {
+    swprintf_s(why, L"%s: sun %s", rbrrtx_key_name(RBRKEY_SUN), g_sunOn ? L"ON" : L"OFF");
+    log_frame(why);
+  }
+  if (kLayer) {                                        // the whole comp layer on/off
     g_enabled = !g_enabled;
     if (!g_enabled) {                                  // hand Remix the game's own matrices, as without the layer
       for (int i = 0; i < 3; ++i) set_game_xf(dev, i);
       destroy_sun(L"comp off");
     }
-    log_frame(g_enabled ? L"Scroll Lock: comp ON" : L"Scroll Lock: comp OFF");
-  }
-  g_hotkeyDown = down;
-  const bool hintDown = (GetAsyncKeyState(VK_PAUSE) & 0x8000) != 0;   // Pause/Break: sky mode 2 -> 1 -> 0
-  if (hintDown && !g_hintKeyDown && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {   // Shift+Pause: windscreen on/off
-    g_glassOn = !g_glassOn;
-    log_frame(g_glassOn ? L"Shift+Pause: windscreen ON" : L"Shift+Pause: windscreen OFF");
-  } else if (hintDown && !g_hintKeyDown && (GetAsyncKeyState(VK_MENU) & 0x8000)) {   // Alt+Pause: dust 100 -> 50 -> 0
-    g_dustKeep = g_dustKeep == 100 ? 0 : g_dustKeep == 0 ? 25 : g_dustKeep == 25 ? 50 : 100;
-    wchar_t why[64];
-    swprintf_s(why, L"Alt+Pause: dust %u%%", g_dustKeep);
+    swprintf_s(why, L"%s: comp %s", rbrrtx_key_name(RBRKEY_LAYER), g_enabled ? L"ON" : L"OFF");
     log_frame(why);
-  } else if (hintDown && !g_hintKeyDown) {
-    g_skyMode = g_skyMode == 2 ? 1 : 2;
-    log_frame(g_skyMode == 2 ? L"Pause: sky mode 2 (Remix sky)" : L"Pause: sky mode 1 (skip)");
   }
-  g_hintKeyDown = hintDown;
+  if (kGlass) {                                        // windscreen on/off
+    g_glassOn = !g_glassOn;
+    swprintf_s(why, L"%s: windscreen %s", rbrrtx_key_name(RBRKEY_WINDSCREEN), g_glassOn ? L"ON" : L"OFF");
+    log_frame(why);
+  }
+  if (kDust) {                                         // dust 100 -> 0 -> 25 -> 50
+    g_dustKeep = g_dustKeep == 100 ? 0 : g_dustKeep == 0 ? 25 : g_dustKeep == 25 ? 50 : 100;
+    swprintf_s(why, L"%s: dust %u%%", rbrrtx_key_name(RBRKEY_DUST), g_dustKeep);
+    log_frame(why);
+  }
+  if (kSky) {                                          // sky mode 2 <-> 1
+    g_skyMode = g_skyMode == 2 ? 1 : 2;
+    swprintf_s(why, L"%s: %s", rbrrtx_key_name(RBRKEY_SKY), g_skyMode == 2 ? L"sky mode 2 (Remix sky)" : L"sky mode 1 (skip)");
+    log_frame(why);
+  }
   ++g_dustFrames;
-  const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-  const bool homeDown = alt && (GetAsyncKeyState(VK_HOME) & 0x8000);
-  if (homeDown && !g_sunHomeDown) {                    // Alt+Home: manual debug sun on/off (g_sunManual)
+  if (kDebugSun) {                                     // manual debug sun on/off (g_sunManual)
     g_sunManual = !g_sunManual;
     if (g_sunManual && g_sunDir[1] != 0.0f) {          // start from the sun currently drawn
       g_sunEl = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f;
       g_sunAz = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
     }
-    wchar_t why[96];
-    swprintf_s(why, L"Alt+Home: %s sun (azimuth %.1f, elevation %.1f)", g_sunManual ? L"manual" : L"game", g_sunAz, g_sunEl);
+    swprintf_s(why, L"%s: %s sun (azimuth %.1f, elevation %.1f)", rbrrtx_key_name(RBRKEY_DEBUG_SUN), g_sunManual ? L"manual" : L"game", g_sunAz, g_sunEl);
     log_frame(why);
   }
-  g_sunHomeDown = homeDown;
   if (g_sunManual) {
-    const float dEl = alt ? ((GetAsyncKeyState(VK_PRIOR) & 0x8000) ? 0.5f : 0.0f) - ((GetAsyncKeyState(VK_NEXT) & 0x8000) ? 0.5f : 0.0f) : 0.0f;
-    // Alt+End, not Alt+Delete: Remix's menu uses Alt+Delete to toggle its cursor.
-    const float dAz = alt ? ((GetAsyncKeyState(VK_END) & 0x8000) ? 0.5f : 0.0f) - ((GetAsyncKeyState(VK_INSERT) & 0x8000) ? 0.5f : 0.0f) : 0.0f;
+    const float dEl = (rbrrtx_key_held(RBRKEY_SUN_UP) ? 0.5f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_DOWN) ? 0.5f : 0.0f);
+    const float dAz = (rbrrtx_key_held(RBRKEY_SUN_RIGHT) ? 0.5f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_LEFT) ? 0.5f : 0.0f);
     const bool moving = dEl != 0.0f || dAz != 0.0f;
     g_sunEl = std::clamp(g_sunEl + dEl, -10.0f, 90.0f);
     g_sunAz = std::fmod(g_sunAz + dAz + 540.0f, 360.0f) - 180.0f;
     if (!moving && g_sunMoving) {                      // log where the sun was left
-      wchar_t why[96];
       swprintf_s(why, L"debug sun moved to azimuth %.1f, elevation %.1f", g_sunAz, g_sunEl);
       log_frame(why);
     }
@@ -1266,6 +1264,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
   g_backend = backend;
   if (!loaded) {
     loaded = true;
+    rbrrtx_keys_load();
     g_sunWanted = rbrrtx_env_flag(L"RBRRTX_SUN", true);
     wchar_t sky[8];
     if (GetEnvironmentVariableW(L"RBRRTX_SKY", sky, 8)) g_skyMode = std::clamp(_wtoi(sky), 0, 2);

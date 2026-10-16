@@ -1,0 +1,43 @@
+// Test of keys.cpp parsing: builds keys.cpp with a printing log stub, loads keys.ini files given by RBRRTX_KEYS.
+//   test\build_keys_test.cmd  (x86 cl)  ->  keys_test.exe
+#include "../keys.cpp"
+#include <cstdarg>
+#include <cstdio>
+
+void rbrrtx_log_to(const wchar_t*, const wchar_t* fmt, ...) {
+  va_list a;
+  va_start(a, fmt);
+  vwprintf(fmt, a);
+  va_end(a);
+  wprintf(L"\n");
+}
+
+int check(const wchar_t* in, int want) {
+  int got = parse_key(in);
+  if (got != want) { wprintf(L"FAIL parse_key(\"%s\") = %d, want %d\n", in, got, want); return 1; }
+  return 0;
+}
+
+int wmain(int argc, wchar_t** argv) {
+  int fails = 0;
+  fails += check(L"P", 'P');
+  fails += check(L" p ", 'P');
+  fails += check(L"7", '7');
+  fails += check(L"F5", VK_F5);
+  fails += check(L"f12", VK_F12);
+  fails += check(L"0x41", 0x41);
+  fails += check(L"none", 0);
+  fails += check(L"Quote", VK_OEM_7);
+  fails += check(L"leftbracket", VK_OEM_4);
+  fails += check(L"[", VK_OEM_4);
+  fails += check(L"ScrollLock", VK_SCROLL);
+  fails += check(L"Numpad5", VK_NUMPAD5);
+  fails += check(L"garbage", -1);
+  fails += check(L"", -1);
+  for (int i = 1; i < argc; ++i) {           // each argument: a keys.ini to load and print
+    SetEnvironmentVariableW(L"RBRRTX_KEYS", argv[i]);
+    rbrrtx_keys_load();
+  }
+  wprintf(fails ? L"%d FAILED\n" : L"parse checks passed\n", fails);
+  return fails;
+}
