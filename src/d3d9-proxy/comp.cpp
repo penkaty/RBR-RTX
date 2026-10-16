@@ -823,7 +823,160 @@ void log_frame(const wchar_t* why) {
   clog(L"  draws by shader (primary/off-screen): %s", line.c_str());
 }
 
+// ---------------------------------------------------------------- performance experiments (key K)
+// Where does the frame time go (user 2026-10-17: trees take 85 -> 60 fps)? One press of K runs the steps of
+// rbr-rtx\config\experiments.ini (env RBRRTX_EXPERIMENTS) while the player keeps the view still: each step sets Remix
+// options live (SetConfigVariable, user layer, applied at frame end) and/or hides draws whose shader file name
+// contains a listed part ("skip = Sway" = swaying foliage), waits settle_seconds, then averages the frame time over
+// measure_seconds. Baseline first and last (drift check); the log gets one line per step and a summary. K again =
+// abort. Afterwards every option is back at its [baseline] value. Options touched here land in the same layer as the
+// Alt+X user settings: do not "Save Settings" during a run.
+struct ExpStep {
+  std::wstring name;
+  std::vector<std::pair<std::string, std::string>> sets;
+  std::vector<std::wstring> skip;
+};
+std::vector<ExpStep> g_exp;                                  // [0] = baseline (no changes), then the ini steps
+std::vector<std::pair<std::string, std::string>> g_expBase;  // [baseline] option values, restored around every step
+double g_expSettle = 3.0, g_expMeasure = 5.0;
+int g_expStep = -1;                                          // running step, -1 = idle
+size_t g_expPos = 0;                                         // index in g_expOrder
+std::vector<int> g_expOrder;                                 // baseline, steps..., baseline
+std::vector<double> g_expMs;                                 // result per g_expOrder entry
+LARGE_INTEGER g_expStepStart = {}, g_expMeasureStart = {}, g_qpf = {};
+unsigned g_expFrames = 0, g_expSkipped = 0;
+bool g_expMeasuring = false;
+std::unordered_map<const ShaderInfo*, bool> g_expSkipCache;
+
+std::string narrow(const std::wstring& w) {                  // option names/values are ASCII
+  std::string s;
+  for (wchar_t c : w) s += static_cast<char>(c < 128 ? c : '?');
+  return s;
+}
+
+void exp_load() {
+  g_exp.clear();
+  g_expBase.clear();
+  wchar_t path[MAX_PATH * 2] = {};
+  rbrrtx_config_path(L"RBRRTX_EXPERIMENTS", L"experiments.ini", path, MAX_PATH * 2);
+  g_exp.push_back({L"baseline", {}, {}});
+  wchar_t buf[8192];
+  if (GetPrivateProfileSectionNamesW(buf, 8192, path) == 0) { clog(L"experiments: no %s", path); return; }
+  for (const wchar_t* sec = buf; *sec; sec += wcslen(sec) + 1) {
+    wchar_t body[8192];
+    GetPrivateProfileSectionW(sec, body, 8192, path);
+    ExpStep step;
+    step.name = sec;
+    for (const wchar_t* line = body; *line; line += wcslen(line) + 1) {
+      std::wstring l = line;
+      const size_t eq = l.find(L'=');
+      if (l.empty() || l[0] == L';' || eq == std::wstring::npos) continue;
+      auto trim = [](std::wstring s) {
+        const size_t a = s.find_first_not_of(L" \t"), b = s.find_last_not_of(L" \t");
+        return a == std::wstring::npos ? std::wstring() : s.substr(a, b - a + 1);
+      };
+      const std::wstring k = trim(l.substr(0, eq)), v = trim(l.substr(eq + 1));
+      if (!_wcsicmp(sec, L"run")) {
+        if (k == L"settle_seconds") g_expSettle = (std::max)(0.5, _wtof(v.c_str()));
+        if (k == L"measure_seconds") g_expMeasure = (std::max)(1.0, _wtof(v.c_str()));
+      } else if (!_wcsicmp(sec, L"baseline")) {
+        g_expBase.emplace_back(narrow(k), narrow(v));
+      } else if (k == L"name") {
+        step.name = v;
+      } else if (k == L"skip") {
+        for (size_t a = 0; a <= v.size();) {
+          size_t b = v.find(L',', a);
+          if (b == std::wstring::npos) b = v.size();
+          const std::wstring part = trim(v.substr(a, b - a));
+          if (!part.empty()) step.skip.push_back(part);
+          a = b + 1;
+        }
+      } else if (k.rfind(L"rtx.", 0) == 0) {
+        step.sets.emplace_back(narrow(k), narrow(v));
+      }
+    }
+    if (_wcsicmp(sec, L"run") && _wcsicmp(sec, L"baseline")) g_exp.push_back(step);
+  }
+  clog(L"experiments: %zu steps from %s (settle %.1f s, measure %.1f s, %zu baseline options)", g_exp.size() - 1, path,
+       g_expSettle, g_expMeasure, g_expBase.size());
+}
+
+void exp_set(const std::string& k, const std::string& v) {
+  if (g_apiOk && g_api.SetConfigVariable) g_api.SetConfigVariable(k.c_str(), v.c_str());
+}
+
+void exp_apply(int step) {
+  for (const auto& kv : g_expBase) exp_set(kv.first, kv.second);   // every step starts from the baseline
+  g_expSkipCache.clear();
+  g_expStep = step;
+  if (step < 0) return;
+  for (const auto& kv : g_exp[step].sets) exp_set(kv.first, kv.second);
+  QueryPerformanceCounter(&g_expStepStart);
+  g_expMeasuring = false;
+  g_expFrames = g_expSkipped = 0;
+}
+
+bool exp_skip_draw() {
+  if (g_expStep <= 0 || !g_curInfo || g_exp[g_expStep].skip.empty()) return false;
+  auto it = g_expSkipCache.find(g_curInfo);
+  if (it != g_expSkipCache.end()) return it->second;
+  bool hit = false;
+  for (const auto& part : g_exp[g_expStep].skip) if (g_curInfo->name.find(part) != std::wstring::npos) { hit = true; break; }
+  g_expSkipCache[g_curInfo] = hit;
+  return hit;
+}
+
+void exp_finish(const wchar_t* why) {
+  exp_apply(-1);
+  if (g_expMs.empty()) { clog(L"experiments: %s", why); return; }
+  const double base = g_expMs[0];
+  clog(L"experiments: %s. Summary (frame time; minus = faster than the first baseline):", why);
+  for (size_t i = 0; i < g_expMs.size(); ++i) {
+    const ExpStep& s = g_exp[g_expOrder[i]];
+    clog(L"  %-44s %6.2f ms %6.1f fps  %+6.2f ms", s.name.c_str(), g_expMs[i], 1000.0 / g_expMs[i], g_expMs[i] - base);
+  }
+}
+
+void exp_frame() {
+  if (rbrrtx_key_pressed(RBRKEY_EXPERIMENT)) {
+    if (g_expStep >= 0) { exp_finish(L"aborted (key)"); return; }
+    exp_load();
+    if (!g_apiOk) clog(L"experiments: Remix API not available, option steps will do nothing (proxy skips still work)");
+    g_expOrder.clear();
+    g_expMs.clear();
+    for (size_t i = 0; i < g_exp.size(); ++i) g_expOrder.push_back(static_cast<int>(i));
+    g_expOrder.push_back(0);                                  // baseline again: did the scene drift?
+    QueryPerformanceFrequency(&g_qpf);
+    g_expPos = 0;
+    wchar_t why[160];
+    swprintf_s(why, L"%s: experiment run started (%zu steps, about %.0f s; keep the view still)", rbrrtx_key_name(RBRKEY_EXPERIMENT),
+               g_expOrder.size(), g_expOrder.size() * (g_expSettle + g_expMeasure));
+    log_frame(why);
+    exp_apply(g_expOrder[0]);
+    return;
+  }
+  if (g_expStep < 0) return;
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  const double inStep = static_cast<double>(now.QuadPart - g_expStepStart.QuadPart) / g_qpf.QuadPart;
+  if (!g_expMeasuring) {
+    if (inStep >= g_expSettle) { g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0; }
+    return;
+  }
+  ++g_expFrames;
+  const double measured = static_cast<double>(now.QuadPart - g_expMeasureStart.QuadPart) / g_qpf.QuadPart;
+  if (measured < g_expMeasure || g_expFrames < 10) return;
+  const double ms = measured * 1000.0 / g_expFrames;
+  g_expMs.push_back(ms);
+  const ExpStep& s = g_exp[g_expStep];
+  clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden per frame", g_expPos + 1, g_expOrder.size(),
+       s.name.c_str(), ms, 1000.0 / ms, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames);
+  if (++g_expPos >= g_expOrder.size()) { exp_finish(L"done, options back at baseline"); return; }
+  exp_apply(g_expOrder[g_expPos]);
+}
+
 void end_frame(IDirect3DDevice9* dev) {
+  exp_frame();
   // Hotkeys (keys.cpp, rbr-rtx\config\keys.ini; defaults P O L J U I N H [ ] ; '). Until 2026-10-17 they were
   // Scroll Lock / Pause with Ctrl/Alt/Shift, which compact keyboards do not have. Every key is read every frame.
   const bool kDump = rbrrtx_key_pressed(RBRKEY_DUMP), kLayer = rbrrtx_key_pressed(RBRKEY_LAYER),
@@ -1105,6 +1258,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     return D3D_OK;
   }
   if (midQuad) { ++g_midQuadSkipped; return D3D_OK; }
+  if (exp_skip_draw()) { ++g_expSkipped; return D3D_OK; }   // performance experiment (key K)
   g_primCap = UINT_MAX;
   if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE)) {
     DWORD at = 0, blend = 0;

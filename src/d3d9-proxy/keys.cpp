@@ -29,6 +29,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
+  {L"experiment", 'K', L"performance experiment run"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
@@ -87,19 +88,22 @@ bool game_has_focus() {
 
 }  // namespace
 
+void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size) {
+  DWORD n = GetEnvironmentVariableW(env, out, static_cast<DWORD>(size));
+  if (n > 0 && n < size) return;
+  HMODULE self = nullptr;
+  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                     reinterpret_cast<LPCWSTR>(&rbrrtx_config_path), &self);
+  wchar_t dir[MAX_PATH] = {};
+  DWORD len = GetModuleFileNameW(self, dir, MAX_PATH);
+  wchar_t* slash = (len > 0 && len < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
+  if (slash) *slash = 0;
+  swprintf_s(out, size, L"%s\\rbr-rtx\\config\\%s", dir, file);
+}
+
 void rbrrtx_keys_load() {
   wchar_t path[MAX_PATH * 2] = {};
-  DWORD n = GetEnvironmentVariableW(L"RBRRTX_KEYS", path, MAX_PATH);
-  if (n == 0 || n >= MAX_PATH) {
-    HMODULE self = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&rbrrtx_keys_load), &self);
-    wchar_t dir[MAX_PATH] = {};
-    DWORD len = GetModuleFileNameW(self, dir, MAX_PATH);
-    wchar_t* slash = (len > 0 && len < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
-    if (slash) *slash = 0;
-    swprintf_s(path, L"%s\\rbr-rtx\\config\\keys.ini", dir);
-  }
+  rbrrtx_config_path(L"RBRRTX_KEYS", L"keys.ini", path, MAX_PATH * 2);
   const bool found = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
   wchar_t summary[1024] = {};
   for (int i = 0; i < RBRKEY_COUNT; ++i) {
