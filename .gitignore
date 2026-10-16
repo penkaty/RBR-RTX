@@ -1,0 +1,21 @@
+# Only the add-on's own source, package skeleton and scripts are tracked.
+
+# Build output
+src/**/bin/
+src/**/obj/
+
+# Assembled install (proxy build + NVIDIA's Remix runtime): .\build.ps1 recreates it
+dist/
+
+# Runtime output if a package folder is ever run in place
+package/rbr-rtx/logs/
+package/rbr-rtx/cache/
+package/rbr-rtx/preexisting.txt
+package/rbr-rtx/files.txt
+package/rbr-rtx/version.txt
+
+# Remix runtime binaries never go in git (only our .trex/bridge.conf)
+package/rbr-rtx/remix/*
+!package/rbr-rtx/remix/.trex/
+package/rbr-rtx/remix/.trex/*
+!package/rbr-rtx/remix/.trex/bridge.conf

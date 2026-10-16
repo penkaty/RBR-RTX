@@ -1,0 +1,16 @@
+LIBRARY d3d9
+EXPORTS
+  D3DPERF_BeginEvent=Proxy_D3DPERF_BeginEvent
+  D3DPERF_EndEvent=Proxy_D3DPERF_EndEvent
+  D3DPERF_GetStatus=Proxy_D3DPERF_GetStatus
+  D3DPERF_QueryRepeatFrame=Proxy_D3DPERF_QueryRepeatFrame
+  D3DPERF_SetMarker=Proxy_D3DPERF_SetMarker
+  D3DPERF_SetOptions=Proxy_D3DPERF_SetOptions
+  D3DPERF_SetRegion=Proxy_D3DPERF_SetRegion
+  DebugSetLevel=Proxy_DebugSetLevel
+  DebugSetMute=Proxy_DebugSetMute
+  Direct3D9EnableMaximizedWindowedModeShim=Proxy_Direct3D9EnableMaximizedWindowedModeShim
+  Direct3DCreate9=Proxy_Direct3DCreate9
+  Direct3DCreate9Ex=Proxy_Direct3DCreate9Ex
+  remixapi_InitializeLibrary=Proxy_remixapi_InitializeLibrary
+  remixapi_RegisterCallbacks=Proxy_remixapi_RegisterCallbacks

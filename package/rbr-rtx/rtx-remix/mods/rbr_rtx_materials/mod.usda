@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "RootNode"
+{
+    def Scope "Looks"
+    {
+        # BMW M3 E30 GrpA rear-view + left mirror glass
+        def Material "mat_42F245929F784ABE"
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                asset inputs:diffuse_texture = @./textures/white.dds@ (
+                    colorSpace = "auto"
+                )
+                color3f inputs:diffuse_color_constant = (0.9, 0.9, 0.9)
+                float inputs:metallic_constant = 1
+                float inputs:reflection_roughness_constant = 0
+                token outputs:out
+            }
+        }
+    }
+}
