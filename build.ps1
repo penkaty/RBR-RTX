@@ -11,11 +11,15 @@
   Remix is not stored in git; it is copied from the extracted NVIDIA release (-Remix), by default the newest
   folder in ..\remix\runtime\ of the dev checkout. NvRemixLauncher32.exe and d3d8to9.dll are left out (unused).
 
+  -Diagnostics (test builds for testers): adds rbr-rtx\diagnostics.txt, which makes the proxy write its log,
+  Ctrl+Scroll Lock frame dumps and crash dumps to rbr-rtx\logs. Release builds leave it out (nothing is logged).
+
 .EXAMPLE
   .\build.ps1
+  .\build.ps1 -Diagnostics
   .\build.ps1 -Remix D:\downloads\remix-1.5.2
 #>
-param([string]$Remix = '', [switch]$SkipProxy)
+param([string]$Remix = '', [switch]$SkipProxy, [switch]$Diagnostics)
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $dist = Join-Path $here 'dist\RBR-RTX'
@@ -44,7 +48,15 @@ Get-ChildItem $remixDst -Recurse -Force -File | Where-Object { $n = $_.Name; $le
 Get-ChildItem $remixDst -Recurse -Force -Directory -Filter 'reshade-shaders' |
   ForEach-Object { "left out (dev-run leftover): $($_.FullName.Substring($remixDst.Length + 1))\"; Remove-Item $_.FullName -Recurse -Force }
 
+if ($Diagnostics) {
+  @('RBR-RTX diagnostics mode (test build).',
+    'While this file exists, RBR-RTX writes its own log, Ctrl+Scroll Lock frame dumps and crash dumps to rbr-rtx\logs,',
+    'next to RTX Remix''s logs. To report a problem: zip the rbr-rtx\logs folder and send it. The logs contain your',
+    'Windows user name in file paths and your GPU/driver; nothing is sent anywhere automatically.',
+    'Delete this file to stop the extra logging.') | Set-Content -Encoding UTF8 (Join-Path $dist 'rbr-rtx\diagnostics.txt')
+}
 $rev = (git -C $here describe --always --dirty 2>$null)
+if ($Diagnostics) { $rev += ' (diagnostics)' }
 @("RBR-RTX $rev, built $(Get-Date -Format 'yyyy-MM-dd HH:mm')", "RTX Remix runtime: $(Split-Path $Remix -Leaf)") |
   Set-Content -Encoding UTF8 (Join-Path $dist 'rbr-rtx\version.txt')
 # files.txt: every file the add-on brings, plus the proxy's hash so uninstall never deletes another d3d9.dll.

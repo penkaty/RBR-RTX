@@ -14,6 +14,8 @@
 // The comp layer runs by default with a Remix backend (1 or 2); env RBRRTX_COMP=0/1 overrides.
 // Optional log: env RBRRTX_LOG_DIR = folder for rbrrtx_d3d9_proxy.log (nothing is written otherwise).
 // Optional exception trace: env RBRRTX_TRACE_EXCEPTIONS=1 (see exception_trace.cpp).
+// Diagnostics mode for testers: if <proxy dir>\rbr-rtx\diagnostics.txt exists, the three above default to
+// rbr-rtx\logs, on, and 3 crash dumps (a file, not env vars: the RSF launcher starts the game, not us).
 //
 // This is the future hook point between RBR and the renderer (draw-call fixes, Remix API lights).
 
@@ -73,6 +75,28 @@ void default_env_path(const wchar_t* name, const wchar_t* base, const wchar_t* r
   wchar_t v[MAX_PATH * 2];
   swprintf_s(v, L"%s\\%s", base, rel);
   SetEnvironmentVariableW(name, v);
+}
+
+void default_env(const wchar_t* name, const wchar_t* value) {
+  if (GetEnvironmentVariableW(name, nullptr, 0) == 0) SetEnvironmentVariableW(name, value);
+}
+
+// rbr-rtx\diagnostics.txt present (test builds): proxy log, Ctrl+Scroll Lock frame dumps and crash dumps go to
+// rbr-rtx\logs. Explicit env vars (dev launcher) still win.
+void diagnostics_from_file(HINSTANCE inst) {
+  wchar_t dir[MAX_PATH];
+  DWORD len = GetModuleFileNameW(inst, dir, MAX_PATH);
+  wchar_t* slash = (len > 0 && len < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
+  if (!slash) return;
+  *slash = 0;
+  wchar_t flag[MAX_PATH * 2], logs[MAX_PATH * 2];
+  swprintf_s(flag, L"%s\\rbr-rtx\\diagnostics.txt", dir);
+  if (GetFileAttributesW(flag) == INVALID_FILE_ATTRIBUTES) return;
+  swprintf_s(logs, L"%s\\rbr-rtx\\logs", dir);
+  CreateDirectoryW(logs, nullptr);
+  default_env(L"RBRRTX_LOG_DIR", logs);
+  default_env(L"RBRRTX_TRACE_EXCEPTIONS", L"1");
+  default_env(L"RBRRTX_TRACE_DUMPS", L"3");
 }
 
 BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
@@ -225,6 +249,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     g_self = inst;
     DisableThreadLibraryCalls(inst);
+    diagnostics_from_file(inst);
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     log(L"proxy attached to %s", exe);

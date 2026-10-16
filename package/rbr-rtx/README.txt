@@ -29,6 +29,10 @@ Keys (in game)
   Alt+Pause     gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
   Alt+Home      debug sun: manual sun on/off (starts at the game's sun); while on, hold Alt+Page Up / Page Down to
                 raise / lower it and Alt+Insert / End to turn it around. Only the lighting moves, not the sky.
+  Ctrl+Scroll Lock   test builds: record everything drawn in the next frame into rbr-rtx\logs (for bug reports)
+
+Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, Ctrl+Scroll Lock frame dump, crash
+  dumps) into rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
 
 Uninstall
   Run rbr-rtx\uninstall.cmd. It removes d3d9.dll (only if it is still the RBR-RTX one), the files Remix
