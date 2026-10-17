@@ -35,6 +35,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"culling", 'M', L"distance culling on/off"},
   {L"sun_brighter", kAlt | 'H', L"sun brightness +10 %"},
   {L"sun_dimmer", kAlt | 'N', L"sun brightness -10 %"},
+  {L"ff_scenery", kAlt | 'J', L"fixed-function scenery mode"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};

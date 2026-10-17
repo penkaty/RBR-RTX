@@ -115,7 +115,8 @@ D3DMATRIX identity() {
 
 // ---------------------------------------------------------------- shader identification
 
-enum : unsigned { SH_KNOWN = 1, SH_WORLDSPACE = 2, SH_USES_C8 = 4, SH_CAR = 8, SH_SKY = 16, SH_GLASS = 32, SH_SCENERY = 64, SH_PARTICLE = 128 };
+enum : unsigned { SH_KNOWN = 1, SH_WORLDSPACE = 2, SH_USES_C8 = 4, SH_CAR = 8, SH_SKY = 16, SH_GLASS = 32, SH_SCENERY = 64, SH_PARTICLE = 128,
+           SH_SWAY = 256, SH_ANIM = 512 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87)
 
 struct ShaderInfo {
   std::wstring name;
@@ -148,6 +149,8 @@ unsigned flags_for(const std::wstring& rel) {
   if (starts_with(n, L"Car")) f |= SH_CAR;
   if (starts_with(n, L"RL") || starts_with(n, L"IO")) f |= SH_SCENERY;   // stage geometry and objects (foliage, fences)
   if (starts_with(n, L"Clouds") || starts_with(n, L"SkyDome")) f |= SH_SKY;
+  if (n.find(L"Sway") != std::wstring::npos) f |= SH_SWAY;
+  if (n.find(L"Anim") != std::wstring::npos) f |= SH_ANIM;
   if (n == L"Particle.vso") f |= SH_PARTICLE;   // dust, smoke, spray, rain sprites (and the ignored car shadow quad)
   if (n == L"CarGlassInternal.vso") f |= SH_GLASS;   // windscreen seen from the cockpit (CarGlass.vso = outside + mirrors)
   static const wchar_t* uses_c8[] = { L"CarGlass.vso", L"CarPaint1.vso", L"CarPaintInternal.vso", L"CarPlastic.vso",
@@ -346,6 +349,38 @@ bool g_harvestUsage = false;   // RBRRTX_HARVEST set: also log which shader draw
 
 bool is_scenery_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_SCENERY); }
 
+// Fixed-function static scenery (STATUS step 3; GTA4/SR3 idea, docs/research/refmods-gta4-sr3.md A2). A draw with a
+// vertex shader is vertex-captured by Remix: the VS is re-run into a capture buffer every frame and the BLAS is built
+// from that, so even static rocks/road/buildings count as new geometry each frame. Drawn with no vertex shader, Remix
+// reads the game's own vertex buffer (static, hashed, cached BLAS; opacity micromaps can stick). RBR's RL*/IO* layouts
+// are FF-legal (FLOAT3 position, D3DCOLOR, FLOAT2 UVs) and RL* vertices are in world space, so only the VS is unbound:
+// the transforms are the ones before_draw already sets, the pixel shader stays bound (Remix ignores it). Lost in the
+// raster image only: RBR's VS haze/scattering on the vertex colour, which Remix never used (decl colour wins, see
+// re/kb/systems/remix-source.md Phase 2). Never for *Anim (UV/vertex animation) shaders, and never for IO* = the
+// interactive objects the car can push (start clock board, signs, cones): FF needs an exact WORLD and the derived one
+// put them in the wrong place (Rosciszow-Walim 4/5, 2026-10-17; vertex capture is immune, it undoes our matrices);
+// they move anyway, so a cached BLAS buys nothing there.
+// Modes (RBRRTX_FF, ff_scenery key Alt+J cycles 0 -> 1 -> 2 -> 0, K steps "ff = n"):
+//   0 = off (vertex capture, the old way)   1 = static RL* scenery (default since the 2026-10-17 K runs: -1.1 ms
+//   Walim, -2.4 Chirdonhead, -5.9 Santa Lucia)   2 = also swaying foliage/flags/grass farther than g_ffSwayNear from
+//   the camera (default 40 m, RBRRTX_FF_SWAY_NEAR): those stop swaying, near ones keep it (GTA4 idea; all of it frozen
+//   gave another -0.5..-1.9 ms, but the user saw grass and flags stop).
+// The VS is unbound lazily: consecutive FF draws keep it null, the next shader draw rebinds the game's VS (g_vsUnbound).
+int g_ffMode = 1, g_ffBase = 1;                        // g_ffBase: start value (env), restored after K steps
+bool g_vsUnbound = false;                              // device has no VS while the game thinks g_curVS is bound
+unsigned g_ffDraws = 0, g_ffSwayFar = 0;                // FF scenery draws / of those swaying ones, since the last log line
+float g_ffSwayNear = 40.0f;                            // mode 2: swaying draws nearer than this (metres) keep their VS
+
+// 0 = keep the VS, 1 = FF, 2 = swaying draw in mode 2: FF only if far enough (ff_sway_far, needs the draw's bounds).
+int ff_scenery_class() {
+  if (g_ffMode == 0 || !g_enabled || !g_primaryRT || !g_haveCam || g_testMode != 0 || !g_curInfo) return 0;
+  const unsigned f = g_curInfo->flags;
+  const bool rl = (f & SH_SCENERY) && (f & SH_WORLDSPACE);   // RL* only (IO* = object space, interactive)
+  if (!rl || (f & SH_ANIM)) return 0;
+  if (!(f & SH_SWAY)) return 1;
+  return g_ffMode == 2 ? 2 : 0;
+}
+
 
 bool all_set(int first, int count) {
   for (int i = first; i < first + count; ++i)
@@ -412,6 +447,37 @@ void init_remix_api() {
   else clog(L"sun: Remix API unavailable (error %d)", static_cast<int>(err));
 }
 
+// Stage sun rule (user 2026-10-17). RBR takes the sun from Maps\<id>\TrackSettings<id>.ini SunDir per time of day;
+// 54 of 450 stages miss it or have 0,-1,0, and the game then uses a sun straight overhead (Santa Lucia, 514, 562):
+// flat light, no shadows to read the road by. Rule, for the Remix light only (the game's own constants stay):
+//  - never higher than g_sunMaxElev (default 60 deg ~ noon in mid-June Poland, 52 N: 90 - 52 + 23.4 = 61.4; the user
+//    prefers lower than needed), azimuth kept;
+//  - straight overhead (no usable azimuth, above 85 deg): g_sunFallbackEl (40 deg) from the azimuth of RBR's most used
+//    SunDir preset (-0.843 -0.504 0.187, 709 sections).
+// RBRRTX_SUN_MAX_ELEV = degrees, RBRRTX_SUN_FALLBACK = "azimuth,elevation" (degrees, azimuth as atan2(z, x)).
+float g_sunMaxElev = 60.0f, g_sunFallbackAz = 167.5f, g_sunFallbackEl = 40.0f;
+int g_sunRuleLogged = -1;                              // last rule logged (0 none, 1 capped, 2 fallback)
+
+void sun_rule(float d[3]) {
+  const float horiz = std::sqrt(d[0] * d[0] + d[2] * d[2]);
+  const float elev = std::atan2(-d[1], horiz) * 57.2958f;
+  int rule = 0;
+  float az = std::atan2(d[2], d[0]) * 57.2958f, el = elev;
+  if (elev > 85.0f) { rule = 2; az = g_sunFallbackAz; el = g_sunFallbackEl; }
+  else if (elev > g_sunMaxElev) { rule = 1; el = g_sunMaxElev; }
+  if (rule) {
+    const float e = el * 0.0174533f, a = az * 0.0174533f;
+    d[0] = std::cos(e) * std::cos(a);
+    d[1] = -std::sin(e);
+    d[2] = std::cos(e) * std::sin(a);
+  }
+  if (rule != g_sunRuleLogged) {
+    g_sunRuleLogged = rule;
+    clog(L"sun rule: game sun elevation %.1f deg -> %s (azimuth %.1f, elevation %.1f)", elev,
+         rule == 2 ? L"overhead, stage fallback" : rule == 1 ? L"capped" : L"kept", az, el);
+  }
+}
+
 void update_sun() {
   if (!g_apiOk || !g_enabled || !g_sunOn || (!g_cset[41] && !g_sunManual)) return;
   float d[3] = { g_c[41][0], g_c[41][1], g_c[41][2] };  // direction the light travels: y < 0 = sun above the horizon
@@ -420,6 +486,8 @@ void update_sun() {
     d[0] = std::cos(el) * std::cos(az);
     d[1] = -std::sin(el);
     d[2] = std::cos(el) * std::sin(az);
+  } else if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 1e-8f) {
+    sun_rule(d);
   }
   const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
   if (len < 1e-4f) return;
@@ -872,7 +940,11 @@ void log_frame(const wchar_t* why) {
        g_foliageMode, g_cutoutRef, g_refLowered, g_softSkipped, g_midQuadSkipped, g_dustKeep, g_dustTrimmed,
        g_dustFrames ? static_cast<double>(g_dustQuads) / g_dustFrames : 0.0, g_skipOffscreen ? L"skipped" : L"drawn",
        g_dustFrames ? static_cast<double>(g_offSkipped) / g_dustFrames : 0.0);
-  g_refLowered = g_softSkipped = g_midQuadSkipped = g_dustTrimmed = g_dustQuads = g_dustFrames = g_offSkipped = 0;
+  clog(L"  fixed-function scenery now mode %d (%s); since last line %.0f draws per frame without their vertex shader, %.0f of them swaying ones beyond %.0f m",
+       g_ffMode, g_ffMode == 0 ? L"off, vertex capture" : g_ffMode == 1 ? L"static RL scenery" : L"static RL scenery + far swaying foliage",
+       g_dustFrames ? static_cast<double>(g_ffDraws) / g_dustFrames : 0.0,
+       g_dustFrames ? static_cast<double>(g_ffSwayFar) / g_dustFrames : 0.0, g_ffSwayNear);
+  g_refLowered = g_softSkipped = g_midQuadSkipped = g_dustTrimmed = g_dustQuads = g_dustFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
   if (okInv)
     clog(L"  camera pos (%.2f, %.2f, %.2f) vs c50 (%.2f, %.2f, %.2f); camera up (%.3f, %.3f, %.3f); fovY %.1f deg, "
          L"P._11 %.3f P._22 %.3f P._31 %.3f P._32 %.3f P._33 %.4f P._34 %.3f P._43 %.3f; sun c41 (%.3f, %.3f, %.3f)",
@@ -919,6 +991,7 @@ struct ExpStep {
   std::vector<std::pair<std::string, std::string>> sets;
   std::vector<std::wstring> skip;
   std::vector<std::wstring> solid;                           // alpha test off for these shader name parts
+  int ff = -1;                                               // fixed-function scenery mode for this step (-1 = start value)
 };
 std::vector<ExpStep> g_exp;                                  // [0] = baseline (no changes), then the ini steps
 std::vector<std::pair<std::string, std::string>> g_expBase;  // [baseline] option values, restored around every step
@@ -977,6 +1050,8 @@ void exp_load() {
         g_expBase.emplace_back(narrow(k), narrow(v));
       } else if (k == L"name") {
         step.name = v;
+      } else if (k == L"ff") {
+        step.ff = std::clamp(_wtoi(v.c_str()), 0, 2);
       } else if (k == L"skip" || k == L"solid") {
         auto& list = k == L"skip" ? step.skip : step.solid;
         for (size_t a = 0; a <= v.size();) {
@@ -1010,6 +1085,7 @@ void exp_apply(int step) {
   g_expSkipCache.clear();
   g_expSolidCache.clear();
   g_expStep = step;
+  g_ffMode = step > 0 && g_exp[step].ff >= 0 ? g_exp[step].ff : g_ffBase;
   if (step < 0) return;
   for (const auto& kv : g_exp[step].sets) exp_set(kv.first, kv.second);
   QueryPerformanceCounter(&g_expStepStart);
@@ -1108,6 +1184,7 @@ void end_frame(IDirect3DDevice9* dev) {
              kDust = rbrrtx_key_pressed(RBRKEY_DUST), kGlass = rbrrtx_key_pressed(RBRKEY_WINDSCREEN),
              kSky = rbrrtx_key_pressed(RBRKEY_SKY), kDebugSun = rbrrtx_key_pressed(RBRKEY_DEBUG_SUN);
   const bool kBrighter = rbrrtx_key_pressed(RBRKEY_SUN_BRIGHTER), kDimmer = rbrrtx_key_pressed(RBRKEY_SUN_DIMMER);
+  const bool kFf = rbrrtx_key_pressed(RBRKEY_FF_SCENERY);
   wchar_t why[256];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
@@ -1119,6 +1196,11 @@ void end_frame(IDirect3DDevice9* dev) {
   if (kFoliage) {                                      // foliage mode 1 -> 2 -> 0
     g_foliageMode = g_foliageMode == 1 ? 2 : g_foliageMode == 2 ? 0 : 1;
     swprintf_s(why, L"%s: %s", rbrrtx_key_name(RBRKEY_FOLIAGE), g_foliageMode == 1 ? L"foliage mode 1 (low ALPHAREF, soft pass skipped)" : g_foliageMode == 2 ? L"foliage mode 2 (low ALPHAREF, soft pass kept)" : L"foliage mode 0 (game values)");
+    log_frame(why);
+  }
+  if (kFf) {                                           // fixed-function scenery 0 -> 1 -> 2 -> 0
+    g_ffMode = g_ffBase = (g_ffMode + 1) % 3;           // also what K steps return to
+    swprintf_s(why, L"%s: fixed-function scenery mode %d", rbrrtx_key_name(RBRKEY_FF_SCENERY), g_ffMode);
     log_frame(why);
   }
   if (kSun) {                                          // only the Remix sun on/off (camera and sky stay)
@@ -1166,9 +1248,7 @@ void end_frame(IDirect3DDevice9* dev) {
     if (g_sunManual && g_sunDir[1] != 0.0f) {          // start from the sun currently drawn
       g_sunEl = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f;
       g_sunAz = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
-      // Some stages/replays give c41 = (0,-1,0), a sun straight overhead: there [ ] (azimuth) changes nothing, so
-      // start from a raking 30 degrees instead (Santa Lucia replay 2026-10-17).
-      if (g_sunEl > 80.0f) g_sunEl = 30.0f;
+      // g_sunDir is the Remix sun after sun_rule (never overhead any more).
     }
     swprintf_s(why, L"%s: %s sun (azimuth %.1f, elevation %.1f)", rbrrtx_key_name(RBRKEY_DEBUG_SUN), g_sunManual ? L"manual" : L"game", g_sunAz, g_sunEl);
     log_frame(why);
@@ -1227,6 +1307,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWO
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexShader(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
   g_curVS = vs;
+  g_vsUnbound = false;                                 // the device gets the game's VS again
   g_curInfo = nullptr;
   if (vs) {
     auto it = g_vs.find(vs);
@@ -1407,7 +1488,7 @@ struct CullCfg {
   float frustumMargin = 5.0f;                  // metres added to the sphere for the view test
 };
 CullCfg g_cull;
-struct CullEntry { float c[3] = {}, r = 0; bool valid = false, culled = false; unsigned lastFrame = 0; };
+struct CullEntry { float c[3] = {}, r = 0; bool valid = false, culled = false, ffFar = false; unsigned lastFrame = 0; };
 std::unordered_map<uint64_t, CullEntry> g_cullCache;
 std::unordered_map<const void*, unsigned> g_vbGen;          // bumped when the game creates a buffer at an address
 std::unordered_map<const ShaderInfo*, bool> g_cullClassCache, g_cullVisCache;
@@ -1625,6 +1706,21 @@ bool cull_draw(IDirect3DDevice9* dev) {
   return cull;
 }
 
+// Mode 2 of the fixed-function scenery: a swaying RL* draw (world space) goes FF only when its bounding sphere is
+// farther than g_ffSwayNear from the camera (10 % hysteresis so a batch at the edge does not flip every frame).
+// Unreadable bounds = keep the sway.
+bool ff_sway_far(IDirect3DDevice9* dev) {
+  if (g_drawNumVert == 0) return false;
+  CullEntry* e = cull_entry(dev);
+  if (!e) return false;
+  D3DMATRIX vinv;
+  if (!inverse(g_V, vinv)) return false;
+  const float dx = e->c[0] - vinv._41, dy = e->c[1] - vinv._42, dz = e->c[2] - vinv._43;
+  const float dist = (std::max)(0.0f, std::sqrt(dx * dx + dy * dy + dz * dz) - e->r);
+  e->ffFar = dist > g_ffSwayNear * (e->ffFar ? 0.9f : 1.0f);
+  return e->ffFar;
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -1696,7 +1792,19 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
     if (at && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) { atOff = true; ++g_expSolid; }
   }
+  // Fixed-function scenery (g_ffMode): unbind the VS for this draw, or give the game's VS back after FF draws.
+  const int ffClass = g_curVS ? ff_scenery_class() : 0;
+  const bool ff = ffClass == 1 || (ffClass == 2 && ff_sway_far(dev));
+  if (ff && ffClass == 2) ++g_ffSwayFar;
+  if (ff && !g_vsUnbound) g_vsUnbound = SUCCEEDED(o.SetVertexShader(dev, nullptr));
+  else if (!ff && g_vsUnbound && g_curVS) {
+    o.SetVertexShader(dev, static_cast<IDirect3DVertexShader9*>(g_curVS));
+    g_vsUnbound = false;
+  }
+  const bool litOff = ff && g_lighting && SUCCEEDED(o.SetRenderState(dev, D3DRS_LIGHTING, FALSE));   // no normals
+  if (ff) ++g_ffDraws;
   const HRESULT hr = draw();
+  if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
   if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
@@ -1843,12 +1951,16 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     wchar_t fol[16];
     if (GetEnvironmentVariableW(L"RBRRTX_FOLIAGE", fol, 16)) g_foliageMode = std::clamp(_wtoi(fol), 0, 2);
     if (GetEnvironmentVariableW(L"RBRRTX_DUST", fol, 16)) g_dustKeep = static_cast<unsigned>(std::clamp(_wtoi(fol), 0, 100));
+    if (GetEnvironmentVariableW(L"RBRRTX_FF", fol, 16)) g_ffMode = g_ffBase = std::clamp(_wtoi(fol), 0, 2);
+    if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = (std::max)(0.0f, static_cast<float>(_wtof(fol)));
     if (GetEnvironmentVariableW(L"RBRRTX_ALPHAREF", fol, 16)) g_cutoutRef = static_cast<DWORD>(std::clamp(_wtoi(fol), 1, 255));
     const DWORD hv = GetEnvironmentVariableW(L"RBRRTX_HARVEST", fol, 16);
     g_harvestUsage = hv > 0 && !(hv < 16 && wcscmp(fol, L"0") == 0);
     wchar_t xf[8];
     if (GetEnvironmentVariableW(L"RBRRTX_XF_MODE", xf, 8)) g_testMode = std::clamp(_wtoi(xf), 0, 3);
     wchar_t rad[64];
+    if (GetEnvironmentVariableW(L"RBRRTX_SUN_MAX_ELEV", rad, 64)) g_sunMaxElev = std::clamp(static_cast<float>(_wtof(rad)), 5.0f, 90.0f);
+    if (GetEnvironmentVariableW(L"RBRRTX_SUN_FALLBACK", rad, 64)) swscanf_s(rad, L"%f,%f", &g_sunFallbackAz, &g_sunFallbackEl);
     if (GetEnvironmentVariableW(L"RBRRTX_SUN_RADIANCE", rad, 64))
       swscanf_s(rad, L"%f,%f,%f", &g_sunRadiance[0], &g_sunRadiance[1], &g_sunRadiance[2]);
     load_vso_hashes();
