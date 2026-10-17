@@ -1293,7 +1293,10 @@ struct CullCfg {
   bool enabled = false;
   std::vector<std::wstring> classes = { L"Sway", L"ObjPos", L"IO", L"RLSingleTexture.vso", L"RLDouble" };
   float offscreenFar = 100.0f;                 // outside the view and farther than this: culled
-  float visibleFar = 0.0f;                     // inside the view and farther than this: culled (0 = never)
+  float visibleFar = 0.0f;                     // inside the view: only beyond this distance (0 = never)
+  float visibleMaxPct = 0.0f;                  // ...and only if smaller on screen than this % of its height (0 = any size)
+  // Visible culling never touches ground/road: only these classes (Hualapai 2026-10-17: culled RLDouble = road gone).
+  std::vector<std::wstring> visibleClasses = { L"Sway", L"ObjPos", L"IO", L"RLSingleTexture.vso" };
   float keepRadius = 30.0f;                    // never cull within this distance of the car
   float hysteresis = 0.1f;
   float frustumMargin = 5.0f;                  // metres added to the sphere for the view test
@@ -1302,10 +1305,11 @@ CullCfg g_cull;
 struct CullEntry { float c[3] = {}, r = 0; bool valid = false, culled = false; unsigned lastFrame = 0; };
 std::unordered_map<uint64_t, CullEntry> g_cullCache;
 std::unordered_map<const void*, unsigned> g_vbGen;          // bumped when the game creates a buffer at an address
-std::unordered_map<const ShaderInfo*, bool> g_cullClassCache;
+std::unordered_map<const ShaderInfo*, bool> g_cullClassCache, g_cullVisCache;
 UINT g_drawFirstVert = 0, g_drawNumVert = 0;                 // set by the draw hooks (0 = not cullable, e.g. UP draws)
 struct CullStats { unsigned considered = 0, offscreen = 0, visibleFar = 0, kept = 0, unreadable = 0, misses = 0;
-                   unsigned dist[5] = {}; } g_cs;               // dist buckets: <50, <100, <200, <400, >=400 m
+                   unsigned dist[5] = {};                       // dist buckets: <50, <100, <200, <400, >=400 m
+                   unsigned size[5] = {}; } g_cs;               // visible candidates by screen size: <0.5, <1, <2, <5, >=5 %
 unsigned g_csFrames = 0;
 
 std::vector<std::wstring> split_list(const std::wstring& v) {
@@ -1324,6 +1328,8 @@ std::vector<std::wstring> split_list(const std::wstring& v) {
 void cull_set(const std::wstring& k, const std::wstring& v) {
   if (k == L"enabled") g_cull.enabled = _wtoi(v.c_str()) != 0 || !_wcsicmp(v.c_str(), L"true");
   else if (k == L"classes") { g_cull.classes = split_list(v); g_cullClassCache.clear(); }
+  else if (k == L"visible_classes") { g_cull.visibleClasses = split_list(v); g_cullVisCache.clear(); }
+  else if (k == L"visible_max_screen_pct") g_cull.visibleMaxPct = static_cast<float>(_wtof(v.c_str()));
   else if (k == L"offscreen_far_m") g_cull.offscreenFar = static_cast<float>(_wtof(v.c_str()));
   else if (k == L"visible_far_m") g_cull.visibleFar = static_cast<float>(_wtof(v.c_str()));
   else if (k == L"keep_radius_m") g_cull.keepRadius = static_cast<float>(_wtof(v.c_str()));
@@ -1336,6 +1342,7 @@ void cull_set(const std::wstring& k, const std::wstring& v) {
 void cull_load() {
   g_cull = CullCfg();
   g_cullClassCache.clear();
+  g_cullVisCache.clear();
   wchar_t path[MAX_PATH * 2] = {};
   rbrrtx_config_path(L"RBRRTX_CULLING", L"culling.ini", path, MAX_PATH * 2);
   wchar_t body[4096];
@@ -1353,22 +1360,36 @@ void cull_load() {
 void cull_log_settings(const wchar_t* why) {
   std::wstring cls;
   for (const auto& c : g_cull.classes) cls += (cls.empty() ? L"" : L",") + c;
-  clog(L"culling (%s): %s, classes %s, off-screen beyond %.0f m, visible beyond %s, keep radius %.0f m, hysteresis %.2f",
-       why, g_cull.enabled ? L"ON" : L"off", cls.c_str(), g_cull.offscreenFar,
+  std::wstring vcls;
+  for (const auto& c : g_cull.visibleClasses) vcls += (vcls.empty() ? L"" : L",") + c;
+  clog(L"culling (%s): %s, classes %s, off-screen beyond %.0f m, visible (%s) beyond %s if under %.1f %% of the screen, keep radius %.0f m, hysteresis %.2f",
+       why, g_cull.enabled ? L"ON" : L"off", cls.c_str(), g_cull.offscreenFar, vcls.c_str(),
        g_cull.visibleFar > 0 ? std::to_wstring(static_cast<int>(g_cull.visibleFar)).append(L" m").c_str() : L"never",
-       g_cull.keepRadius, g_cull.hysteresis);
+       g_cull.visibleMaxPct, g_cull.keepRadius, g_cull.hysteresis);
 }
 
 void cull_log_stats() {
   if (!g_csFrames || !g_cs.considered) { g_cs = {}; g_csFrames = 0; return; }
   const double n = g_csFrames;
   clog(L"  culling %s: per frame %.1f considered, %.1f culled off-screen, %.1f culled visible-far, %.1f kept near car; "
-       L"distances <50/<100/<200/<400/more m: %.1f/%.1f/%.1f/%.1f/%.1f; cache %zu ranges (%u new, %u unreadable)",
+       L"distances <50/<100/<200/<400/more m: %.1f/%.1f/%.1f/%.1f/%.1f; visible candidates by screen size <0.5/<1/<2/<5/more %%: "
+       L"%.1f/%.1f/%.1f/%.1f/%.1f; cache %zu ranges (%u new, %u unreadable)",
        g_cull.enabled ? L"ON" : L"off (counting only)", g_cs.considered / n, g_cs.offscreen / n, g_cs.visibleFar / n,
        g_cs.kept / n, g_cs.dist[0] / n, g_cs.dist[1] / n, g_cs.dist[2] / n, g_cs.dist[3] / n, g_cs.dist[4] / n,
+       g_cs.size[0] / n, g_cs.size[1] / n, g_cs.size[2] / n, g_cs.size[3] / n, g_cs.size[4] / n,
        g_cullCache.size(), g_cs.misses, g_cs.unreadable);
   g_cs = {};
   g_csFrames = 0;
+}
+
+bool cull_visible_class() {
+  if (!g_curInfo) return false;
+  auto it = g_cullVisCache.find(g_curInfo);
+  if (it != g_cullVisCache.end()) return it->second;
+  bool hit = false;
+  for (const auto& part : g_cull.visibleClasses) if (g_curInfo->name.find(part) != std::wstring::npos) { hit = true; break; }
+  g_cullVisCache[g_curInfo] = hit;
+  return hit;
 }
 
 bool cull_class() {
@@ -1486,7 +1507,13 @@ bool cull_draw(IDirect3DDevice9* dev) {
   const bool offscreen = outside_view(c, r + g_cull.frustumMargin);
   bool cull = false;
   if (offscreen && g_cull.offscreenFar > 0) cull = dist > g_cull.offscreenFar * (e->culled ? back : 1.0f);
-  if (!offscreen && g_cull.visibleFar > 0) cull = dist > g_cull.visibleFar * (e->culled ? back : 1.0f);
+  if (!offscreen && g_cull.visibleFar > 0 && cull_visible_class()) {
+    // On-screen size: sphere diameter as % of the screen height = 100 * r / dist * P._22 (P._22 = 1 / tan(fovY / 2)).
+    const float pct = 100.0f * r / (std::max)(dist, 1.0f) * std::fabs(g_P._22);
+    const bool tiny = g_cull.visibleMaxPct <= 0 || pct < g_cull.visibleMaxPct * (e->culled ? 1.0f / back : 1.0f);
+    cull = tiny && dist > g_cull.visibleFar * (e->culled ? back : 1.0f);
+    ++g_cs.size[pct < 0.5f ? 0 : pct < 1 ? 1 : pct < 2 ? 2 : pct < 5 ? 3 : 4];
+  }
   if (!g_cull.enabled) return false;
   e->culled = cull;
   if (cull) { if (offscreen) ++g_cs.offscreen; else ++g_cs.visibleFar; }
