@@ -4,9 +4,10 @@
 // tester's on-screen keyboard lost the game's focus. A key only counts while the game window has the focus (the
 // proxy reads the keyboard globally, so typing elsewhere must not toggle anything) and while neither Ctrl nor Alt
 // is held (Alt+X opens Remix; other plugins use combos). Quick taps between two frames are caught too.
+// Exception: a key written as Alt+<key> fires only while Alt is held (sun brightness Alt+H / Alt+N, user 2026-10-17).
 //
 // keys.ini:  [keys]  <action> = <key>   key = a letter or digit, F1..F24, a name from kNames below, 0x<VK hex>,
-//            or none (action off). Missing file or entry = default.
+//            optionally with an Alt+ prefix, or none (action off). Missing file or entry = default.
 #include "common.hpp"
 #include <cwchar>
 #include <cwctype>
@@ -14,6 +15,7 @@
 namespace {
 
 struct Action { const wchar_t* ini; int vk; const wchar_t* label; };
+constexpr int kAlt = 0x1000;                                 // in Action::vk: the key needs Alt held
 
 // Order = RbrKey enum in common.hpp.
 Action g_actions[RBRKEY_COUNT] = {
@@ -31,6 +33,8 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
   {L"experiment", 'K', L"performance experiment run"},
   {L"culling", 'M', L"distance culling on/off"},
+  {L"sun_brighter", kAlt | 'H', L"sun brightness +10 %"},
+  {L"sun_dimmer", kAlt | 'N', L"sun brightness -10 %"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
@@ -59,6 +63,10 @@ int parse_key(const wchar_t* s) {
   for (size_t n = wcslen(v); n > 0 && (v[n - 1] == L' ' || v[n - 1] == L'\t'); --n) v[n - 1] = 0;
   if (!v[0]) return -1;
   if (!_wcsicmp(v, L"none")) return 0;
+  if (!_wcsnicmp(v, L"Alt+", 4)) {
+    const int k = parse_key(v + 4);
+    return k > 0 && k < kAlt ? (kAlt | k) : -1;
+  }
   if (!v[1] && iswalnum(v[0])) return static_cast<int>(towupper(v[0]));   // A..Z, 0..9 = their VK codes
   if ((v[0] == L'F' || v[0] == L'f') && iswdigit(v[1])) {
     int n = _wtoi(v + 1);
@@ -73,6 +81,11 @@ int parse_key(const wchar_t* s) {
 }
 
 void name_of(int vk, wchar_t* out, size_t size) {
+  if (vk & kAlt) {
+    wcscpy_s(out, size, L"Alt+");
+    name_of(vk & 0xFF, out + 4, size - 4);
+    return;
+  }
   if (vk == 0) { wcscpy_s(out, size, L"none"); return; }
   if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { swprintf_s(out, size, L"%c", vk); return; }
   if (vk >= VK_F1 && vk <= VK_F24) { swprintf_s(out, size, L"F%d", vk - VK_F1 + 1); return; }
@@ -125,21 +138,27 @@ void rbrrtx_keys_load() {
   rbrrtx_log_to(L"rbrrtx_comp.log", L"keys (%s): %s", found ? path : L"defaults, no keys.ini", summary);
 }
 
+// Ctrl never held; Alt held exactly when the key asks for it.
+bool modifiers_ok(int code) {
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) return false;
+  return ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) == ((code & kAlt) != 0);
+}
+
 bool rbrrtx_key_pressed(int action) {
   if (action < 0 || action >= RBRKEY_COUNT || !g_actions[action].vk) return false;
-  const SHORT s = GetAsyncKeyState(g_actions[action].vk);
+  const SHORT s = GetAsyncKeyState(g_actions[action].vk & 0xFF);
   const bool down = (s & 0x8000) != 0;
   // Edge, or a tap that started and ended between two frames (low bit = pressed since the last query).
   const bool fire = !g_prev[action] && (down || (s & 1));
   g_prev[action] = down;
   if (!fire || !game_has_focus()) return false;
-  return !(GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_MENU) & 0x8000);
+  return modifiers_ok(g_actions[action].vk);
 }
 
 bool rbrrtx_key_held(int action) {
   if (action < 0 || action >= RBRKEY_COUNT || !g_actions[action].vk) return false;
-  if (!(GetAsyncKeyState(g_actions[action].vk) & 0x8000) || !game_has_focus()) return false;
-  return !(GetAsyncKeyState(VK_CONTROL) & 0x8000) && !(GetAsyncKeyState(VK_MENU) & 0x8000);
+  if (!(GetAsyncKeyState(g_actions[action].vk & 0xFF) & 0x8000) || !game_has_focus()) return false;
+  return modifiers_ok(g_actions[action].vk);
 }
 
 const wchar_t* rbrrtx_key_name(int action) {

@@ -254,11 +254,15 @@ bool g_apiOk = false, g_sunWanted = true, g_sunOn = true, g_sunDrawn = false;
 remixapi_LightHandle g_sun = nullptr;
 float g_sunDir[3] = {}, g_sunRadiance[3] = { 6.0f, 5.7f, 5.2f };
 unsigned g_sunCreates = 0;
-// Debug sun (user 2026-10-16, judging normal maps needs low, raking light): Alt+Home switches to a manual sun that
-// starts where the game's sun is; while it is on, hold Alt+Page Up/Page Down to raise/lower it and Alt+Insert/End to
-// turn it around (0.5 degrees per frame). Alt+Home again = the game's sun. Only the light moves, not the sky picture.
+// Debug sun (user 2026-10-16, judging normal maps needs low, raking light): H (keys.ini) switches to a manual sun that
+// starts where the game's sun is; while it is on, hold ; / ' to lower/raise it and [ / ] to turn it around (0.5
+// degrees per frame). H again = the game's sun. Night (user 2026-10-17): below the horizon down to -18 degrees; the
+// sun light fades out between +2 and -4 degrees and Remix's sky light (rtx.skyBrightness) dims to 1 % at -12.
 bool g_sunManual = false, g_sunMoving = false;
 float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon
+float g_sunFade = 1.0f;                                // sun radiance factor of the light currently created
+float g_sunScale = 1.0f;                               // live brightness (Alt+H / Alt+N), times g_sunRadiance
+float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from the conf (-1 = not read) / last set
 
 struct Stats {
   unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace;
@@ -420,8 +424,16 @@ void update_sun() {
   const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
   if (len < 1e-4f) return;
   for (float& v : d) v /= len;
+  const float elev = std::asin(std::clamp(-d[1], -1.0f, 1.0f)) * 57.2958f;
+  const float fade = std::clamp((elev + 4.0f) / 6.0f, 0.0f, 1.0f);   // twilight: full at +2, gone at -4 degrees
+  if (fade <= 0.0f) {                                  // night: no sun light at all
+    if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
+    g_sunFade = 0.0f;
+    return;
+  }
   const float cosDelta = d[0] * g_sunDir[0] + d[1] * g_sunDir[1] + d[2] * g_sunDir[2];
-  if (!g_sun || cosDelta < 0.99999f) {                 // ~0.25 degrees: lights are immutable, so recreate
+  if (!g_sun || cosDelta < 0.99999f || std::fabs(fade - g_sunFade) > 0.02f) {   // ~0.25 degrees: lights are immutable, so recreate
+    g_sunFade = fade;
     if (g_sun) g_api.DestroyLight(g_sun);
     g_sun = nullptr;
     remixapi_LightInfoDistantEXT distant = {};
@@ -433,19 +445,65 @@ void update_sun() {
     light.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     light.pNext = &distant;
     light.hash = 0x524252'53554E00ULL;                  // "RBRSUN"
-    light.radiance = { g_sunRadiance[0], g_sunRadiance[1], g_sunRadiance[2] };
+    const float k = fade * g_sunScale;
+    light.radiance = { g_sunRadiance[0] * k, g_sunRadiance[1] * k, g_sunRadiance[2] * k };
     const remixapi_ErrorCode err = g_api.CreateLight(&light, &g_sun);
     std::memcpy(g_sunDir, d, sizeof(d));
     if (++g_sunCreates <= 20 || err != REMIXAPI_ERROR_CODE_SUCCESS)
       clog(L"sun: %s light, direction (%.3f, %.3f, %.3f), radiance (%.2f, %.2f, %.2f), error %d",
            g_sunCreates == 1 ? L"created" : L"re-created", d[0], d[1], d[2],
-           g_sunRadiance[0], g_sunRadiance[1], g_sunRadiance[2], static_cast<int>(err));
+           g_sunRadiance[0] * k, g_sunRadiance[1] * k, g_sunRadiance[2] * k, static_cast<int>(err));
     if (err != REMIXAPI_ERROR_CODE_SUCCESS) { g_sun = nullptr; return; }
   }
   g_api.DrawLightInstance(g_sun);
 }
 
 void destroy_sun(const wchar_t* why);
+
+// Night with the debug sun: Remix lights the scene from the sky too, so the sky light dims with the sun (1 at the
+// horizon, 1 % at -12 degrees). Auto exposure would brighten the dark scene back up (evMin 0 .. evMax 4 = up to 16x,
+// test 2026-10-17: a grey night "lit from below"), so the lower exposure limit rises with the night to evMax - 1.
+// Base values from the conf Remix reads (last line wins); all go back when the debug sun is switched off. Set through
+// the API like K, so they show as User Settings changes.
+float conf_float(const char* name, float dflt) {
+  wchar_t path[MAX_PATH];
+  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
+  std::ifstream in(path);
+  float v = dflt;
+  for (std::string l; std::getline(in, l);) {
+    const size_t k = l.find(name);
+    if (k == std::string::npos || l.find_first_not_of(" \t") != k || l.find_first_of(" \t=", k) != k + std::strlen(name)) continue;
+    const size_t eq = l.find('=', k);
+    if (eq != std::string::npos) v = static_cast<float>(std::atof(l.c_str() + eq + 1));
+  }
+  return v;
+}
+
+void debug_sky() {
+  static float evMinBase = 0.0f, evMax = 4.0f, evMinSet = -100.0f;
+  if (!g_apiOk || !g_api.SetConfigVariable) return;
+  if (g_skyBase < 0.0f) {
+    g_skyBase = conf_float("rtx.skyBrightness", 1.0f);
+    evMinBase = conf_float("rtx.autoExposure.evMinValue", -2.0f);
+    evMax = conf_float("rtx.autoExposure.evMaxValue", 5.0f);
+  }
+  const float f = g_sunManual ? std::clamp((g_sunEl + 12.0f) / 12.0f, 0.01f, 1.0f) : 1.0f;
+  if (g_skySet < 0.0f && f >= 1.0f) return;            // never touched: leave the options alone
+  char v[32];
+  const float sky = g_skyBase * f;
+  if (std::fabs(sky - g_skySet) >= 0.01f * g_skyBase) {
+    sprintf_s(v, "%.4f", sky);
+    g_api.SetConfigVariable("rtx.skyBrightness", v);
+    g_skySet = sky;
+  }
+  const float night = (1.0f - f) / 0.99f;              // 0 at the horizon .. 1 at -12 degrees
+  const float evMin = evMinBase + ((std::max)(evMinBase, evMax - 1.0f) - evMinBase) * night;
+  if (std::fabs(evMin - evMinSet) >= 0.05f) {
+    sprintf_s(v, "%.3f", evMin);
+    g_api.SetConfigVariable("rtx.autoExposure.evMinValue", v);
+    evMinSet = evMin;
+  }
+}
 
 // ---------------------------------------------------------------- per draw
 
@@ -977,6 +1035,18 @@ void exp_frame() {
   if (rbrrtx_key_pressed(RBRKEY_EXPERIMENT)) {
     if (g_expStep >= 0) { exp_finish(L"aborted (key)"); return; }
     exp_load();
+    // A Remix option a step changes but [baseline] does not name would stay changed after the run (2026-10-17: a
+    // red-glow run left NRC off, emissives 0, atmosphere and bloom off until restart). Refuse such a file.
+    std::string missing;
+    for (const auto& st : g_exp)
+      for (const auto& kv : st.sets)
+        if (kv.first.rfind("rtx.", 0) == 0 && missing.find(kv.first) == std::string::npos &&
+            std::none_of(g_expBase.begin(), g_expBase.end(), [&](const auto& b) { return b.first == kv.first; }))
+          missing += (missing.empty() ? "" : ", ") + kv.first;
+    if (!missing.empty()) {
+      clog(L"experiments: NOT started: add these to [baseline] with their normal values: %S", missing.c_str());
+      return;
+    }
     if (!g_apiOk) clog(L"experiments: Remix API not available, option steps will do nothing (proxy skips still work)");
     g_expOrder.clear();
     g_expMs.clear();
@@ -1027,7 +1097,8 @@ void end_frame(IDirect3DDevice9* dev) {
              kSun = rbrrtx_key_pressed(RBRKEY_SUN), kFoliage = rbrrtx_key_pressed(RBRKEY_FOLIAGE),
              kDust = rbrrtx_key_pressed(RBRKEY_DUST), kGlass = rbrrtx_key_pressed(RBRKEY_WINDSCREEN),
              kSky = rbrrtx_key_pressed(RBRKEY_SKY), kDebugSun = rbrrtx_key_pressed(RBRKEY_DEBUG_SUN);
-  wchar_t why[128];
+  const bool kBrighter = rbrrtx_key_pressed(RBRKEY_SUN_BRIGHTER), kDimmer = rbrrtx_key_pressed(RBRKEY_SUN_DIMMER);
+  wchar_t why[256];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
     g_dumpFrames = 1;                                  // the whole next frame, ended at its end_frame
@@ -1071,11 +1142,23 @@ void end_frame(IDirect3DDevice9* dev) {
     log_frame(why);
   }
   ++g_dustFrames;
+  if (kBrighter || kDimmer) {                          // sun brightness live (Alt+H / Alt+N), game or debug sun
+    g_sunScale = std::clamp(g_sunScale * (kBrighter ? 1.1f : 1.0f / 1.1f), 0.05f, 20.0f);
+    g_sunFade = -1.0f;                                 // forces the light to be re-created with the new radiance
+    swprintf_s(why, L"%s: sun brightness x%.2f = radiance (%.2f, %.2f, %.2f); keep it: -SunRadiance %.2f,%.2f,%.2f",
+               rbrrtx_key_name(kBrighter ? RBRKEY_SUN_BRIGHTER : RBRKEY_SUN_DIMMER), g_sunScale,
+               g_sunRadiance[0] * g_sunScale, g_sunRadiance[1] * g_sunScale, g_sunRadiance[2] * g_sunScale,
+               g_sunRadiance[0] * g_sunScale, g_sunRadiance[1] * g_sunScale, g_sunRadiance[2] * g_sunScale);
+    log_frame(why);
+  }
   if (kDebugSun) {                                     // manual debug sun on/off (g_sunManual)
     g_sunManual = !g_sunManual;
     if (g_sunManual && g_sunDir[1] != 0.0f) {          // start from the sun currently drawn
       g_sunEl = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f;
       g_sunAz = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
+      // Some stages/replays give c41 = (0,-1,0), a sun straight overhead: there [ ] (azimuth) changes nothing, so
+      // start from a raking 30 degrees instead (Santa Lucia replay 2026-10-17).
+      if (g_sunEl > 80.0f) g_sunEl = 30.0f;
     }
     swprintf_s(why, L"%s: %s sun (azimuth %.1f, elevation %.1f)", rbrrtx_key_name(RBRKEY_DEBUG_SUN), g_sunManual ? L"manual" : L"game", g_sunAz, g_sunEl);
     log_frame(why);
@@ -1084,14 +1167,16 @@ void end_frame(IDirect3DDevice9* dev) {
     const float dEl = (rbrrtx_key_held(RBRKEY_SUN_UP) ? 0.5f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_DOWN) ? 0.5f : 0.0f);
     const float dAz = (rbrrtx_key_held(RBRKEY_SUN_RIGHT) ? 0.5f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_LEFT) ? 0.5f : 0.0f);
     const bool moving = dEl != 0.0f || dAz != 0.0f;
-    g_sunEl = std::clamp(g_sunEl + dEl, -10.0f, 90.0f);
+    g_sunEl = std::clamp(g_sunEl + dEl, -18.0f, 90.0f);
     g_sunAz = std::fmod(g_sunAz + dAz + 540.0f, 360.0f) - 180.0f;
     if (!moving && g_sunMoving) {                      // log where the sun was left
-      swprintf_s(why, L"debug sun moved to azimuth %.1f, elevation %.1f", g_sunAz, g_sunEl);
+      swprintf_s(why, L"debug sun moved to azimuth %.1f, elevation %.1f%s", g_sunAz, g_sunEl,
+                 g_sunEl <= -4.0f ? L" (night: no sun light)" : g_sunEl < 2.0f ? L" (twilight)" : L"");
       log_frame(why);
     }
     g_sunMoving = moving;
   }
+  debug_sky();
   g_frameCam = false;
   const bool cameraNow = g_st.xformed > 0;
   if (cameraNow && g_detailFrames < 3) { ++g_detailFrames; log_frame(L"first frames with a camera"); }

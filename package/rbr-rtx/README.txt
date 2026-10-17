@@ -29,7 +29,8 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original (for comparison)
   U        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
-           [ / ] to turn it around. Only the lighting moves, not the sky.
+           [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
+  Alt+H / Alt+N  sun brighter / dimmer (10 % per press)
   M        distance culling on/off: far geometry outside the view is left out of path tracing (rbr-rtx\config\culling.ini)
   K        performance experiment run (rbr-rtx\config\experiments.ini; results in rbr-rtx\logs)
   P        test builds: record everything drawn in the next frame into rbr-rtx\logs (for bug reports)

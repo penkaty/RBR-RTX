@@ -34,6 +34,10 @@ int wmain(int argc, wchar_t** argv) {
   fails += check(L"Numpad5", VK_NUMPAD5);
   fails += check(L"garbage", -1);
   fails += check(L"", -1);
+  fails += check(L"Alt+H", 0x1000 | 'H');
+  fails += check(L"alt+F5", 0x1000 | VK_F5);
+  fails += check(L"Alt+", -1);
+  fails += check(L"Alt+Alt+H", -1);
   for (int i = 1; i < argc; ++i) {           // each argument: a keys.ini to load and print
     SetEnvironmentVariableW(L"RBRRTX_KEYS", argv[i]);
     rbrrtx_keys_load();
