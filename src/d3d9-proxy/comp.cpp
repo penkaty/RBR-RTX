@@ -835,6 +835,7 @@ struct ExpStep {
   std::wstring name;
   std::vector<std::pair<std::string, std::string>> sets;
   std::vector<std::wstring> skip;
+  std::vector<std::wstring> solid;                           // alpha test off for these shader name parts
 };
 std::vector<ExpStep> g_exp;                                  // [0] = baseline (no changes), then the ini steps
 std::vector<std::pair<std::string, std::string>> g_expBase;  // [baseline] option values, restored around every step
@@ -844,9 +845,9 @@ size_t g_expPos = 0;                                         // index in g_expOr
 std::vector<int> g_expOrder;                                 // baseline, steps..., baseline
 std::vector<double> g_expMs;                                 // result per g_expOrder entry
 LARGE_INTEGER g_expStepStart = {}, g_expMeasureStart = {}, g_qpf = {};
-unsigned g_expFrames = 0, g_expSkipped = 0;
+unsigned g_expFrames = 0, g_expSkipped = 0, g_expSolid = 0;
 bool g_expMeasuring = false;
-std::unordered_map<const ShaderInfo*, bool> g_expSkipCache;
+std::unordered_map<const ShaderInfo*, bool> g_expSkipCache, g_expSolidCache;
 
 std::string narrow(const std::wstring& w) {                  // option names/values are ASCII
   std::string s;
@@ -883,12 +884,13 @@ void exp_load() {
         g_expBase.emplace_back(narrow(k), narrow(v));
       } else if (k == L"name") {
         step.name = v;
-      } else if (k == L"skip") {
+      } else if (k == L"skip" || k == L"solid") {
+        auto& list = k == L"skip" ? step.skip : step.solid;
         for (size_t a = 0; a <= v.size();) {
           size_t b = v.find(L',', a);
           if (b == std::wstring::npos) b = v.size();
           const std::wstring part = trim(v.substr(a, b - a));
-          if (!part.empty()) step.skip.push_back(part);
+          if (!part.empty()) list.push_back(part);
           a = b + 1;
         }
       } else if (k.rfind(L"rtx.", 0) == 0) {
@@ -908,23 +910,27 @@ void exp_set(const std::string& k, const std::string& v) {
 void exp_apply(int step) {
   for (const auto& kv : g_expBase) exp_set(kv.first, kv.second);   // every step starts from the baseline
   g_expSkipCache.clear();
+  g_expSolidCache.clear();
   g_expStep = step;
   if (step < 0) return;
   for (const auto& kv : g_exp[step].sets) exp_set(kv.first, kv.second);
   QueryPerformanceCounter(&g_expStepStart);
   g_expMeasuring = false;
-  g_expFrames = g_expSkipped = 0;
+  g_expFrames = g_expSkipped = g_expSolid = 0;
 }
 
-bool exp_skip_draw() {
-  if (g_expStep <= 0 || !g_curInfo || g_exp[g_expStep].skip.empty()) return false;
-  auto it = g_expSkipCache.find(g_curInfo);
-  if (it != g_expSkipCache.end()) return it->second;
+bool exp_match(const std::vector<std::wstring>& parts, std::unordered_map<const ShaderInfo*, bool>& cache) {
+  if (g_expStep <= 0 || !g_curInfo || parts.empty()) return false;
+  auto it = cache.find(g_curInfo);
+  if (it != cache.end()) return it->second;
   bool hit = false;
-  for (const auto& part : g_exp[g_expStep].skip) if (g_curInfo->name.find(part) != std::wstring::npos) { hit = true; break; }
-  g_expSkipCache[g_curInfo] = hit;
+  for (const auto& part : parts) if (g_curInfo->name.find(part) != std::wstring::npos) { hit = true; break; }
+  cache[g_curInfo] = hit;
   return hit;
 }
+
+bool exp_skip_draw() { return g_expStep > 0 && exp_match(g_exp[g_expStep].skip, g_expSkipCache); }
+bool exp_solid_draw() { return g_expStep > 0 && exp_match(g_exp[g_expStep].solid, g_expSolidCache); }
 
 void exp_finish(const wchar_t* why) {
   exp_apply(-1);
@@ -969,8 +975,9 @@ void exp_frame() {
   const double ms = measured * 1000.0 / g_expFrames;
   g_expMs.push_back(ms);
   const ExpStep& s = g_exp[g_expStep];
-  clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden per frame", g_expPos + 1, g_expOrder.size(),
-       s.name.c_str(), ms, 1000.0 / ms, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames);
+  clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden, %.1f made solid per frame", g_expPos + 1,
+       g_expOrder.size(), s.name.c_str(), ms, 1000.0 / ms, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames,
+       static_cast<double>(g_expSolid) / g_expFrames);
   if (++g_expPos >= g_expOrder.size()) { exp_finish(L"done, options back at baseline"); return; }
   exp_apply(g_expOrder[g_expPos]);
 }
@@ -1309,7 +1316,14 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     clog(L"    -> proj [3][3] %.3f [2][3] %.3f, zw %lu, colour write 0x%lx, occlusion queries open %d, UI trigger at draw %u",
          p._44, p._34, zw, cw, g_oqActive, g_st.uiTriggerAt);
   }
+  bool atOff = false;                                  // performance experiment: this class drawn without alpha test
+  if (exp_solid_draw()) {
+    DWORD at = 0;
+    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
+    if (at && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) { atOff = true; ++g_expSolid; }
+  }
   const HRESULT hr = draw();
+  if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
   if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
   if (vpChanged) dev->lpVtbl->SetViewport(dev, &vp);
