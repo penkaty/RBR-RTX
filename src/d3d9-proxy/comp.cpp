@@ -182,6 +182,7 @@ struct Orig {
   decltype(IDirect3DDevice9Vtbl::DrawPrimitiveUP) DrawPrimitiveUP;
   decltype(IDirect3DDevice9Vtbl::DrawIndexedPrimitiveUP) DrawIndexedPrimitiveUP;
   decltype(IDirect3DDevice9Vtbl::CreateQuery) CreateQuery;
+  decltype(IDirect3DDevice9Vtbl::CreateVertexBuffer) CreateVertexBuffer;
   decltype(IDirect3DQuery9Vtbl::Issue) QueryIssue;
   decltype(IDirect3DQuery9Vtbl::Release) QueryRelease;
 } o{};
@@ -194,6 +195,8 @@ float g_c[256][4] = {};
 bool g_cset[256] = {};
 bool g_haveCam = false, g_frameCam = false;
 D3DMATRIX g_V = {}, g_P = {};
+float g_carPos[3] = {};                               // last car draw's world position (culling keep radius)
+bool g_haveCar = false;
 DMat g_VPinv = {};
 void* g_curVS = nullptr;
 const ShaderInfo* g_curInfo = nullptr;
@@ -771,6 +774,10 @@ bool before_draw(IDirect3DDevice9* dev) {
   const bool oursVP = g_testMode == 0 || g_testMode == 1, oursW = g_testMode == 0 || g_testMode == 2;
   if (oursVP) { set_xf(dev, 1, g_V); set_xf(dev, 2, g_P); } else { set_game_xf(dev, 1); set_game_xf(dev, 2); }
   if (oursW) set_xf(dev, 0, world); else set_game_xf(dev, 0);
+  if (g_curInfo && (g_curInfo->flags & SH_CAR)) {      // the car's position: centre of the culling keep radius
+    g_carPos[0] = world._41; g_carPos[1] = world._42; g_carPos[2] = world._43;
+    g_haveCar = true;
+  }
   ++g_st.xformed;
   return apply_material_hint(dev);
 }
@@ -831,6 +838,14 @@ void log_frame(const wchar_t* why) {
 // measure_seconds. Baseline first and last (drift check); the log gets one line per step and a summary. K again =
 // abort. Afterwards every option is back at its [baseline] value. Options touched here land in the same layer as the
 // Alt+X user settings: do not "Save Settings" during a run.
+// Distance culling (defined further down, before comp_draw).
+void cull_set(const std::wstring& k, const std::wstring& v);
+void cull_load();
+void cull_log_settings(const wchar_t* why);
+void cull_log_stats();
+void cull_frame_tick();
+bool cull_toggle();
+
 struct ExpStep {
   std::wstring name;
   std::vector<std::pair<std::string, std::string>> sets;
@@ -893,7 +908,7 @@ void exp_load() {
           if (!part.empty()) list.push_back(part);
           a = b + 1;
         }
-      } else if (k.rfind(L"rtx.", 0) == 0) {
+      } else if (k.rfind(L"rtx.", 0) == 0 || k.rfind(L"cull.", 0) == 0) {
         step.sets.emplace_back(narrow(k), narrow(v));
       }
     }
@@ -904,10 +919,15 @@ void exp_load() {
 }
 
 void exp_set(const std::string& k, const std::string& v) {
+  if (k.rfind("cull.", 0) == 0) {                          // proxy culling setting, e.g. cull.offscreen_far_m = 100
+    cull_set(std::wstring(k.begin() + 5, k.end()), std::wstring(v.begin(), v.end()));
+    return;
+  }
   if (g_apiOk && g_api.SetConfigVariable) g_api.SetConfigVariable(k.c_str(), v.c_str());
 }
 
 void exp_apply(int step) {
+  cull_load();                                               // culling back to culling.ini, then the step's cull.* lines
   for (const auto& kv : g_expBase) exp_set(kv.first, kv.second);   // every step starts from the baseline
   g_expSkipCache.clear();
   g_expSolidCache.clear();
@@ -984,6 +1004,13 @@ void exp_frame() {
 
 void end_frame(IDirect3DDevice9* dev) {
   exp_frame();
+  cull_frame_tick();
+  if (rbrrtx_key_pressed(RBRKEY_CULLING)) {
+    wchar_t w[64];
+    swprintf_s(w, L"%s: culling %s", rbrrtx_key_name(RBRKEY_CULLING), cull_toggle() ? L"ON" : L"off");
+    log_frame(w);
+    cull_log_settings(L"key");
+  }
   // Hotkeys (keys.cpp, rbr-rtx\config\keys.ini; defaults P O L J U I N H [ ] ; '). Until 2026-10-17 they were
   // Scroll Lock / Pause with Ctrl/Alt/Shift, which compact keyboards do not have. Every key is read every frame.
   const bool kDump = rbrrtx_key_pressed(RBRKEY_DUMP), kLayer = rbrrtx_key_pressed(RBRKEY_LAYER),
@@ -1058,7 +1085,7 @@ void end_frame(IDirect3DDevice9* dev) {
   g_frameCam = false;
   const bool cameraNow = g_st.xformed > 0;
   if (cameraNow && g_detailFrames < 3) { ++g_detailFrames; log_frame(L"first frames with a camera"); }
-  else if (g_frame < 3 || g_frame % 600 == 0) log_frame(L"periodic");
+  else if (g_frame < 3 || g_frame % 600 == 0) { log_frame(L"periodic"); cull_log_stats(); }
   g_st = {};
   g_hinted = 0;
   g_byShader.clear();
@@ -1252,6 +1279,220 @@ bool is_midscene_quad(IDirect3DDevice9* dev) {
   return true;
 }
 
+// ---------------------------------------------------------------- distance culling (culling.ini, key M, K steps)
+// K runs 2026-10-17 (Chirdonhead forest): foliage costs ~2.9 ms of ~15 ms, mostly by being in the scene (~1.8 ms; its
+// alpha test only ~1.1), ground ~2.1, objects ~1.1. RBR submits geometry the camera cannot see (behind, beside), which
+// Remix still traces for shadows, reflections and bounce light. Culling those far away costs little in the picture;
+// culling VISIBLE far geometry deletes it from the image, so that is a separate, optional threshold (default off).
+// Per draw: the bounding sphere of its vertex range is read ONCE from the vertex buffer (the Remix bridge client keeps
+// a full copy; a READONLY lock returns it without sending anything, lockable_buffer.h:192) and cached by
+// (buffer, generation, offset, stride, first vertex, count). Then each frame: sphere -> world (world-space RL*/Water
+// shaders: identity; others: W from wvp * (VP)^-1) -> distance to the car (never cull inside keep_radius_m) and a
+// frustum test. Two thresholds per decision: cull beyond X, bring back below X * (1 - hysteresis).
+struct CullCfg {
+  bool enabled = false;
+  std::vector<std::wstring> classes = { L"Sway", L"ObjPos", L"IO", L"RLSingleTexture.vso", L"RLDouble" };
+  float offscreenFar = 100.0f;                 // outside the view and farther than this: culled
+  float visibleFar = 0.0f;                     // inside the view and farther than this: culled (0 = never)
+  float keepRadius = 30.0f;                    // never cull within this distance of the car
+  float hysteresis = 0.1f;
+  float frustumMargin = 5.0f;                  // metres added to the sphere for the view test
+};
+CullCfg g_cull;
+struct CullEntry { float c[3] = {}, r = 0; bool valid = false, culled = false; unsigned lastFrame = 0; };
+std::unordered_map<uint64_t, CullEntry> g_cullCache;
+std::unordered_map<const void*, unsigned> g_vbGen;          // bumped when the game creates a buffer at an address
+std::unordered_map<const ShaderInfo*, bool> g_cullClassCache;
+UINT g_drawFirstVert = 0, g_drawNumVert = 0;                 // set by the draw hooks (0 = not cullable, e.g. UP draws)
+struct CullStats { unsigned considered = 0, offscreen = 0, visibleFar = 0, kept = 0, unreadable = 0, misses = 0;
+                   unsigned dist[5] = {}; } g_cs;               // dist buckets: <50, <100, <200, <400, >=400 m
+unsigned g_csFrames = 0;
+
+std::vector<std::wstring> split_list(const std::wstring& v) {
+  std::vector<std::wstring> out;
+  for (size_t a = 0; a <= v.size();) {
+    size_t b = v.find(L',', a);
+    if (b == std::wstring::npos) b = v.size();
+    std::wstring p = v.substr(a, b - a);
+    const size_t s = p.find_first_not_of(L" \t"), e = p.find_last_not_of(L" \t");
+    if (s != std::wstring::npos) out.push_back(p.substr(s, e - s + 1));
+    a = b + 1;
+  }
+  return out;
+}
+
+void cull_set(const std::wstring& k, const std::wstring& v) {
+  if (k == L"enabled") g_cull.enabled = _wtoi(v.c_str()) != 0 || !_wcsicmp(v.c_str(), L"true");
+  else if (k == L"classes") { g_cull.classes = split_list(v); g_cullClassCache.clear(); }
+  else if (k == L"offscreen_far_m") g_cull.offscreenFar = static_cast<float>(_wtof(v.c_str()));
+  else if (k == L"visible_far_m") g_cull.visibleFar = static_cast<float>(_wtof(v.c_str()));
+  else if (k == L"keep_radius_m") g_cull.keepRadius = static_cast<float>(_wtof(v.c_str()));
+  else if (k == L"hysteresis") g_cull.hysteresis = std::clamp(static_cast<float>(_wtof(v.c_str())), 0.0f, 0.5f);
+  else if (k == L"frustum_margin_m") g_cull.frustumMargin = static_cast<float>(_wtof(v.c_str()));
+  else return;
+  for (auto& e : g_cullCache) e.second.culled = false;   // decisions restart under the new settings
+}
+
+void cull_load() {
+  g_cull = CullCfg();
+  g_cullClassCache.clear();
+  wchar_t path[MAX_PATH * 2] = {};
+  rbrrtx_config_path(L"RBRRTX_CULLING", L"culling.ini", path, MAX_PATH * 2);
+  wchar_t body[4096];
+  if (!GetPrivateProfileSectionW(L"culling", body, 4096, path)) return;
+  for (const wchar_t* line = body; *line; line += wcslen(line) + 1) {
+    std::wstring l = line;
+    const size_t eq = l.find(L'=');
+    if (eq == std::wstring::npos || l[0] == L';') continue;
+    auto trim = [](std::wstring s) { const size_t a = s.find_first_not_of(L" \t"), b = s.find_last_not_of(L" \t");
+                                      return a == std::wstring::npos ? std::wstring() : s.substr(a, b - a + 1); };
+    cull_set(trim(l.substr(0, eq)), trim(l.substr(eq + 1)));
+  }
+}
+
+void cull_log_settings(const wchar_t* why) {
+  std::wstring cls;
+  for (const auto& c : g_cull.classes) cls += (cls.empty() ? L"" : L",") + c;
+  clog(L"culling (%s): %s, classes %s, off-screen beyond %.0f m, visible beyond %s, keep radius %.0f m, hysteresis %.2f",
+       why, g_cull.enabled ? L"ON" : L"off", cls.c_str(), g_cull.offscreenFar,
+       g_cull.visibleFar > 0 ? std::to_wstring(static_cast<int>(g_cull.visibleFar)).append(L" m").c_str() : L"never",
+       g_cull.keepRadius, g_cull.hysteresis);
+}
+
+void cull_log_stats() {
+  if (!g_csFrames || !g_cs.considered) { g_cs = {}; g_csFrames = 0; return; }
+  const double n = g_csFrames;
+  clog(L"  culling %s: per frame %.1f considered, %.1f culled off-screen, %.1f culled visible-far, %.1f kept near car; "
+       L"distances <50/<100/<200/<400/more m: %.1f/%.1f/%.1f/%.1f/%.1f; cache %zu ranges (%u new, %u unreadable)",
+       g_cull.enabled ? L"ON" : L"off (counting only)", g_cs.considered / n, g_cs.offscreen / n, g_cs.visibleFar / n,
+       g_cs.kept / n, g_cs.dist[0] / n, g_cs.dist[1] / n, g_cs.dist[2] / n, g_cs.dist[3] / n, g_cs.dist[4] / n,
+       g_cullCache.size(), g_cs.misses, g_cs.unreadable);
+  g_cs = {};
+  g_csFrames = 0;
+}
+
+bool cull_class() {
+  if (!g_curInfo) return false;
+  auto it = g_cullClassCache.find(g_curInfo);
+  if (it != g_cullClassCache.end()) return it->second;
+  bool hit = false;
+  for (const auto& part : g_cull.classes) if (g_curInfo->name.find(part) != std::wstring::npos) { hit = true; break; }
+  g_cullClassCache[g_curInfo] = hit;
+  return hit;
+}
+
+// Object-space bounding sphere of the current draw's vertex range, read once and cached; nullptr if unreadable.
+CullEntry* cull_entry(IDirect3DDevice9* dev) {
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT offset = 0, stride = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) return nullptr;
+  const unsigned gen = g_vbGen[vb];
+  const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) * 0x9E3779B97F4A7C15ull) ^
+                       (static_cast<uint64_t>(gen) << 56) ^ (static_cast<uint64_t>(offset) << 40) ^
+                       (static_cast<uint64_t>(stride) << 32) ^ (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert;
+  CullEntry& e = g_cullCache[key];
+  if (e.valid || e.lastFrame == UINT_MAX) { vb->lpVtbl->Release(vb); return e.valid ? &e : nullptr; }
+  ++g_cs.misses;
+  e.lastFrame = UINT_MAX;                                     // "tried": an unreadable range is not retried
+  // Position element of stream 0 (FLOAT3/FLOAT4) from the vertex declaration.
+  int posOffset = -1;
+  IDirect3DVertexDeclaration9* decl = nullptr;
+  if (SUCCEEDED(dev->lpVtbl->GetVertexDeclaration(dev, &decl)) && decl) {
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+    UINT n = MAXD3DDECLLENGTH + 1;
+    if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n)))
+      for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i)
+        if (el[i].Stream == 0 && el[i].Usage == D3DDECLUSAGE_POSITION && el[i].UsageIndex == 0 &&
+            (el[i].Type == D3DDECLTYPE_FLOAT3 || el[i].Type == D3DDECLTYPE_FLOAT4)) posOffset = el[i].Offset;
+    decl->lpVtbl->Release(decl);
+  }
+  D3DVERTEXBUFFER_DESC desc = {};
+  void* data = nullptr;
+  const UINT start = offset + g_drawFirstVert * stride, bytes = g_drawNumVert * stride;
+  if (posOffset < 0 || stride < 12 || FAILED(vb->lpVtbl->GetDesc(vb, &desc)) || start + bytes > desc.Size ||
+      FAILED(vb->lpVtbl->Lock(vb, start, bytes, &data, D3DLOCK_READONLY)) || !data) {
+    ++g_cs.unreadable;
+    vb->lpVtbl->Release(vb);
+    return nullptr;
+  }
+  float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+  const uint8_t* p = static_cast<const uint8_t*>(data) + posOffset;
+  for (UINT i = 0; i < g_drawNumVert; ++i, p += stride) {
+    float v[3];
+    std::memcpy(v, p, sizeof(v));
+    for (int k = 0; k < 3; ++k) { lo[k] = (std::min)(lo[k], v[k]); hi[k] = (std::max)(hi[k], v[k]); }
+  }
+  vb->lpVtbl->Unlock(vb);
+  vb->lpVtbl->Release(vb);
+  float r2 = 0;
+  for (int k = 0; k < 3; ++k) { e.c[k] = 0.5f * (lo[k] + hi[k]); const float h = 0.5f * (hi[k] - lo[k]); r2 += h * h; }
+  e.r = std::sqrt(r2);
+  e.valid = std::isfinite(e.r) && e.r < 1e6f;
+  return e.valid ? &e : nullptr;
+}
+
+// Sphere fully outside the view frustum of the current camera (row-vector D3D matrices, clip z 0..w)?
+bool outside_view(const float c[3], float r) {
+  const D3DMATRIX vp = to_f(mul_d(to_d(g_V), to_d(g_P)));
+  const float (*m)[4] = vp.m;
+  const float planes[6][4] = {
+    { m[0][3] + m[0][0], m[1][3] + m[1][0], m[2][3] + m[2][0], m[3][3] + m[3][0] },   // left
+    { m[0][3] - m[0][0], m[1][3] - m[1][0], m[2][3] - m[2][0], m[3][3] - m[3][0] },   // right
+    { m[0][3] + m[0][1], m[1][3] + m[1][1], m[2][3] + m[2][1], m[3][3] + m[3][1] },   // bottom
+    { m[0][3] - m[0][1], m[1][3] - m[1][1], m[2][3] - m[2][1], m[3][3] - m[3][1] },   // top
+    { m[0][2], m[1][2], m[2][2], m[3][2] },                                           // near
+    { m[0][3] - m[0][2], m[1][3] - m[1][2], m[2][3] - m[2][2], m[3][3] - m[3][2] },   // far
+  };
+  for (const auto& pl : planes) {
+    const float len = std::sqrt(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]);
+    if (len <= 0) continue;
+    if ((pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3]) / len < -r) return true;
+  }
+  return false;
+}
+
+void cull_frame_tick() { ++g_csFrames; }
+bool cull_toggle() { g_cull.enabled = !g_cull.enabled; for (auto& e : g_cullCache) e.second.culled = false; return g_cull.enabled; }
+
+// True = do not draw. Counts statistics even with culling off, so the log shows what it would do.
+bool cull_draw(IDirect3DDevice9* dev) {
+  if (!g_primaryRT || !g_enabled || !g_haveCam || !g_curVS || g_drawNumVert == 0 || !cull_class()) return false;
+  CullEntry* e = cull_entry(dev);
+  if (!e) return false;
+  float c[3] = { e->c[0], e->c[1], e->c[2] };
+  float r = e->r;
+  if (!(g_curInfo->flags & SH_WORLDSPACE)) {               // object space -> world with this draw's W
+    const D3DMATRIX w = to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+    const float x = c[0], y = c[1], z = c[2];
+    for (int k = 0; k < 3; ++k) c[k] = x * w.m[0][k] + y * w.m[1][k] + z * w.m[2][k] + w.m[3][k];
+    const float sx = std::sqrt(w.m[0][0] * w.m[0][0] + w.m[0][1] * w.m[0][1] + w.m[0][2] * w.m[0][2]);
+    const float sy = std::sqrt(w.m[1][0] * w.m[1][0] + w.m[1][1] * w.m[1][1] + w.m[1][2] * w.m[1][2]);
+    const float sz = std::sqrt(w.m[2][0] * w.m[2][0] + w.m[2][1] * w.m[2][1] + w.m[2][2] * w.m[2][2]);
+    r *= (std::max)(sx, (std::max)(sy, sz));
+  }
+  float ref[3];
+  if (g_haveCar) { ref[0] = g_carPos[0]; ref[1] = g_carPos[1]; ref[2] = g_carPos[2]; }
+  else {                                                     // no car seen yet: the camera
+    D3DMATRIX vinv;
+    if (!inverse(g_V, vinv)) return false;
+    ref[0] = vinv._41; ref[1] = vinv._42; ref[2] = vinv._43;
+  }
+  const float dx = c[0] - ref[0], dy = c[1] - ref[1], dz = c[2] - ref[2];
+  const float dist = (std::max)(0.0f, std::sqrt(dx * dx + dy * dy + dz * dz) - r);   // to the sphere's surface
+  ++g_cs.considered;
+  ++g_cs.dist[dist < 50 ? 0 : dist < 100 ? 1 : dist < 200 ? 2 : dist < 400 ? 3 : 4];
+  if (dist < g_cull.keepRadius) { ++g_cs.kept; e->culled = false; return false; }
+  const float back = 1.0f - g_cull.hysteresis;              // a culled range returns only below threshold * back
+  const bool offscreen = outside_view(c, r + g_cull.frustumMargin);
+  bool cull = false;
+  if (offscreen && g_cull.offscreenFar > 0) cull = dist > g_cull.offscreenFar * (e->culled ? back : 1.0f);
+  if (!offscreen && g_cull.visibleFar > 0) cull = dist > g_cull.visibleFar * (e->culled ? back : 1.0f);
+  if (!g_cull.enabled) return false;
+  e->culled = cull;
+  if (cull) { if (offscreen) ++g_cs.offscreen; else ++g_cs.visibleFar; }
+  return cull;
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -1266,6 +1507,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   if (midQuad) { ++g_midQuadSkipped; return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; return D3D_OK; }   // performance experiment (key K)
+  if (cull_draw(dev)) return D3D_OK;                         // distance culling (culling.ini, key M)
   g_primCap = UINT_MAX;
   if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE)) {
     DWORD at = 0, blend = 0;
@@ -1330,25 +1572,41 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   return hr;
 }
 
+UINT verts_for(D3DPRIMITIVETYPE t, UINT prims) {
+  switch (t) {
+    case D3DPT_TRIANGLELIST: return prims * 3;
+    case D3DPT_TRIANGLESTRIP: case D3DPT_TRIANGLEFAN: return prims + 2;
+    case D3DPT_LINELIST: return prims * 2;
+    case D3DPT_LINESTRIP: return prims + 1;
+    default: return prims;
+  }
+}
+
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT start, UINT count) {
   g_pendingPrims = count;
+  g_drawFirstVert = start;
+  g_drawNumVert = verts_for(t, count);
   return comp_draw(dev, [&] { return o.DrawPrimitive(dev, t, start, cap_prims(count)); });
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minIdx,
                                                   UINT numV, UINT startIdx, UINT count) {
   g_pendingPrims = count;
+  g_drawFirstVert = base >= 0 ? static_cast<UINT>(base) + minIdx : 0;
+  g_drawNumVert = base >= 0 ? numV : 0;
   return comp_draw(dev, [&] { return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT count, const void* data, UINT stride) {
   g_pendingPrims = count;
+  g_drawNumVert = 0;                                   // no vertex buffer: not culled
   return comp_draw(dev, [&] { return o.DrawPrimitiveUP(dev, t, cap_prims(count), data, stride); });
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT minIdx, UINT numV,
                                                     UINT count, const void* idx, D3DFORMAT fmt, const void* data, UINT stride) {
   g_pendingPrims = count;
+  g_drawNumVert = 0;
   return comp_draw(dev, [&] { return o.DrawIndexedPrimitiveUP(dev, t, minIdx, numV, cap_prims(count), idx, fmt, data, stride); });
 }
 
@@ -1376,6 +1634,14 @@ ULONG STDMETHODCALLTYPE hk_QueryRelease(IDirect3DQuery9* q) {
     }
   }
   return refs;
+}
+
+// A new buffer at an address cached by the culling must not reuse the old buffer's bounds (stage reloads).
+HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len, DWORD usage, DWORD fvf, D3DPOOL pool,
+                                                IDirect3DVertexBuffer9** vb, HANDLE* shared) {
+  const HRESULT hr = o.CreateVertexBuffer(dev, len, usage, fvf, pool, vb, shared);
+  if (SUCCEEDED(hr) && vb && *vb) ++g_vbGen[*vb];
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hk_CreateQuery(IDirect3DDevice9* dev, D3DQUERYTYPE type, IDirect3DQuery9** out) {
@@ -1417,6 +1683,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   patch(&v->DrawPrimitiveUP, &hk_DrawPrimitiveUP, o.DrawPrimitiveUP);
   patch(&v->DrawIndexedPrimitiveUP, &hk_DrawIndexedPrimitiveUP, o.DrawIndexedPrimitiveUP);
   patch(&v->CreateQuery, &hk_CreateQuery, o.CreateQuery);
+  patch(&v->CreateVertexBuffer, &hk_CreateVertexBuffer, o.CreateVertexBuffer);
   remember_backbuffer(dev);
   rbrrtx_harvest_install(dev);
   init_remix_api();
@@ -1433,6 +1700,8 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
   if (!loaded) {
     loaded = true;
     rbrrtx_keys_load();
+    cull_load();
+    cull_log_settings(L"culling.ini");
     g_sunWanted = rbrrtx_env_flag(L"RBRRTX_SUN", true);
     wchar_t sky[8];
     if (GetEnvironmentVariableW(L"RBRRTX_SKY", sky, 8)) g_skyMode = std::clamp(_wtoi(sky), 0, 2);

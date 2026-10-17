@@ -30,6 +30,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
   {L"experiment", 'K', L"performance experiment run"},
+  {L"culling", 'M', L"distance culling on/off"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
