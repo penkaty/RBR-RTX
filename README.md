@@ -5,6 +5,8 @@
 Made for NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 Works with **Richard Burns Rally + RallySimFans (RSF)**, online racing included.
 
+<img src=".github/img/onboard_e30_02.jpg" alt="BMW M3 E30, onboard view, path traced (v0.2)" width="90%">
+
 ### This is not a remaster.
 It makes the game compatible with RTX Remix so it can be path traced. The cars, stages and textures are still
 the original game's.
@@ -28,9 +30,17 @@ this mod. Please report them (see [Troubleshooting](#troubleshooting)).
   bug reports. **K** switches ray tracing off to compare with the original image.
 - A pure add-on: it adds `d3d9.dll` and an `rbr-rtx\` folder, changes no game files, and uninstalls cleanly.
 
+<div align="center">
+<img src=".github/img/driftdust_e30_02.jpg" alt="BMW M3 E30 drifting with path-traced dust (v0.2)" width="90%">
+</div>
+
 **Not in yet: dynamic lights** (headlights, brake lights, night). RBR draws its lights as textures and bakes its
 lighting into the scenery, so Remix has no lights to pick up. Each one has to be created through the Remix API
 and attached to the car. That's my next big step.
+
+<div align="center">
+<img src=".github/img/random_impreza_02.jpg" alt="Subaru Impreza on a stage, path traced (v0.2)" width="90%">
+</div>
 
 ## Installation / Usage
 
