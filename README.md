@@ -3,7 +3,7 @@
 <div align="center" markdown="1">
 
 Made for NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
-Works with **Richard Burns Rally + RallySimFans (RSF)**, online racing included.
+Runs on **Richard Burns Rally + RallySimFans (RSF)**; online functionality has not been tested yet.
 
 <img src=".github/img/onboard_e30_02.jpg" alt="BMW M3 E30, onboard view, path traced (v0.2)" width="90%">
 
@@ -50,8 +50,10 @@ and attached to the car. That's my next big step.
    folder** (next to `RichardBurnsRally_SSE.exe`). `.7z` opens with [7-Zip](https://www.7-zip.org/).
 3. RSF launcher: **Cubic env maps off**, **Render car shadows off**, **Particles high**. Windowed or borderless
    mode is recommended.
-4. Start the game as usual. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
-5. Uninstall: double-click `rbr-rtx\uninstall.cmd`.
+4. Optional: [RBR-RTX-base-mod](https://github.com/penkaty/RBR-RTX-base-mod) adds PBR materials (surface
+   detail, roughness, depth) for the original Warthog stages. Install it after RBR-RTX, the same way.
+5. Start the game as usual. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
+6. Uninstall: double-click `rbr-rtx\uninstall.cmd`.
 
 You don't need any keys to drive. All keys are listed in `rbr-rtx\README.txt` and can be changed in
 `rbr-rtx\config\keys.ini`.
