@@ -3,7 +3,7 @@
 <div align="center" markdown="1">
 
 Made for NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
-Works with **Richard Burns Rally + RallySimFans (RSF)**, online racing included.
+Works with **Richard Burns Rally + RallySimFans (RSF)**, online functionality has not been tested yet.
 
 <img src=".github/img/onboard_e30_02.jpg" alt="BMW M3 E30, onboard view, path traced (v0.2)" width="90%">
 
