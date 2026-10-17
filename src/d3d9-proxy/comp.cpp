@@ -1427,9 +1427,22 @@ void end_frame(IDirect3DDevice9* dev) {
     cull_log_settings(L"key");
   }
   if (rbrrtx_key_pressed(RBRKEY_RAYTRACING)) {             // raster comparison: Remix draws the game as plain DXVK
-    static bool rtOn = true;
+    // Raster draws need the game's own draws back: FF scenery (road, terrain) and the comp layer's matrices are made for
+    // Remix's ray tracing and rasterised as missing/flat parts (user screenshot 2026-10-17). Culling too.
+    static bool rtOn = true, compWas = true, cullWas = false;
     rtOn = !rtOn;
     remix_set("rtx.enableRaytracing", rtOn ? "True" : "False");
+    if (!rtOn) {
+      compWas = g_enabled;
+      if (g_enabled) { g_enabled = false; for (int i = 0; i < 3; ++i) set_game_xf(dev, i); destroy_sun(L"raster"); }
+      g_ffMode = 0;
+      cullWas = !cull_toggle();                              // toggled: on -> off, done
+      if (!cullWas) cull_toggle();                           // it was off: back to off
+    } else {
+      g_enabled = compWas;
+      g_ffMode = g_ffBase;
+      if (cullWas) cull_toggle();
+    }
     wchar_t w[80];
     swprintf_s(w, L"%s: ray tracing %s", rbrrtx_key_name(RBRKEY_RAYTRACING), rtOn ? L"ON" : L"off (raster)");
     log_frame(w);
