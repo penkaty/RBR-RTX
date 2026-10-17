@@ -120,6 +120,7 @@ void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::stri
 void record(IDirect3DTexture9* tex, const D3DSURFACE_DESC& d, const Lock& lk) {
   UINT rowBytes = 0, rows = 0;
   const char* fmt = "?";
+  if (g_dir.empty() && (d.Usage & D3DUSAGE_DYNAMIC)) return;   // hash only: no per-frame cost for streamed textures
   if (!lk.bits || !layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt) || lk.pitch < static_cast<INT>(rowBytes)) {
     ++g_skipped;
     return;
@@ -129,6 +130,7 @@ void record(IDirect3DTexture9* tex, const D3DSURFACE_DESC& d, const Lock& lk) {
     memcpy(&data[static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lk.bits) + static_cast<size_t>(r) * lk.pitch, rowBytes);
   const unsigned long long hx = XXH3_64bits(data.data(), data.size());
   if (tex) g_texHash[tex] = hx;
+  if (g_dir.empty()) return;                         // hash only (stage sweep), no harvest folder
   ++g_seq;
   if (!g_seen.insert(hx).second) { ++g_dup; return; }
   ++g_new;
@@ -253,9 +255,24 @@ void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader) {
   fflush(g_usageTsv);
 }
 
+unsigned long long rbrrtx_texture_hash(void* base_texture) {
+  if (!base_texture) return 0;
+  std::lock_guard<std::mutex> g(g_mx);
+  auto it = g_texHash.find(base_texture);
+  return it != g_texHash.end() ? it->second : 0;
+}
+
 void rbrrtx_harvest_install(void* device) {
   wchar_t dir[MAX_PATH] = {};
-  if (!device || !GetEnvironmentVariableW(L"RBRRTX_HARVEST", dir, MAX_PATH) || !dir[0] || !wcscmp(dir, L"0")) return;
+  if (!device) return;
+  if (!GetEnvironmentVariableW(L"RBRRTX_HARVEST", dir, MAX_PATH) || !dir[0] || !wcscmp(dir, L"0")) {
+    // Hash only: the stage sweep (Alt+K) lists each draw's textures by their Remix hash. One XXH3 per texture upload
+    // (stage load); nothing written. RBRRTX_TEXHASH=0 = no hooks at all.
+    if (!rbrrtx_env_flag(L"RBRRTX_TEXHASH", true)) return;
+    IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+    patch(&dev->lpVtbl->CreateTexture, &hk_CreateTexture, ho.CreateTexture);
+    return;
+  }
   g_dir = dir;
   CreateDirectoryW(dir, nullptr);
   const std::wstring tsv = g_dir + L"\\harvest.tsv";

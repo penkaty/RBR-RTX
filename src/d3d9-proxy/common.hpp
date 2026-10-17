@@ -16,6 +16,28 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend);
 void rbrrtx_harvest_install(void* device);
 // harvest.cpp: notes which shader (file name) draws the texture bound to stage 0 (usage.tsv, once per pair).
 void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader);
+// harvest.cpp: Remix hash (XXH3 of mip 0) of a texture uploaded while the hooks ran, 0 if unknown. Kept for every
+// texture even without RBRRTX_HARVEST (hash only, no files; RBRRTX_TEXHASH=0 turns it off) for the stage sweep.
+unsigned long long rbrrtx_texture_hash(void* base_texture);
+
+// game_state.cpp: what the player picked, read from RBR's globals (NGPCarMenu RBRAPI.h offsets) and RSF's
+// rsfdata\cache\stages_data.json (name, country, surface). -1 / empty = unknown.
+struct RbrStageInfo {
+  int trackId, carId, tyreType, weatherType, damage;          // RBRMapSettings 0x1660800
+  int clouds, wetness, surfaceAge, timeOfDay, skyType;        // RBRMapSettingsEx 0x8938F8
+  int gameMode;                                               // 1 driving, 2 pause, 3 menu, 5 loading, 8 replay, 10 pre-stage
+  wchar_t name[80];
+  char country[8];                                            // ISO code from RSF ("PL"), "" if unknown
+  int tarmac, gravel, snow;                                   // surface percent from RSF
+};
+bool rbrrtx_stage_info(RbrStageInfo* out);
+const wchar_t* rbrrtx_sky_name(int skyType);                  // Crisp, Hazy, NoRain, LightRain, ...
+const wchar_t* rbrrtx_cloud_name(int clouds);
+const wchar_t* rbrrtx_time_name(int timeOfDay);
+const wchar_t* rbrrtx_wetness_name(int wetness);
+// Copies the window's client area from the screen into a PNG (what Remix presented). mean_luma = 0..255 (0 = black:
+// exclusive full screen hides the image from GDI).
+bool rbrrtx_screenshot(HWND wnd, const wchar_t* png_path, double* mean_luma);
 
 // exception_trace.cpp
 void rbrrtx_exception_trace_install();
@@ -24,7 +46,7 @@ void rbrrtx_exception_trace_install();
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);

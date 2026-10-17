@@ -17,24 +17,41 @@ Recommended game settings (RSF launcher / in-game options)
   Cubic env maps: off/Low, Render car shadows: off. RBR-RTX path traces car reflections and shadows; the game's
   reflection cube map pass and blob shadow only cost time (RBR-RTX skips the cube map draws anyway).
   Particles: dust and smoke are path traced, so they cost FPS. Particles off (launcher) is the cheapest, as many
-  players race anyway; Alt+Pause (below) switches dust live.
+  players race anyway; U (below) switches dust live.
   (Particle quality Low currently shows no dust at all under RBR-RTX.)
+
+Weather: RBR's sky type (crisp, hazy, rain, snow, fog), cloud cover, time of day and the stage's country set the
+  Remix haze, sky light and sun automatically (rbr-rtx\config\atmosphere.ini; enable = 0 there turns it off).
 
 Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your controls)
   Only while the game window is active and Ctrl/Alt are not held. Alt+X = RTX Remix menu.
-  O        RBR-RTX camera/objects/sun layer on/off (comparison; path tracing itself stays on)
-  L        Remix sun only on/off
+  You need none of them to drive: the defaults are the best-looking, fastest setup. They are for comparing,
+  tuning and reporting problems.
+
+  Something looks wrong, or you want to report a problem:
+  Alt+K    stage sweep: press it on the stage where the problem is, keep the car and camera still and wait about
+           15 seconds until the beep (screenshots taken apart layer by layer, Remix debug views, every texture with
+           its Remix hash). Result: rbr-rtx\logs\sweep-<date-time>\; zip that folder and send it.
+           Run the game windowed or borderless, or the screenshots come out black. Alt+K again aborts.
+  P        record everything drawn in the next frame into rbr-rtx\logs (test builds with diagnostics.txt)
+
+  Is it RBR-RTX or Remix? Switch one part off and back (press again):
+  K        ray tracing on/off: the original raster image of the same scene
+  O        RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on)
+  L        Remix sun on/off
+  N        sky: Remix sky (default) <-> no sky
+  J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
   I        cockpit windscreen on (default) / off
-  N        sky: Remix sky (default) <-> no sky (for comparison)
-  J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original (for comparison)
+  Alt+J    faster scenery: default (trees/grass/flags beyond 40 m stop swaying) -> off (old, slower) -> static only
+  M        distance culling on/off: far geometry outside the view left out of path tracing (rbr-rtx\config\culling.ini)
+
+  Tuning:
   U        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
+  Alt+H / Alt+N  sun brighter / dimmer (10 % per press; the log shows the value to keep)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
-  Alt+H / Alt+N  sun brighter / dimmer (10 % per press)
-  Alt+J          faster scenery: static (default) -> + far trees/grass/flags stop swaying -> off
-  M        distance culling on/off: far geometry outside the view is left out of path tracing (rbr-rtx\config\culling.ini)
-  K        performance experiment run (rbr-rtx\config\experiments.ini; results in rbr-rtx\logs)
-  P        test builds: record everything drawn in the next frame into rbr-rtx\logs (for bug reports)
+  Alt+T    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
+           setting in rbr-rtx\logs\rbrrtx_comp.log
 
 Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, P frame dump, crash dumps) into
   rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.

@@ -99,10 +99,26 @@ void diagnostics_from_file(HINSTANCE inst) {
   default_env(L"RBRRTX_TRACE_DUMPS", L"3");
 }
 
+// Remix's Alt+X User Settings layer is <game>\user.conf. With rtx.graphicsPreset = Custom, Remix writes its own
+// preset values (Ray Reconstruction path tracer, NRC, ray-trace modes) into that layer on every start, so an empty
+// layer shows "unsaved changes" right after a stage loads (user 2026-10-17). Seeding it with exactly those values
+// (rbr-rtx\config\user-seed.conf, or env RBRRTX_USER_SEED) keeps it clean. Only when no user.conf exists: a user's
+// own saved settings are never touched.
+void seed_user_conf(const wchar_t* addon) {
+  wchar_t seed[MAX_PATH * 2];
+  DWORD n = GetEnvironmentVariableW(L"RBRRTX_USER_SEED", seed, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) {
+    if (!addon) return;
+    swprintf_s(seed, L"%s\\config\\user-seed.conf", addon);
+  }
+  if (GetFileAttributesW(seed) == INVALID_FILE_ATTRIBUTES) return;
+  if (CopyFileW(seed, L"user.conf", TRUE)) log(L"user.conf seeded from %s", seed);
+}
+
 BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
   DWORD n = GetEnvironmentVariableW(L"RBRRTX_D3D9_BACKEND", g_backend_path, MAX_PATH);
   if (n > 0 && n < MAX_PATH) {
-    if (try_backend(g_backend_path)) { g_remix_backend = true; return TRUE; }
+    if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(nullptr); return TRUE; }
   } else {
     wchar_t dir[MAX_PATH];
     DWORD len = GetModuleFileNameW(g_self, dir, MAX_PATH);
@@ -122,7 +138,7 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
         // Kept under a folder literally named rtx-remix: the Toolkit's project wizard only accepts that name.
         default_env_path(L"DEFAULT_MODS_DIR", addon, L"rtx-remix\\mods");
         default_env_path(L"DXVK_CAPTURE_PATH", addon, L"rtx-remix\\captures");
-        if (try_backend(g_backend_path)) { g_remix_backend = true; return TRUE; }
+        if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(addon); return TRUE; }
       }
     }
   }

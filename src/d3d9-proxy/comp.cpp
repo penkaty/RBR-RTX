@@ -265,6 +265,7 @@ bool g_sunManual = false, g_sunMoving = false;
 float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon
 float g_sunFade = 1.0f;                                // sun radiance factor of the light currently created
 float g_sunScale = 1.0f;                               // live brightness (Alt+H / Alt+N), times g_sunRadiance
+float g_sunWeather = 1.0f;                             // stage atmosphere: cloud cover / rain / fog (atmosphere.ini)
 float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from the conf (-1 = not read) / last set
 
 struct Stats {
@@ -361,12 +362,13 @@ bool is_scenery_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curI
 // put them in the wrong place (Rosciszow-Walim 4/5, 2026-10-17; vertex capture is immune, it undoes our matrices);
 // they move anyway, so a cached BLAS buys nothing there.
 // Modes (RBRRTX_FF, ff_scenery key Alt+J cycles 0 -> 1 -> 2 -> 0, K steps "ff = n"):
-//   0 = off (vertex capture, the old way)   1 = static RL* scenery (default since the 2026-10-17 K runs: -1.1 ms
-//   Walim, -2.4 Chirdonhead, -5.9 Santa Lucia)   2 = also swaying foliage/flags/grass farther than g_ffSwayNear from
-//   the camera (default 40 m, RBRRTX_FF_SWAY_NEAR): those stop swaying, near ones keep it (GTA4 idea; all of it frozen
-//   gave another -0.5..-1.9 ms, but the user saw grass and flags stop).
+//   0 = off (vertex capture, the old way)   1 = static RL* scenery (2026-10-17 K runs: -1.1 ms Walim, -2.4
+//   Chirdonhead, -5.9 Santa Lucia)   2 = also swaying foliage/flags/grass farther than g_ffSwayNear from the camera
+//   (40 m, RBRRTX_FF_SWAY_NEAR): those stop swaying, near ones keep it (GTA4 idea; all of it frozen gave another
+//   -0.5..-1.9 ms, but the user saw grass and flags stop). Default since 2026-10-17 09:06: user saw near sway kept and
+//   "visibly way better performance"; K -0.4 ms vs mode 1 (noisy run).
 // The VS is unbound lazily: consecutive FF draws keep it null, the next shader draw rebinds the game's VS (g_vsUnbound).
-int g_ffMode = 1, g_ffBase = 1;                        // g_ffBase: start value (env), restored after K steps
+int g_ffMode = 2, g_ffBase = 2;                        // g_ffBase: start value (env), restored after K steps
 bool g_vsUnbound = false;                              // device has no VS while the game thinks g_curVS is bound
 unsigned g_ffDraws = 0, g_ffSwayFar = 0;                // FF scenery draws / of those swaying ones, since the last log line
 float g_ffSwayNear = 40.0f;                            // mode 2: swaying draws nearer than this (metres) keep their VS
@@ -513,7 +515,7 @@ void update_sun() {
     light.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     light.pNext = &distant;
     light.hash = 0x524252'53554E00ULL;                  // "RBRSUN"
-    const float k = fade * g_sunScale;
+    const float k = fade * g_sunScale * g_sunWeather;
     light.radiance = { g_sunRadiance[0] * k, g_sunRadiance[1] * k, g_sunRadiance[2] * k };
     const remixapi_ErrorCode err = g_api.CreateLight(&light, &g_sun);
     std::memcpy(g_sunDir, d, sizeof(d));
@@ -559,9 +561,11 @@ float conf_float(const char* name, float dflt) {
 
 void debug_sky() {
   static float evMinBase = 0.0f, evMax = 4.0f, evMinSet = -100.0f;
+  static bool confRead = false;
   if (!g_apiOk || !g_api.SetConfigVariable) return;
-  if (g_skyBase < 0.0f) {
-    g_skyBase = conf_float("rtx.skyBrightness", 1.0f);
+  if (!confRead) {                                     // g_skyBase may already come from the stage atmosphere
+    confRead = true;
+    if (g_skyBase < 0.0f) g_skyBase = conf_float("rtx.skyBrightness", 1.0f);
     evMinBase = conf_float("rtx.autoExposure.evMinValue", -2.0f);
     evMax = conf_float("rtx.autoExposure.evMaxValue", 5.0f);
   }
@@ -581,6 +585,154 @@ void debug_sky() {
     remix_set("rtx.autoExposure.evMinValue", v);
     evMinSet = evMin;
   }
+}
+
+// ---------------------------------------------------------------- stage atmosphere
+std::vector<std::wstring> split_list(const std::wstring& v);   // culling section
+extern int g_expStep;                                          // K / sweep runner (-1 = idle)
+// RBR's weather and the stage's region drive Remix's volumetrics (user 2026-10-17): haze density (transmittance
+// measurement distance, lower = denser), haze colour, scattering albedo and anisotropy, sky light and sun strength.
+// rbr-rtx\config\atmosphere.ini (env RBRRTX_ATMOSPHERE): [region.<name>] with countries = FI,SE,..., [sky.<SkyType>],
+// [clouds.<CloudType>], [time.<TimeOfDay>]; every factor multiplies the rtx.conf value (the user's tuned look: Santa
+// Lucia, Spain, Crisp, Clear = all 1). Stage settings come from game_state.cpp (RSF stage id -> country). Checked
+// every 30 frames while loading / driving; only options that differ from rtx.conf (or from what was sent last) go
+// to Remix (API user layer: Alt+X lists them as unsaved; rbr-remix.ps1 strips them from a saved user.conf).
+struct AtmoFactors {
+  float dist = 1.0f, col[3] = { 1.0f, 1.0f, 1.0f }, sky = 1.0f, sun = 1.0f;
+  float albedo = -1.0f, aniso = -1000.0f;              // absolute values when set
+};
+struct AtmoRegion { std::wstring name; std::vector<std::wstring> countries; AtmoFactors f; };
+bool g_atmoEnabled = true, g_atmoLoaded = false;
+std::vector<AtmoRegion> g_atmoRegions;
+std::unordered_map<std::wstring, AtmoFactors> g_atmoSections;   // "sky.Crisp", "clouds.Clear", "time.Noon"
+std::wstring g_atmoKey, g_atmoLine = L"not applied yet";
+std::unordered_map<std::string, std::string> g_atmoSent;
+struct { float dist, col[3], albedo[3], aniso, sky; } g_atmoBase = {};
+
+void conf_vec3(const char* name, float out[3], float dflt) {
+  out[0] = out[1] = out[2] = dflt;
+  wchar_t path[MAX_PATH];
+  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
+  std::ifstream in(path);
+  for (std::string l; std::getline(in, l);) {
+    const size_t k = l.find(name);
+    if (k == std::string::npos || l.find_first_not_of(" \t") != k || l.find_first_of(" \t=", k) != k + std::strlen(name)) continue;
+    const size_t eq = l.find('=', k);
+    if (eq != std::string::npos) sscanf_s(l.c_str() + eq + 1, " %f , %f , %f", &out[0], &out[1], &out[2]);
+  }
+}
+
+AtmoFactors atmo_read(const wchar_t* path, const wchar_t* sec) {
+  AtmoFactors f;
+  wchar_t v[128];
+  if (GetPrivateProfileStringW(sec, L"distance", L"", v, 128, path)) f.dist = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"colour", L"", v, 128, path)) swscanf_s(v, L"%f , %f , %f", &f.col[0], &f.col[1], &f.col[2]);
+  if (GetPrivateProfileStringW(sec, L"sky", L"", v, 128, path)) f.sky = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"sun", L"", v, 128, path)) f.sun = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"albedo", L"", v, 128, path)) f.albedo = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"anisotropy", L"", v, 128, path)) f.aniso = static_cast<float>(_wtof(v));
+  return f;
+}
+
+void atmo_load() {
+  g_atmoLoaded = true;
+  wchar_t path[MAX_PATH * 2] = {};
+  rbrrtx_config_path(L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", path, MAX_PATH * 2);
+  g_atmoEnabled = GetPrivateProfileIntW(L"atmosphere", L"enable", 1, path) != 0;
+  wchar_t names[8192];
+  if (!GetPrivateProfileSectionNamesW(names, 8192, path)) { g_atmoEnabled = false; clog(L"atmosphere: no %s, off", path); return; }
+  for (const wchar_t* sec = names; *sec; sec += wcslen(sec) + 1) {
+    const std::wstring s = sec;
+    if (s.rfind(L"region.", 0) == 0) {
+      AtmoRegion r;
+      r.name = s.substr(7);
+      wchar_t c[512];
+      GetPrivateProfileStringW(sec, L"countries", L"", c, 512, path);
+      r.countries = split_list(c);
+      r.f = atmo_read(path, sec);
+      g_atmoRegions.push_back(r);
+    } else if (s.rfind(L"sky.", 0) == 0 || s.rfind(L"clouds.", 0) == 0 || s.rfind(L"time.", 0) == 0) {
+      g_atmoSections[s] = atmo_read(path, sec);
+    }
+  }
+  g_atmoBase.dist = conf_float("rtx.volumetrics.transmittanceMeasurementDistanceMeters", 200.0f);
+  conf_vec3("rtx.volumetrics.transmittanceColor", g_atmoBase.col, 0.999f);
+  conf_vec3("rtx.volumetrics.singleScatteringAlbedo", g_atmoBase.albedo, 0.999f);
+  g_atmoBase.aniso = conf_float("rtx.volumetrics.anisotropy", 0.0f);
+  g_atmoBase.sky = conf_float("rtx.skyBrightness", 1.0f);
+  clog(L"atmosphere: %s, %zu regions, %zu weather sections from %s; base haze %.0f m colour (%.2f %.2f %.2f) sky %.2f",
+       g_atmoEnabled ? L"on" : L"off (enable = 0)", g_atmoRegions.size(), g_atmoSections.size(), path, g_atmoBase.dist,
+       g_atmoBase.col[0], g_atmoBase.col[1], g_atmoBase.col[2], g_atmoBase.sky);
+}
+
+void atmo_reset() { g_atmoKey.clear(); g_atmoSent.clear(); }
+
+// Sends one option if it differs from the conf value (first time) or from what was sent last.
+void atmo_send(const char* key, const std::string& value, const std::string& confValue) {
+  auto it = g_atmoSent.find(key);
+  if (it == g_atmoSent.end() ? value == confValue : it->second == value) return;
+  remix_set(key, value.c_str());
+  g_atmoSent[key] = value;
+}
+
+std::string fmt3(const float v[3]) { char b[64]; sprintf_s(b, "%.3f, %.3f, %.3f", v[0], v[1], v[2]); return b; }
+std::string fmt1(float v) { char b[32]; sprintf_s(b, "%.3f", v); return b; }
+
+void atmo_frame() {
+  if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
+  if (!g_atmoLoaded) atmo_load();
+  if (!g_atmoEnabled) return;
+  RbrStageInfo si;
+  if (!rbrrtx_stage_info(&si) || si.trackId <= 0) return;
+  if (si.gameMode != 1 && si.gameMode != 2 && si.gameMode != 5 && si.gameMode != 8 && si.gameMode != 10) return;
+  wchar_t key[96];
+  swprintf_s(key, L"%d|%d|%d|%d", si.trackId, si.skyType, si.clouds, si.timeOfDay);
+  if (g_atmoKey == key) return;
+  g_atmoKey = key;
+  const std::wstring country(si.country, si.country + strlen(si.country));
+  const AtmoRegion* region = nullptr;
+  for (const auto& r : g_atmoRegions)
+    for (const auto& c : r.countries) if (!_wcsicmp(c.c_str(), country.c_str())) { region = &r; break; }
+  AtmoFactors total;
+  float albedo = -1.0f, aniso = -1000.0f;
+  auto mul = [&](const AtmoFactors* f) {
+    if (!f) return;
+    total.dist *= f->dist; total.sky *= f->sky; total.sun *= f->sun;
+    for (int i = 0; i < 3; ++i) total.col[i] *= f->col[i];
+    if (f->albedo >= 0.0f) albedo = f->albedo;
+    if (f->aniso > -999.0f) aniso = f->aniso;
+  };
+  auto sec = [&](const wchar_t* prefix, const wchar_t* name) -> const AtmoFactors* {
+    auto it = g_atmoSections.find(std::wstring(prefix) + name);
+    return it != g_atmoSections.end() ? &it->second : nullptr;
+  };
+  mul(region ? &region->f : nullptr);
+  mul(sec(L"sky.", rbrrtx_sky_name(si.skyType)));
+  mul(sec(L"clouds.", rbrrtx_cloud_name(si.clouds)));
+  mul(sec(L"time.", rbrrtx_time_name(si.timeOfDay)));
+  float col[3], alb[3];
+  for (int i = 0; i < 3; ++i) {
+    col[i] = std::clamp(g_atmoBase.col[i] * total.col[i], 0.05f, 0.999f);
+    alb[i] = albedo >= 0.0f ? std::clamp(albedo, 0.0f, 0.999f) : g_atmoBase.albedo[i];
+  }
+  const float dist = (std::max)(1.0f, g_atmoBase.dist * total.dist);
+  const float an = aniso > -999.0f ? std::clamp(aniso, -0.99f, 0.99f) : g_atmoBase.aniso;
+  const float sky = g_atmoBase.sky * total.sky;
+  atmo_send("rtx.volumetrics.transmittanceMeasurementDistanceMeters", fmt1(dist), fmt1(g_atmoBase.dist));
+  atmo_send("rtx.volumetrics.transmittanceColor", fmt3(col), fmt3(g_atmoBase.col));
+  atmo_send("rtx.volumetrics.singleScatteringAlbedo", fmt3(alb), fmt3(g_atmoBase.albedo));
+  atmo_send("rtx.volumetrics.anisotropy", fmt1(an), fmt1(g_atmoBase.aniso));
+  g_skyBase = sky;                                     // debug sun night dims from this
+  if (!g_sunManual) { atmo_send("rtx.skyBrightness", fmt1(sky), fmt1(g_atmoBase.sky)); g_skySet = -1.0f; }
+  if (std::fabs(total.sun - g_sunWeather) > 0.001f) { g_sunWeather = total.sun; g_sunFade = -1.0f; }   // light re-created
+  wchar_t line[512];
+  swprintf_s(line, L"stage %d %s (%S, region %s), sky %s, clouds %s, %s -> haze %.0f m (x%.2f), colour (%.2f %.2f %.2f), "
+                   L"albedo %.2f, anisotropy %.2f, sky light %.2f, sun x%.2f",
+             si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region ? region->name.c_str() : L"none",
+             rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay), dist, total.dist,
+             col[0], col[1], col[2], alb[0], an, sky, total.sun);
+  g_atmoLine = line;
+  clog(L"atmosphere: %s", line);
 }
 
 // ---------------------------------------------------------------- per draw
@@ -992,10 +1144,26 @@ struct ExpStep {
   std::vector<std::wstring> skip;
   std::vector<std::wstring> solid;                           // alpha test off for these shader name parts
   int ff = -1;                                               // fixed-function scenery mode for this step (-1 = start value)
+  int sun = -1;                                              // 0 = Remix sun off for this step (-1 = as it was)
+  bool shot = false, dump = false, capture = false;          // sweep: screenshot / draw list / Remix USD capture
+  double measure = -1.0;                                     // measure_seconds for this step only (-1 = [run])
 };
 std::vector<ExpStep> g_exp;                                  // [0] = baseline (no changes), then the ini steps
 std::vector<std::pair<std::string, std::string>> g_expBase;  // [baseline] option values, restored around every step
+std::vector<std::string> g_expDirty;                         // options the running step changed (restored next)
+bool g_expApplyBase = true;                                  // [run] apply_baseline: send all of [baseline] at the start
 double g_expSettle = 3.0, g_expMeasure = 5.0;
+// Stage sweep (Alt+K, rbr-rtx\config\sweep.ini): the same runner, plus per step a screenshot, a draw list with
+// texture hashes, Remix debug views and a Remix USD capture; output in <logs>\sweep-<time>\ (see sweep_begin).
+bool g_sweep = false, g_sweepShots = false;
+std::wstring g_sweepDir;
+FILE* g_sweepTsv = nullptr;                                  // draws.tsv while a dump frame runs
+unsigned g_sweepDumpFrames = 0, g_sweepDumpN = 0;
+std::vector<std::wstring> g_sweepLines;                      // summary.txt, one line per step
+std::vector<std::wstring> g_captureBefore;                   // capture files before the capture step
+unsigned g_captureKeyUp = 0;                                 // frame to send the capture key's key-up
+bool g_sunOnBefore = true;
+HWND g_wnd = nullptr;                                        // the game's device window (screenshots, capture key)
 int g_expStep = -1;                                          // running step, -1 = idle
 size_t g_expPos = 0;                                         // index in g_expOrder
 std::vector<int> g_expOrder;                                 // baseline, steps..., baseline
@@ -1011,11 +1179,14 @@ std::string narrow(const std::wstring& w) {                  // option names/val
   return s;
 }
 
-void exp_load() {
+void exp_load(bool sweep) {
   g_exp.clear();
   g_expBase.clear();
+  g_expApplyBase = true;
+  g_sweepShots = false;
   wchar_t path[MAX_PATH * 2] = {};
-  rbrrtx_config_path(L"RBRRTX_EXPERIMENTS", L"experiments.ini", path, MAX_PATH * 2);
+  if (sweep) rbrrtx_config_path(L"RBRRTX_SWEEP", L"sweep.ini", path, MAX_PATH * 2);
+  else rbrrtx_config_path(L"RBRRTX_EXPERIMENTS", L"experiments.ini", path, MAX_PATH * 2);
   g_exp.push_back({L"baseline", {}, {}});
   wchar_t buf[8192];
   if (GetPrivateProfileSectionNamesW(buf, 8192, path) == 0) { clog(L"experiments: no %s", path); return; }
@@ -1044,14 +1215,22 @@ void exp_load() {
         while (!v.empty() && (v.back() == L'\n' || v.back() == L'\r')) v.pop_back();
       }
       if (!_wcsicmp(sec, L"run")) {
-        if (k == L"settle_seconds") g_expSettle = (std::max)(0.5, _wtof(v.c_str()));
-        if (k == L"measure_seconds") g_expMeasure = (std::max)(1.0, _wtof(v.c_str()));
+        if (k == L"settle_seconds") g_expSettle = (std::max)(0.2, _wtof(v.c_str()));
+        if (k == L"measure_seconds") g_expMeasure = (std::max)(0.1, _wtof(v.c_str()));
+        if (k == L"apply_baseline") g_expApplyBase = _wtoi(v.c_str()) != 0;
+        if (k == L"shots") g_sweepShots = _wtoi(v.c_str()) != 0;
       } else if (!_wcsicmp(sec, L"baseline")) {
         g_expBase.emplace_back(narrow(k), narrow(v));
       } else if (k == L"name") {
         step.name = v;
       } else if (k == L"ff") {
         step.ff = std::clamp(_wtoi(v.c_str()), 0, 2);
+      } else if (k == L"measure_seconds") {
+        step.measure = (std::max)(0.1, _wtof(v.c_str()));
+      } else if (k == L"sun") {
+        step.sun = _wtoi(v.c_str()) != 0 ? 1 : 0;
+      } else if (k == L"shot" || k == L"dump" || k == L"capture") {
+        (k == L"shot" ? step.shot : k == L"dump" ? step.dump : step.capture) = _wtoi(v.c_str()) != 0;
       } else if (k == L"skip" || k == L"solid") {
         auto& list = k == L"skip" ? step.skip : step.solid;
         for (size_t a = 0; a <= v.size();) {
@@ -1079,15 +1258,29 @@ void exp_set(const std::string& k, const std::string& v) {
   remix_set(k.c_str(), v.c_str());
 }
 
+// Every step starts from the baseline: the options the previous step changed go back to their [baseline] values (all
+// of [baseline] is sent once when the run starts, unless apply_baseline = 0), then the step's own are set. Fewer
+// Remix API calls than re-sending the whole baseline per step (it held a 5855-hash list, 2026-10-17).
 void exp_apply(int step) {
   cull_load();                                               // culling back to culling.ini, then the step's cull.* lines
-  for (const auto& kv : g_expBase) exp_set(kv.first, kv.second);   // every step starts from the baseline
+  const std::vector<std::pair<std::string, std::string>> none;
+  const auto& next = step > 0 ? g_exp[step].sets : none;
+  for (const auto& k : g_expDirty) {
+    if (std::any_of(next.begin(), next.end(), [&](const auto& s) { return s.first == k; })) continue;
+    for (const auto& b : g_expBase) if (b.first == k) exp_set(b.first, b.second);
+  }
+  g_expDirty.clear();
   g_expSkipCache.clear();
   g_expSolidCache.clear();
   g_expStep = step;
   g_ffMode = step > 0 && g_exp[step].ff >= 0 ? g_exp[step].ff : g_ffBase;
+  const bool sunWanted = step > 0 && g_exp[step].sun >= 0 ? g_exp[step].sun != 0 : g_sunOnBefore;
+  if (sunWanted != g_sunOn) {
+    g_sunOn = sunWanted;
+    if (!g_sunOn) destroy_sun(L"experiment step");
+  }
   if (step < 0) return;
-  for (const auto& kv : g_exp[step].sets) exp_set(kv.first, kv.second);
+  for (const auto& kv : g_exp[step].sets) { exp_set(kv.first, kv.second); g_expDirty.push_back(kv.first); }
   QueryPerformanceCounter(&g_expStepStart);
   g_expMeasuring = false;
   g_expFrames = g_expSkipped = g_expSolid = 0;
@@ -1106,8 +1299,14 @@ bool exp_match(const std::vector<std::wstring>& parts, std::unordered_map<const 
 bool exp_skip_draw() { return g_expStep > 0 && exp_match(g_exp[g_expStep].skip, g_expSkipCache); }
 bool exp_solid_draw() { return g_expStep > 0 && exp_match(g_exp[g_expStep].solid, g_expSolidCache); }
 
+void atmo_reset();
+void sweep_end(const wchar_t* why);
+
 void exp_finish(const wchar_t* why) {
   exp_apply(-1);
+  atmo_reset();                                              // stage atmosphere is sent again on the next check
+  if (g_sweep) sweep_end(why);
+  g_sweep = false;
   if (g_expMs.empty()) { clog(L"experiments: %s", why); return; }
   const double base = g_expMs[0];
   clog(L"experiments: %s. Summary (frame time; minus = faster than the first baseline):", why);
@@ -1117,10 +1316,20 @@ void exp_finish(const wchar_t* why) {
   }
 }
 
+void sweep_begin();
+void sweep_dump_start();
+void sweep_dump_end();
+void post_key(UINT msg, WPARAM vk);
+std::wstring capture_dir();
+std::vector<std::wstring> list_captures();
+
 void exp_frame() {
-  if (rbrrtx_key_pressed(RBRKEY_EXPERIMENT)) {
+  if (g_captureKeyUp && g_frame >= g_captureKeyUp) { post_key(WM_KEYUP, VK_F9); g_captureKeyUp = 0; }
+  const bool kExp = rbrrtx_key_pressed(RBRKEY_EXPERIMENT), kSweep = rbrrtx_key_pressed(RBRKEY_SWEEP);
+  if (kExp || kSweep) {
     if (g_expStep >= 0) { exp_finish(L"aborted (key)"); return; }
-    exp_load();
+    g_sweep = kSweep;
+    exp_load(g_sweep);
     // A Remix option a step changes but [baseline] does not name would stay changed after the run (2026-10-17: a
     // red-glow run left NRC off, emissives 0, atmosphere and bloom off until restart). Refuse such a file.
     std::string missing;
@@ -1131,6 +1340,7 @@ void exp_frame() {
           missing += (missing.empty() ? "" : ", ") + kv.first;
     if (!missing.empty()) {
       clog(L"experiments: NOT started: add these to [baseline] with their normal values: %S", missing.c_str());
+      g_sweep = false;
       return;
     }
     if (!g_apiOk) clog(L"experiments: Remix API not available, option steps will do nothing (proxy skips still work)");
@@ -1140,9 +1350,13 @@ void exp_frame() {
     g_expOrder.push_back(0);                                  // baseline again: did the scene drift?
     QueryPerformanceFrequency(&g_qpf);
     g_expPos = 0;
-    wchar_t why[160];
-    swprintf_s(why, L"%s: experiment run started (%zu steps, about %.0f s; keep the view still)", rbrrtx_key_name(RBRKEY_EXPERIMENT),
-               g_expOrder.size(), g_expOrder.size() * (g_expSettle + g_expMeasure));
+    g_sunOnBefore = g_sunOn;
+    g_expDirty.clear();
+    if (g_expApplyBase) for (const auto& kv : g_expBase) exp_set(kv.first, kv.second);
+    if (g_sweep) sweep_begin();
+    wchar_t why[200];
+    swprintf_s(why, L"%s: %s started (%zu steps, about %.0f s; keep the view still)", rbrrtx_key_name(g_sweep ? RBRKEY_SWEEP : RBRKEY_EXPERIMENT),
+               g_sweep ? L"stage sweep" : L"experiment run", g_expOrder.size(), g_expOrder.size() * (g_expSettle + g_expMeasure));
     log_frame(why);
     exp_apply(g_expOrder[0]);
     return;
@@ -1151,24 +1365,59 @@ void exp_frame() {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   const double inStep = static_cast<double>(now.QuadPart - g_expStepStart.QuadPart) / g_qpf.QuadPart;
+  const ExpStep& s = g_exp[g_expStep];
   if (!g_expMeasuring) {
-    if (inStep >= g_expSettle) { g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0; }
+    if (inStep >= g_expSettle) {
+      g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0;
+      if (g_sweep && s.dump) sweep_dump_start();
+      if (g_sweep && s.capture) {                            // Remix USD capture: hotkey F9 for this step (sweep.ini sets it)
+        g_captureBefore = list_captures();
+        post_key(WM_KEYDOWN, VK_F9);
+        g_captureKeyUp = g_frame + 5;
+        clog(L"sweep: capture key sent (captures go to %s)", capture_dir().c_str());
+      }
+    }
     return;
   }
   ++g_expFrames;
   const double measured = static_cast<double>(now.QuadPart - g_expMeasureStart.QuadPart) / g_qpf.QuadPart;
-  if (measured < g_expMeasure || g_expFrames < 10) return;
+  if (measured < (s.measure > 0 ? s.measure : g_expMeasure) || g_expFrames < 10) return;
   const double ms = measured * 1000.0 / g_expFrames;
   g_expMs.push_back(ms);
-  const ExpStep& s = g_exp[g_expStep];
   clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden, %.1f made solid per frame", g_expPos + 1,
        g_expOrder.size(), s.name.c_str(), ms, 1000.0 / ms, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames,
        static_cast<double>(g_expSolid) / g_expFrames);
+  if (g_sweep) {
+    std::wstring shotName = L"-";
+    double luma = -1.0;
+    if (g_sweepShots || s.shot) {
+      wchar_t file[160];
+      std::wstring clean = s.name;
+      for (wchar_t& c : clean) if (!iswalnum(c)) c = L'-';
+      swprintf_s(file, L"%02zu-%s.png", g_expPos + 1, clean.substr(0, 60).c_str());
+      shotName = rbrrtx_screenshot(g_wnd, (g_sweepDir + L"\\" + file).c_str(), &luma) ? file : L"(failed)";
+      if (luma >= 0 && luma < 1.0) shotName += L" (black: exclusive full screen? use windowed/borderless)";
+    }
+    if (s.capture) {
+      const auto after = list_captures();
+      std::wstring added;
+      for (const auto& f : after)
+        if (std::find(g_captureBefore.begin(), g_captureBefore.end(), f) == g_captureBefore.end()) added += (added.empty() ? L"" : L", ") + f;
+      clog(L"sweep: USD capture %s", added.empty() ? L"NOT found (Remix may still be writing it; check the captures folder)" : added.c_str());
+      shotName += L"; capture " + (added.empty() ? std::wstring(L"not found yet in ") + capture_dir() : added);
+    }
+    wchar_t line[600];
+    swprintf_s(line, L"%02zu %s\t%.2f\t%.1f\t%.1f\t%s\t%.1f", g_expPos + 1, s.name.c_str(), ms, 1000.0 / ms,
+               static_cast<double>(g_expSkipped) / g_expFrames, shotName.c_str(), luma);
+    g_sweepLines.push_back(line);
+  }
   if (++g_expPos >= g_expOrder.size()) { exp_finish(L"done, options back at baseline"); return; }
   exp_apply(g_expOrder[g_expPos]);
 }
 
 void end_frame(IDirect3DDevice9* dev) {
+  if (g_sweepDumpFrames && --g_sweepDumpFrames == 0) sweep_dump_end();
+  atmo_frame();
   exp_frame();
   cull_frame_tick();
   if (rbrrtx_key_pressed(RBRKEY_CULLING)) {
@@ -1176,6 +1425,14 @@ void end_frame(IDirect3DDevice9* dev) {
     swprintf_s(w, L"%s: culling %s", rbrrtx_key_name(RBRKEY_CULLING), cull_toggle() ? L"ON" : L"off");
     log_frame(w);
     cull_log_settings(L"key");
+  }
+  if (rbrrtx_key_pressed(RBRKEY_RAYTRACING)) {             // raster comparison: Remix draws the game as plain DXVK
+    static bool rtOn = true;
+    rtOn = !rtOn;
+    remix_set("rtx.enableRaytracing", rtOn ? "True" : "False");
+    wchar_t w[80];
+    swprintf_s(w, L"%s: ray tracing %s", rbrrtx_key_name(RBRKEY_RAYTRACING), rtOn ? L"ON" : L"off (raster)");
+    log_frame(w);
   }
   // Hotkeys (keys.cpp, rbr-rtx\config\keys.ini; defaults P O L J U I N H [ ] ; '). Until 2026-10-17 they were
   // Scroll Lock / Pause with Ctrl/Alt/Shift, which compact keyboards do not have. Every key is read every frame.
@@ -1721,13 +1978,191 @@ bool ff_sway_far(IDirect3DDevice9* dev) {
   return e->ffFar;
 }
 
+// ---- stage sweep helpers
+std::wstring sweep_log_dir() {
+  wchar_t dir[MAX_PATH] = {};
+  const DWORD n = GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", dir, MAX_PATH);
+  if (n > 0 && n < MAX_PATH) return dir;
+  wchar_t cfg[MAX_PATH * 2] = {};                            // installed add-on: <game>\rbr-rtx\logs
+  rbrrtx_config_path(L"RBRRTX_SWEEP_LOGS_UNSET", L"x", cfg, MAX_PATH * 2);
+  fs::path p = fs::path(cfg).parent_path().parent_path() / L"logs";
+  std::error_code ec;
+  fs::create_directories(p, ec);
+  return p.wstring();
+}
+
+std::wstring capture_dir() {
+  wchar_t d[MAX_PATH] = {};
+  const DWORD n = GetEnvironmentVariableW(L"DXVK_CAPTURE_PATH", d, MAX_PATH);
+  if (n > 0 && n < MAX_PATH) return d;
+  return (fs::current_path() / L"rtx-remix" / L"captures").wstring();
+}
+
+std::vector<std::wstring> list_captures() {
+  std::vector<std::wstring> out;
+  std::error_code ec;
+  for (auto it = fs::directory_iterator(capture_dir(), ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    const std::wstring ext = it->path().extension().wstring();
+    if (!_wcsicmp(ext.c_str(), L".usd") || !_wcsicmp(ext.c_str(), L".usda") || !_wcsicmp(ext.c_str(), L".usdc"))
+      out.push_back(it->path().filename().wstring());
+  }
+  return out;
+}
+
+// Posts a key to the game window: the Remix bridge forwards every window message to Remix's ImGui (bridge
+// client window.cpp RemixWndProc), which is how Remix sees its capture hotkey (a single key: ImGui reads Ctrl/Shift
+// from the server's own keyboard state, which a posted message does not change).
+void post_key(UINT msg, WPARAM vk) {
+  if (!g_wnd) return;
+  const UINT sc = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
+  LPARAM lp = 1 | (static_cast<LPARAM>(sc) << 16);
+  if (msg == WM_KEYUP) lp |= (1 << 30) | (1u << 31);
+  PostMessageW(g_wnd, msg, vk, lp);
+}
+
+void sweep_write(const std::wstring& name, const std::wstring& text) {
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, (g_sweepDir + L"\\" + name).c_str(), L"w, ccs=UTF-8") || !f) return;
+  fputws(text.c_str(), f);
+  fclose(f);
+}
+
+std::wstring stage_line(const RbrStageInfo& si) {
+  wchar_t s[512];
+  swprintf_s(s, L"stage %d \"%s\" (%S, surface tarmac %d / gravel %d / snow %d %%), car slot %d, sky %s, clouds %s, %s, "
+                L"surface %s (age %d), tyres %d, weather %s, game mode %d",
+             si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", si.tarmac, si.gravel, si.snow,
+             si.carId, rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay),
+             rbrrtx_wetness_name(si.wetness), si.surfaceAge, si.tyreType,
+             si.weatherType == 0 ? L"Good" : si.weatherType == 1 ? L"Random" : si.weatherType == 2 ? L"Bad" : L"?", si.gameMode);
+  return s;
+}
+
+void sweep_begin() {
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  wchar_t name[64];
+  swprintf_s(name, L"sweep-%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+  g_sweepDir = (fs::path(sweep_log_dir()) / name).wstring();
+  std::error_code ec;
+  fs::create_directories(g_sweepDir, ec);
+  g_sweepLines.clear();
+  RbrStageInfo si;
+  rbrrtx_stage_info(&si);
+  D3DMATRIX vinv = {};
+  const bool cam = g_haveCam && inverse(g_V, vinv);
+  wchar_t s[1024];
+  std::wstring r = L"RBR-RTX stage sweep " + std::wstring(name) + L"\n" + stage_line(si) + L"\n";
+  swprintf_s(s, L"camera (%.1f, %.1f, %.1f) %s, fovY %.1f deg; car (%.1f, %.1f, %.1f)%s\n", vinv._41, vinv._42, vinv._43,
+             cam ? L"" : L"(no camera yet)", g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f,
+             g_carPos[0], g_carPos[1], g_carPos[2], g_haveCar ? L"" : L" (no car draw seen)");
+  r += s;
+  const float el = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f, az = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
+  swprintf_s(s, L"sun: %s, %s, Remix light azimuth %.1f elevation %.1f, game c41 (%.3f, %.3f, %.3f), brightness x%.2f, weather x%.2f\n",
+             g_sunOn ? L"on" : L"OFF", g_sunManual ? L"debug sun" : L"game sun", az, el, g_c[41][0], g_c[41][1], g_c[41][2],
+             g_sunScale, g_sunWeather);
+  r += s;
+  swprintf_s(s, L"proxy: comp %s, FF scenery mode %d (sway near %.0f m), foliage mode %d (ALPHAREF %lu), dust %u %%, sky mode %d, "
+                L"windscreen %s, culling %s, transform mode %d\n",
+             g_enabled ? L"ON" : L"off", g_ffMode, g_ffSwayNear, g_foliageMode, g_cutoutRef, g_dustKeep, g_skyMode,
+             g_glassOn ? L"on" : L"skipped", g_cull.enabled ? L"ON" : L"off", g_testMode);
+  r += s;
+  wchar_t conf[MAX_PATH] = {};
+  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", conf, MAX_PATH);
+  r += L"Remix config: " + std::wstring(conf) + L"\nRemix captures: " + capture_dir() + L"\n";
+  r += L"atmosphere: " + g_atmoLine + L"\n";
+  sweep_write(L"stage.txt", r);
+  clog(L"sweep: started, output %s; %s", g_sweepDir.c_str(), stage_line(si).c_str());
+}
+
+void sweep_end(const wchar_t* why) {
+  if (g_sweepTsv) { fclose(g_sweepTsv); g_sweepTsv = nullptr; }
+  g_sweepDumpFrames = 0;
+  std::wstring r = L"RBR-RTX stage sweep: " + std::wstring(why) + L"\nstep\tframe ms\tfps\tdraws hidden\tscreenshot\tmean brightness\n";
+  for (const auto& l : g_sweepLines) r += l + L"\n";
+  r += L"\nFiles: stage.txt (stage, weather, camera, sun, proxy modes), draws.tsv (every draw of one frame: shader, fate, "
+       L"textures with Remix hashes), NN-*.png (one per step), textures.tsv (unique texture hashes of that frame).\n";
+  sweep_write(L"summary.txt", r);
+  clog(L"sweep: %s, output %s", why, g_sweepDir.c_str());
+  MessageBeep(MB_ICONASTERISK);                              // done signal: the player can move again
+}
+
+// One TSV line per draw of the dump frame (called from comp_draw before anything is skipped).
+std::unordered_map<unsigned long long, std::wstring> g_sweepTex;   // hash -> "WxH fmt, first shader"
+void sweep_tex(IDirect3DDevice9* dev, DWORD stage, wchar_t* hash, wchar_t* desc, size_t n, const ShaderInfo* key) {
+  IDirect3DBaseTexture9* bt = nullptr;
+  dev->lpVtbl->GetTexture(dev, stage, &bt);
+  if (!bt) { wcscpy_s(hash, 20, L"-"); wcscpy_s(desc, n, L"-"); return; }
+  const unsigned long long hx = rbrrtx_texture_hash(bt);
+  bt->lpVtbl->Release(bt);
+  swprintf_s(hash, 20, hx ? L"%016llX" : L"?", hx);
+  tex_desc(dev, stage, desc, n);
+  if (hx && !g_sweepTex.count(hx)) g_sweepTex[hx] = std::wstring(desc) + L"\t" + fs::path(key->name).filename().wstring();
+}
+
+void sweep_dump_draw(IDirect3DDevice9* dev, const wchar_t* fate) {
+  if (!g_sweepTsv || ++g_sweepDumpN > 20000) return;
+  const ShaderInfo* key = !g_curVS ? &kFixedFunction : g_curInfo ? g_curInfo : &kUnknownShader;
+  DWORD blend = 0, src = 0, dst = 0, zw = 0, at = 0, aref = 0, cull = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_SRCBLEND, &src);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_DESTBLEND, &dst);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAREF, &aref);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_CULLMODE, &cull);
+  wchar_t h0[20], h1[20], d0[96], d1[96];
+  sweep_tex(dev, 0, h0, d0, 96, key);
+  sweep_tex(dev, 1, h1, d1, 96, key);
+  float dist = -1.0f, radius = -1.0f;
+  if (g_curInfo && (g_curInfo->flags & SH_WORLDSPACE) && g_drawNumVert && g_haveCam) {   // world-space: sphere is in world units
+    if (CullEntry* e = cull_entry(dev)) {
+      D3DMATRIX vinv = {};
+      if (inverse(g_V, vinv)) {
+        const float dx = e->c[0] - vinv._41, dy = e->c[1] - vinv._42, dz = e->c[2] - vinv._43;
+        dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        radius = e->r;
+      }
+    }
+  }
+  const int ffc = g_curVS ? ff_scenery_class() : 0;
+  fwprintf(g_sweepTsv, L"%u\t%s\t%s\t%s\t%u\t%u\t%d\t%lu\t%lu\t%lu\t%lu\t%lu\t%lu\t%lu\t%.1f\t%.1f\t%s\t%s\t%s\t%s\n",
+           g_sweepDumpN, fs::path(key->name).filename().c_str(), g_primaryRT ? L"P" : L"O", fate, g_pendingPrims, g_drawNumVert,
+           ffc, at, aref, blend, src, dst, zw, cull, dist, radius, h0, d0, h1, d1);
+}
+
+void sweep_dump_start() {
+  if (_wfopen_s(&g_sweepTsv, (g_sweepDir + L"\\draws.tsv").c_str(), L"w, ccs=UTF-8") || !g_sweepTsv) { g_sweepTsv = nullptr; return; }
+  fwprintf(g_sweepTsv, L"n\tshader\ttarget\tfate\tprims\tverts\tff_class\talphatest\talpharef\tblend\tsrc\tdst\tzwrite\tcull\t"
+                       L"dist_m\tradius_m\tt0_hash\tt0\tt1_hash\tt1\n");
+  g_sweepDumpN = 0;
+  g_sweepTex.clear();
+  g_sweepDumpFrames = 1;                                     // the next whole frame (ended in end_frame)
+}
+
+void sweep_dump_end() {
+  if (!g_sweepTsv) return;
+  fclose(g_sweepTsv);
+  g_sweepTsv = nullptr;
+  std::wstring t = L"hash\ttexture\tfirst shader\n";
+  for (const auto& kv : g_sweepTex) {
+    wchar_t hx[20];
+    swprintf_s(hx, L"%016llX", kv.first);
+    t += std::wstring(hx) + L"\t" + kv.second + L"\n";
+  }
+  sweep_write(L"textures.tsv", t);
+  clog(L"sweep: draw list of one frame: %u draws, %zu textures with a Remix hash", g_sweepDumpN, g_sweepTex.size());
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   const bool glassSkip = !g_glassOn && is_glass_draw();
   const bool sky = is_sky_draw();
   const bool midQuad = !glassSkip && !sky && is_midscene_quad(dev);
-  if (g_dumpFrames) dump_draw(dev, glassSkip ? L"SKIPPED(glass)" : midQuad ? L"SKIPPED(mid-scene quad)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn");
+  const wchar_t* fate = glassSkip ? L"SKIPPED(glass)" : midQuad ? L"SKIPPED(mid-scene quad)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn";
+  if (g_dumpFrames) dump_draw(dev, fate);
+  if (g_sweepTsv) sweep_dump_draw(dev, exp_skip_draw() ? L"SKIPPED(step)" : fate);
   if (glassSkip) { ++g_st.glassSkipped; return D3D_OK; }
   if (g_skipOffscreen && g_enabled && !g_primaryRT && g_curInfo && (g_curInfo->flags & (SH_SCENERY | SH_SKY))) {
     ++g_offSkipped;
@@ -1902,6 +2337,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   clog(L"CreateDevice -> 0x%08lX, device %p", hr, out ? static_cast<void*>(*out) : nullptr);
   if (FAILED(hr) || !out || !*out) return hr;
   IDirect3DDevice9* dev = *out;
+  g_wnd = pp && pp->hDeviceWindow ? pp->hDeviceWindow : wnd;   // sweep screenshots / capture key
   IDirect3DDevice9Vtbl* v = dev->lpVtbl;
   o.AddRef = v->AddRef;
   patch(&v->Release, &hk_Release, o.Release);

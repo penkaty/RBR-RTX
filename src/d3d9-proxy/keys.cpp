@@ -31,11 +31,13 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
-  {L"experiment", 'K', L"performance experiment run"},
+  {L"experiment", kAlt | 'T', L"performance experiment run"},
   {L"culling", 'M', L"distance culling on/off"},
   {L"sun_brighter", kAlt | 'H', L"sun brightness +10 %"},
   {L"sun_dimmer", kAlt | 'N', L"sun brightness -10 %"},
   {L"ff_scenery", kAlt | 'J', L"fixed-function scenery mode"},
+  {L"sweep", kAlt | 'K', L"stage sweep (screenshots, debug views, texture hashes, report)"},
+  {L"raytracing", 'K', L"ray tracing on/off (raster comparison)"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
