@@ -63,6 +63,8 @@ Reporting a problem (please do!)
   No dynamic lights yet (headlights, night): RBR draws its lights as textures, so each has to be built through
   the Remix API; that is the next big step.
 
+Known issue: in replays the HUD does not show properly; it only appears for a moment when F11 takes a screenshot.
+
 Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, P frame dump, crash dumps) into
   rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
 

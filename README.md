@@ -78,6 +78,7 @@ Known issues:
   exactly there gives me the hashes to fix it, so logs help a lot.
 - Coming from an older test build? Delete `user.conf` in the RBR folder: old Alt+X settings override the new defaults.
 - Trees, dust and smoke cost a lot of FPS.
+- The HUD doesn't show properly in replays: it only flashes up for a moment when you press F11 for a screenshot.
 - DirectorsCut text in the interior view can be blank. With Cubic env maps on, the 3rd-person car looks wrong.
 - Some modern RSF cars use shaders I don't handle yet. Please send a sweep.
 
