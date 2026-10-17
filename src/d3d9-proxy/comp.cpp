@@ -460,11 +460,21 @@ void update_sun() {
 
 void destroy_sun(const wchar_t* why);
 
+// Every Remix option the proxy sets goes through here. The Remix API always writes to the Alt+X User Settings layer
+// (rtx_remix_api.cpp remixapi_SetConfigVariable -> getUserLayer(); no other layer, no way to clear), so a "Save" in
+// Alt+X would keep these test values. Each one is logged to rbrrtx_api_options.log; after the run rbr-remix.ps1 removes
+// from the saved user.conf every option whose value is still the proxy's (user 2026-10-17: tweak Alt+X with confidence).
+void remix_set(const char* key, const char* value) {
+  if (!g_apiOk || !g_api.SetConfigVariable) return;
+  const remixapi_ErrorCode err = g_api.SetConfigVariable(key, value);
+  rbrrtx_log_to(L"rbrrtx_api_options.log", L"set %S = %S%s", key, value, err == REMIXAPI_ERROR_CODE_SUCCESS ? L"" : L"  (refused)");
+}
+
 // Night with the debug sun: Remix lights the scene from the sky too, so the sky light dims with the sun (1 at the
 // horizon, 1 % at -12 degrees). Auto exposure would brighten the dark scene back up (evMin 0 .. evMax 4 = up to 16x,
 // test 2026-10-17: a grey night "lit from below"), so the lower exposure limit rises with the night to evMax - 1.
 // Base values from the conf Remix reads (last line wins); all go back when the debug sun is switched off. Set through
-// the API like K, so they show as User Settings changes.
+// remix_set like K.
 float conf_float(const char* name, float dflt) {
   wchar_t path[MAX_PATH];
   rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
@@ -493,14 +503,14 @@ void debug_sky() {
   const float sky = g_skyBase * f;
   if (std::fabs(sky - g_skySet) >= 0.01f * g_skyBase) {
     sprintf_s(v, "%.4f", sky);
-    g_api.SetConfigVariable("rtx.skyBrightness", v);
+    remix_set("rtx.skyBrightness", v);
     g_skySet = sky;
   }
   const float night = (1.0f - f) / 0.99f;              // 0 at the horizon .. 1 at -12 degrees
   const float evMin = evMinBase + ((std::max)(evMinBase, evMax - 1.0f) - evMinBase) * night;
   if (std::fabs(evMin - evMinSet) >= 0.05f) {
     sprintf_s(v, "%.3f", evMin);
-    g_api.SetConfigVariable("rtx.autoExposure.evMinValue", v);
+    remix_set("rtx.autoExposure.evMinValue", v);
     evMinSet = evMin;
   }
 }
@@ -895,7 +905,7 @@ void log_frame(const wchar_t* why) {
 // contains a listed part ("skip = Sway" = swaying foliage), waits settle_seconds, then averages the frame time over
 // measure_seconds. Baseline first and last (drift check); the log gets one line per step and a summary. K again =
 // abort. Afterwards every option is back at its [baseline] value. Options touched here land in the same layer as the
-// Alt+X user settings: do not "Save Settings" during a run.
+// Alt+X user settings (see remix_set): rbr-remix.ps1 strips them from a saved user.conf after the run.
 // Distance culling (defined further down, before comp_draw).
 void cull_set(const std::wstring& k, const std::wstring& v);
 void cull_load();
@@ -991,7 +1001,7 @@ void exp_set(const std::string& k, const std::string& v) {
     cull_set(std::wstring(k.begin() + 5, k.end()), std::wstring(v.begin(), v.end()));
     return;
   }
-  if (g_apiOk && g_api.SetConfigVariable) g_api.SetConfigVariable(k.c_str(), v.c_str());
+  remix_set(k.c_str(), v.c_str());
 }
 
 void exp_apply(int step) {
