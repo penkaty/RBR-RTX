@@ -55,8 +55,8 @@ and attached to the car. That's my next big step.
 5. Start the game as usual. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
 6. Uninstall: double-click `rbr-rtx\uninstall.cmd`.
 
-All debug keybinds are listed in `rbr-rtx\README.txt` and can be changed in
-`rbr-rtx\config\keys.ini`.
+All debug keybinds are listed in **`rbr-rtx\README.txt`** and can be changed in
+*`rbr-rtx\config\keys.ini`*.
 
 ## Troubleshooting
 
@@ -101,8 +101,7 @@ Known issues:
   gebdag's [Carmageddon 2](https://github.com/gebdag/carmageddon2-rtx-remix), [GTA2](https://github.com/gebdag/gta2-rtx-remix) and [Ignition](https://github.com/gebdag/ignition-rtx-remix),
   [Kenshi RTX](https://github.com/GARGEAN/Kenshi-RTX-Remix) (GARGEAN), [Thief Gold RTX](https://github.com/Night1099/thief-gold-rtx-remix) (Night1099),
   [Remix-Wrappers](https://github.com/Kim2091/Remix-Wrappers) and [PBRify_Remix](https://github.com/Kim2091/PBRify_Remix) (Kim2091),
-  [RemixProjGroup dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix), [Hooking-DX9-Present](https://github.com/bo3b/Hooking-DX9-Present) (bo3b),
-  [ai-modding-guides](https://gitlab.com/trevaintdead/ai-modding-guides) (trevaintdead).
+  [RemixProjGroup dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix), [Hooking-DX9-Present](https://github.com/bo3b/Hooking-DX9-Present) (bo3b)
 - [RallySimFans](https://www.rallysimfans.hu/) for keeping RBR alive. Richard Burns Rally belongs to its owners;
   this mod contains none of its files.
 
