@@ -30,8 +30,8 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
 
   Something looks wrong, or you want to report a problem:
   Alt+K    stage sweep: press it on the stage where the problem is, keep the car and camera still and wait about
-           15 seconds until the beep (screenshots taken apart layer by layer, Remix debug views, every texture with
-           its Remix hash). Result: rbr-rtx\logs\sweep-<date-time>\; zip that folder and send it.
+           25 seconds until the beep (screenshots taken apart layer by layer, Remix debug views, every texture with
+           its Remix hash, a Remix scene capture). Result: rbr-rtx\logs\sweep-<date-time>\; zip that folder and send it.
            Run the game windowed or borderless, or the screenshots come out black. Alt+K again aborts.
   P        record everything drawn in the next frame into rbr-rtx\logs (test builds with diagnostics.txt)
 

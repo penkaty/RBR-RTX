@@ -1324,7 +1324,7 @@ std::wstring capture_dir();
 std::vector<std::wstring> list_captures();
 
 void exp_frame() {
-  if (g_captureKeyUp && g_frame >= g_captureKeyUp) { post_key(WM_KEYUP, VK_F9); g_captureKeyUp = 0; }
+  if (g_captureKeyUp && g_frame >= g_captureKeyUp) { post_key(WM_KEYUP, VK_NUMPAD0); g_captureKeyUp = 0; }
   const bool kExp = rbrrtx_key_pressed(RBRKEY_EXPERIMENT), kSweep = rbrrtx_key_pressed(RBRKEY_SWEEP);
   if (kExp || kSweep) {
     if (g_expStep >= 0) { exp_finish(L"aborted (key)"); return; }
@@ -1370,9 +1370,9 @@ void exp_frame() {
     if (inStep >= g_expSettle) {
       g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0;
       if (g_sweep && s.dump) sweep_dump_start();
-      if (g_sweep && s.capture) {                            // Remix USD capture: hotkey F9 for this step (sweep.ini sets it)
+      if (g_sweep && s.capture) {                            // Remix USD capture: hotkey Numpad 0 for this step (sweep.ini sets it)
         g_captureBefore = list_captures();
-        post_key(WM_KEYDOWN, VK_F9);
+        post_key(WM_KEYDOWN, VK_NUMPAD0);
         g_captureKeyUp = g_frame + 5;
         clog(L"sweep: capture key sent (captures go to %s)", capture_dir().c_str());
       }
@@ -2012,12 +2012,16 @@ std::vector<std::wstring> list_captures() {
 // Posts a key to the game window: the Remix bridge forwards every window message to Remix's ImGui (bridge
 // client window.cpp RemixWndProc), which is how Remix sees its capture hotkey (a single key: ImGui reads Ctrl/Shift
 // from the server's own keyboard state, which a posted message does not change).
+// Real key input (SendInput), only while the game window is in front. A posted WM_KEYDOWN F9 (until 2026-10-17)
+// never reached Remix and switched DirectorsCut to its free camera. Numpad 0 = user's pick, used by nothing else.
 void post_key(UINT msg, WPARAM vk) {
-  if (!g_wnd) return;
-  const UINT sc = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
-  LPARAM lp = 1 | (static_cast<LPARAM>(sc) << 16);
-  if (msg == WM_KEYUP) lp |= (1 << 30) | (1u << 31);
-  PostMessageW(g_wnd, msg, vk, lp);
+  if (!g_wnd || GetForegroundWindow() != g_wnd) { clog(L"sweep: capture key not sent (game window not in front)"); return; }
+  INPUT in = {};
+  in.type = INPUT_KEYBOARD;
+  in.ki.wVk = static_cast<WORD>(vk);
+  in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+  in.ki.dwFlags = msg == WM_KEYUP ? KEYEVENTF_KEYUP : 0;
+  SendInput(1, &in, sizeof(in));
 }
 
 void sweep_write(const std::wstring& name, const std::wstring& text) {
