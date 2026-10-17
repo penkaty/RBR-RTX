@@ -55,7 +55,7 @@ and attached to the car. That's my next big step.
 5. Start the game as usual. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
 6. Uninstall: double-click `rbr-rtx\uninstall.cmd`.
 
-You don't need any keys to drive. All keys are listed in `rbr-rtx\README.txt` and can be changed in
+All debug keybinds are listed in `rbr-rtx\README.txt` and can be changed in
 `rbr-rtx\config\keys.ini`.
 
 ## Troubleshooting
