@@ -891,7 +891,17 @@ void exp_load() {
         const size_t a = s.find_first_not_of(L" \t"), b = s.find_last_not_of(L" \t");
         return a == std::wstring::npos ? std::wstring() : s.substr(a, b - a + 1);
       };
-      const std::wstring k = trim(l.substr(0, eq)), v = trim(l.substr(eq + 1));
+      const std::wstring k = trim(l.substr(0, eq));
+      std::wstring v = trim(l.substr(eq + 1));
+      if (!v.empty() && v[0] == L'@') {                       // value from a file next to the ini (long hash lists)
+        std::wstring file = path;
+        file = file.substr(0, file.find_last_of(L'\\') + 1) + v.substr(1);
+        std::wifstream in(file);
+        std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
+        if (content.empty()) clog(L"experiments: %s = %s: file not found or empty", k.c_str(), v.c_str());
+        v = trim(content);
+        while (!v.empty() && (v.back() == L'\n' || v.back() == L'\r')) v.pop_back();
+      }
       if (!_wcsicmp(sec, L"run")) {
         if (k == L"settle_seconds") g_expSettle = (std::max)(0.5, _wtof(v.c_str()));
         if (k == L"measure_seconds") g_expMeasure = (std::max)(1.0, _wtof(v.c_str()));
