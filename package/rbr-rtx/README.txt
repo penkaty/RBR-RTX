@@ -53,6 +53,16 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   Alt+T    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
            setting in rbr-rtx\logs\rbrrtx_comp.log
 
+Reporting a problem (please do!)
+  Whatever the problem: run the Alt+K sweep right where it shows (it presses Pause itself at the end for a Remix
+  scene capture; keep Pause free), wait for the beep, quit, then zip rbr-rtx\logs (and the newest capture_*.usd
+  from rbr-rtx\rtx-remix\captures if you can) and send it with stage, car, weather and what looks wrong:
+  https://github.com/penkaty/RBR-RTX/issues or the RBR-RTX Discord (link coming soon).
+  Unusual weather (snow, fog, rain, night) and rarely driven stages can show wrong surfaces because Remix knows
+  textures by hash and not all are sorted yet: a sweep from exactly there gives us the hashes to fix it.
+  No dynamic lights yet (headlights, night): RBR draws its lights as textures, so each has to be built through
+  the Remix API; that is the next big step.
+
 Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, P frame dump, crash dumps) into
   rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
 
