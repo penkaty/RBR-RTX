@@ -1324,7 +1324,7 @@ std::wstring capture_dir();
 std::vector<std::wstring> list_captures();
 
 void exp_frame() {
-  if (g_captureKeyUp && g_frame >= g_captureKeyUp) { post_key(WM_KEYUP, VK_NUMPAD0); g_captureKeyUp = 0; }
+  if (g_captureKeyUp && g_frame >= g_captureKeyUp) { post_key(WM_KEYUP, VK_PAUSE); g_captureKeyUp = 0; }
   const bool kExp = rbrrtx_key_pressed(RBRKEY_EXPERIMENT), kSweep = rbrrtx_key_pressed(RBRKEY_SWEEP);
   if (kExp || kSweep) {
     if (g_expStep >= 0) { exp_finish(L"aborted (key)"); return; }
@@ -1370,9 +1370,9 @@ void exp_frame() {
     if (inStep >= g_expSettle) {
       g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0;
       if (g_sweep && s.dump) sweep_dump_start();
-      if (g_sweep && s.capture) {                            // Remix USD capture: hotkey Numpad 0 for this step (sweep.ini sets it)
+      if (g_sweep && s.capture) {                            // Remix USD capture: hotkey Pause for this step (sweep.ini sets it)
         g_captureBefore = list_captures();
-        post_key(WM_KEYDOWN, VK_NUMPAD0);
+        post_key(WM_KEYDOWN, VK_PAUSE);
         g_captureKeyUp = g_frame + 5;
         clog(L"sweep: capture key sent (captures go to %s)", capture_dir().c_str());
       }
@@ -2026,7 +2026,7 @@ std::vector<std::wstring> list_captures() {
 // client window.cpp RemixWndProc), which is how Remix sees its capture hotkey (a single key: ImGui reads Ctrl/Shift
 // from the server's own keyboard state, which a posted message does not change).
 // Real key input (SendInput), only while the game window is in front. A posted WM_KEYDOWN F9 (until 2026-10-17)
-// never reached Remix and switched DirectorsCut to its free camera. Numpad 0 = user's pick, used by nothing else.
+// never reached Remix and switched DirectorsCut to its free camera. Pause = user's pick (Numpad 0 opened an RBR plugin menu).
 void post_key(UINT msg, WPARAM vk) {
   if (!g_wnd || GetForegroundWindow() != g_wnd) { clog(L"sweep: capture key not sent (game window not in front)"); return; }
   INPUT in = {};
