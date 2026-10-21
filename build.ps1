@@ -39,11 +39,11 @@ if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 $remixDst = Join-Path $dist 'rbr-rtx\remix'
 New-Item -ItemType Directory -Force $remixDst | Out-Null
 Copy-Item $proxy $dist
-Get-ChildItem $Remix -Force | Where-Object { $_.Name -notin 'NvRemixLauncher32.exe', 'd3d8to9.dll', 'ThirdPartyLicenses-d3d8to9.txt' } |
+Get-ChildItem $Remix -Force | Where-Object { $_.Name -notin 'NvRemixLauncher32.exe', 'NvRemixLauncher32.pdb', 'd3d8to9.dll', 'ThirdPartyLicenses-d3d8to9.txt', '.trex_arm64', 'artifacts_readme.txt' } |
   Copy-Item -Destination $remixDst -Recurse -Force
 Get-ChildItem (Join-Path $here 'package') -Force | Copy-Item -Destination $dist -Recurse -Force
 # Dev runs write into the runtime folder (crash dumps, logs, ReShade injected into NvRemixBridge.exe): never ship those.
-$leftovers = '*.dmp', '*.log', 'ReShade*', 'nrc_session_log.txt', 'user.conf', 'imgui.ini'
+$leftovers = '*.pdb', '*.dmp', '*.log', 'ReShade*', 'nrc_session_log.txt', 'user.conf', 'imgui.ini'
 Get-ChildItem $remixDst -Recurse -Force -File | Where-Object { $n = $_.Name; $leftovers | Where-Object { $n -like $_ } } |
   ForEach-Object { "left out (dev-run leftover): $($_.FullName.Substring($remixDst.Length + 1))"; Remove-Item $_.FullName -Force }
 Get-ChildItem $remixDst -Recurse -Force -Directory -Filter 'reshade-shaders' |
