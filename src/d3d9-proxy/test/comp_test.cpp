@@ -4,11 +4,14 @@
 // (world-space terrain) and once with CarPaint1 (object with world matrix in c8), each with constants built from
 // known World/View/Projection matrices exactly as RBR uploads them, then reads back World/View/Projection with
 // GetTransform. Exit code 0 when all three match within 1e-3. A third frame repeats the terrain draw with the
-// shader's comment blocks stripped and a moved camera (shader recognition without comments).
+// shader's comment blocks stripped and a moved camera (shader recognition without comments). A fourth frame draws
+// with a BTB-style shader (HLSL compiled at run time like rbr_rx's D3DX effects: worldviewproj / worldMatrix found by
+// name in the constant table, column_major registers) and a moved camera. Needs d3dcompiler_47.dll (Windows has it).
 #define WIN32_LEAN_AND_MEAN
 #define CINTERFACE
 #include <windows.h>
 #include <d3d9.h>
+#include <d3dcommon.h>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -100,6 +103,24 @@ int main() {
   }
   IDirect3DVertexShader9* rlStripped = nullptr;
   dev->lpVtbl->CreateVertexShader(dev, rlStrippedCode.data(), &rlStripped);
+  // Frame 3: BTB_Diffuse.fx's VShader (RX_CONTENT\COMMON\FX), registers pinned away from RBR's c0/c8.
+  static const char kBtbVs[] =
+    "float4x4 worldviewproj : register(c4); float4x4 viewproj; float4x4 worldMatrix : register(c12);\n"
+    "struct VS_OUT { float4 pos : POSITION; float3 N : TEXCOORD0; float2 uv : TEXCOORD1; float4 vpos : TEXCOORD2; };\n"
+    "VS_OUT VShader(float3 pos : POSITION, float3 N : NORMAL, float2 uv0 : TEXCOORD0) {\n"
+    "  VS_OUT o = (VS_OUT)0; o.pos = mul(float4(pos, 1), worldviewproj); o.N = normalize(mul(N, (float3x4)worldMatrix));\n"
+    "  o.uv = uv0; o.vpos = mul(float4(pos, 1), worldMatrix); return o; }\n";
+  typedef HRESULT(WINAPI* CompileFn)(const void*, SIZE_T, const char*, const void*, void*, const char*, const char*, UINT,
+                                     UINT, ID3DBlob**, ID3DBlob**);
+  HMODULE dc = LoadLibraryW(L"d3dcompiler_47.dll");
+  CompileFn compile = dc ? reinterpret_cast<CompileFn>(GetProcAddress(dc, "D3DCompile")) : nullptr;
+  ID3DBlob *btbBlob = nullptr, *btbErr = nullptr;
+  if (!compile || FAILED(compile(kBtbVs, sizeof(kBtbVs) - 1, "btb", nullptr, nullptr, "VShader", "vs_2_0", 0, 0, &btbBlob, &btbErr))) {
+    printf("BTB test shader did not compile%s%s\n", btbErr ? ": " : "", btbErr ? static_cast<const char*>(btbErr->lpVtbl->GetBufferPointer(btbErr)) : "");
+    return 2;
+  }
+  IDirect3DVertexShader9* btb = nullptr;
+  dev->lpVtbl->CreateVertexShader(dev, static_cast<const DWORD*>(btbBlob->lpVtbl->GetBufferPointer(btbBlob)), &btb);
 
   D3DVERTEXELEMENT9 el[] = {
     { 0, 0, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_POSITION, 0 }, { 0, 12, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_NORMAL, 0 },
@@ -120,9 +141,33 @@ int main() {
   float rows[4][4];
 
   int failures = 0;
-  for (int frame = 0; frame < 3; ++frame) {
+  for (int frame = 0; frame < 4; ++frame) {
     const bool stripped = frame == 2;
     if (stripped) { eye[0] += 40; eye[2] -= 30; view = look_at_lh(eye, at, up); }
+    if (frame == 3) {                         // BTB: only an effect draw, D3DX uploads column_major = transposed
+      eye[0] -= 70; eye[1] += 12; view = look_at_lh(eye, at, up);
+      auto put = [&](UINT reg, const D3DMATRIX& m) {
+        float t[4][4];
+        for (int i = 0; i < 4; ++i) for (int k = 0; k < 4; ++k) t[i][k] = m.m[k][i];
+        dev->lpVtbl->SetVertexShaderConstantF(dev, reg, &t[0][0], 4);
+      };
+      dev->lpVtbl->BeginScene(dev);
+      dev->lpVtbl->SetVertexDeclaration(dev, decl);
+      dev->lpVtbl->SetVertexShader(dev, btb);
+      put(4, mul(mul(world, view), proj));
+      put(12, world);
+      dev->lpVtbl->DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
+      dev->lpVtbl->EndScene(dev);
+      D3DMATRIX gw, gv, gp;
+      dev->lpVtbl->GetTransform(dev, D3DTS_WORLD, &gw);
+      dev->lpVtbl->GetTransform(dev, D3DTS_VIEW, &gv);
+      dev->lpVtbl->GetTransform(dev, D3DTS_PROJECTION, &gp);
+      const float ew = max_diff(gw, world), ev = max_diff(gv, view), ep = max_diff(gp, proj);
+      printf("frame 3 (BTB effect): max error world %.6f  view %.6f  projection %.6f\n", ew, ev, ep);
+      if (ew > 1e-3f || ev > 1e-3f || ep > 1e-3f) ++failures;
+      dev->lpVtbl->Present(dev, nullptr, nullptr, nullptr, nullptr);
+      continue;
+    }
     dev->lpVtbl->BeginScene(dev);
     dev->lpVtbl->SetVertexDeclaration(dev, decl);
     // c20-c23 deliberately off by a few units, like RBR's (the layer must not depend on it)
@@ -152,7 +197,7 @@ int main() {
     if (ew > 1e-3f || ev > 1e-3f || ep > 1e-3f) ++failures;
     dev->lpVtbl->Present(dev, nullptr, nullptr, nullptr, nullptr);
   }
-  decl->lpVtbl->Release(decl); rl->lpVtbl->Release(rl); rlStripped->lpVtbl->Release(rlStripped); car->lpVtbl->Release(car);
+  decl->lpVtbl->Release(decl); rl->lpVtbl->Release(rl); rlStripped->lpVtbl->Release(rlStripped); car->lpVtbl->Release(car); btb->lpVtbl->Release(btb);
   dev->lpVtbl->Release(dev); d3d->lpVtbl->Release(d3d);
   printf(failures ? "FAIL\n" : "PASS\n");
   return failures ? 1 : 0;

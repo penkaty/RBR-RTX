@@ -117,11 +117,16 @@ D3DMATRIX identity() {
 // ---------------------------------------------------------------- shader identification
 
 enum : unsigned { SH_KNOWN = 1, SH_WORLDSPACE = 2, SH_USES_C8 = 4, SH_CAR = 8, SH_SKY = 16, SH_GLASS = 32, SH_SCENERY = 64, SH_PARTICLE = 128,
-           SH_SWAY = 256, SH_ANIM = 512 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87)
+           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87)
+
+// A matrix constant of a D3DX-compiled shader, found by name in its constant table. HLSL packs column_major by
+// default: then register r+i holds column i, so the D3D (row-vector) matrix is the transpose of the registers.
+struct CtabMatrix { int reg = -1, count = 0; bool columns = true; };
 
 struct ShaderInfo {
   std::wstring name;
   unsigned flags = 0;
+  CtabMatrix wvp, world, vp;                           // SH_BTB: worldviewproj, worldMatrix, viewproj
 };
 
 // Length of D3D9 shader bytecode in bytes: up to and including the end token, skipping comment blocks.
@@ -158,6 +163,47 @@ unsigned long long code_hash(const DWORD* p, size_t max_dwords) {
 }
 
 bool starts_with(const std::wstring& s, const wchar_t* prefix) { return s.rfind(prefix, 0) == 0; }
+
+// BTB stages (Bob's Track Builder, loaded by RSF's rbr_rx.dll into track slot 41) are drawn with D3DX effects from
+// RX_CONTENT\COMMON\FX(_Low)\BTB_*.fx, compiled at run time, so their bytecode matches no .vso and their registers are
+// whatever the compiler picked. The compiled shader keeps a constant table (comment block "CTAB") with the names:
+// worldviewproj (object -> clip), worldMatrix (object -> world), viewproj (instanced variants: world comes per instance).
+// Returns true for a BTB shader (it has worldviewproj or viewproj) and fills the matrices found. Names: the .fx files.
+bool parse_btb_ctab(const DWORD* p, size_t max_dwords, ShaderInfo& info, std::wstring& names) {
+  for (size_t i = 1; i < max_dwords; ++i) {
+    const DWORD t = p[i];
+    if (t == 0x0000FFFF) break;
+    if ((t & 0xFFFF) != 0xFFFE) continue;
+    const DWORD len = (t >> 16) & 0x7FFF;
+    if (len >= 8 && p[i + 1] == 0x42415443) {          // 'CTAB'
+      const unsigned char* base = reinterpret_cast<const unsigned char*>(p + i + 2);
+      const size_t bytes = (len - 1) * sizeof(DWORD);
+      auto dw = [&](size_t off) -> DWORD { return off + 4 <= bytes ? *reinterpret_cast<const DWORD*>(base + off) : 0; };
+      auto wd = [&](size_t off) -> WORD { return off + 2 <= bytes ? *reinterpret_cast<const WORD*>(base + off) : 0; };
+      const DWORD count = dw(12), infoOff = dw(16);
+      bool btb = false;
+      for (DWORD c = 0; c < count && infoOff + (c + 1) * 20 <= bytes; ++c) {
+        const size_t ci = infoOff + c * 20;
+        const DWORD nameOff = dw(ci), typeOff = dw(ci + 12);
+        if (nameOff >= bytes) continue;
+        std::string n;
+        for (size_t k = nameOff; k < bytes && base[k] && n.size() < 64; ++k) n += static_cast<char>(base[k]);
+        names += (names.empty() ? L"" : L" ") + std::wstring(n.begin(), n.end());
+        if (wd(ci + 4) != 2) continue;                 // RegisterSet: D3DXRS_FLOAT4 only
+        CtabMatrix m;
+        m.reg = wd(ci + 6);
+        m.count = wd(ci + 8);
+        m.columns = typeOff < bytes && wd(typeOff) == 3;   // D3DXPC_MATRIX_COLUMNS (2 = rows)
+        if (!_stricmp(n.c_str(), "worldviewproj")) { info.wvp = m; btb = true; }
+        else if (!_stricmp(n.c_str(), "viewproj")) { info.vp = m; btb = true; }
+        else if (!_stricmp(n.c_str(), "worldMatrix")) info.world = m;
+      }
+      return btb;
+    }
+    i += len;
+  }
+  return false;
+}
 
 unsigned flags_for(const std::wstring& rel) {
   const std::wstring n = fs::path(rel).filename().wstring();
@@ -214,6 +260,7 @@ std::unordered_map<unsigned long long, std::wstring> g_vsoCode;   // code_hash -
 std::unordered_map<void*, ShaderInfo> g_vs;                     // created vertex shader -> identity
 unsigned g_vsKnown = 0, g_vsUnknown = 0;                        // CreateVertexShader results (unknown-shader warning)
 bool g_unknownWarned = false;
+unsigned g_btbShaders = 0;                                      // BTB effect shaders created (BTB track loaded)
 
 float g_c[256][4] = {};
 bool g_cset[256] = {};
@@ -292,6 +339,7 @@ float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from
 struct Stats {
   unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace;
   unsigned uiTriggerAt, oqAtUi;                        // draw number of our UI trigger (0 = none); open queries then
+  unsigned btb, btbSkipped;                            // BTB effect draws; of them left untransformed (instanced)
   float worldErr, rlDev, recErr;
   float skyErr, skyCamOff;                              // sky VP split error; sky camera distance from the dome centre
 } g_st = {};
@@ -1060,6 +1108,52 @@ void trigger_ui(IDirect3DDevice9* dev) {
 }
 
 // Returns true when the draw was given a material hint that after_draw must undo.
+// A matrix constant of the current BTB shader as a D3D matrix (false: not in the table or not set this session).
+bool ctab_matrix(const CtabMatrix& m, D3DMATRIX& out) {
+  if (m.reg < 0 || m.count < 3 || m.reg + 4 > 256) return false;
+  float r[4][4];
+  for (int i = 0; i < 4; ++i)
+    for (int k = 0; k < 4; ++k) r[i][k] = i < m.count ? g_c[m.reg + i][k] : (k == 3 ? 1.0f : 0.0f);
+  if (!all_set(m.reg, m.count)) return false;
+  // column_major: registers = columns, read like RBR's m4x4 constants (3 registers: the unused 4th column (0,0,0,1)
+  // was dropped by the compiler). row_major: registers = rows.
+  if (m.columns) out = from_rows(r);
+  else for (int i = 0; i < 4; ++i) for (int k = 0; k < 4; ++k) out.m[i][k] = r[i][k];
+  return true;
+}
+
+// BTB draw: W = worldMatrix, camera V*P = W^-1 * worldviewproj (first BTB draw of the frame defines it, like RBR's
+// first world-space draw). Without worldMatrix the world comes from worldviewproj and the frame's camera.
+// Instanced draws (world per instance in TEXCOORD1-4) are left to the game: one Remix world matrix cannot place them.
+bool btb_draw(IDirect3DDevice9* dev) {
+  ++g_st.btb;
+  D3DMATRIX wvp, world;
+  if (!ctab_matrix(g_curInfo->wvp, wvp)) { ++g_st.btbSkipped; return false; }
+  const bool haveW = ctab_matrix(g_curInfo->world, world);
+  if (haveW && !g_frameCam) {
+    DMat winv, V, P, vpinv;
+    double rec = 0;
+    if (inverse_d(to_d(world), winv)) {
+      const DMat vp = mul_d(winv, to_d(wvp));
+      if (decompose_vp(vp, V, P, rec) && inverse_d(vp, vpinv)) {
+        g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv;
+        g_haveCam = true;
+        g_frameCam = true;
+        g_st.recErr = static_cast<float>(rec);
+      }
+    }
+  }
+  if (!g_haveCam) { ++g_st.noCamera; return false; }
+  const D3DMATRIX derived = to_f(mul_d(to_d(wvp), g_VPinv));
+  if (haveW) g_st.worldErr = (std::max)(g_st.worldErr, max_diff(world, derived));
+  else world = derived;
+  set_xf(dev, 1, g_V);
+  set_xf(dev, 2, g_P);
+  set_xf(dev, 0, world);
+  ++g_st.xformed;
+  return apply_material_hint(dev);
+}
+
 bool before_draw(IDirect3DDevice9* dev) {
   ++g_st.draws;
   {
@@ -1122,6 +1216,7 @@ bool before_draw(IDirect3DDevice9* dev) {
       return apply_material_hint(dev);
     }
   }
+  if (g_curInfo && (g_curInfo->flags & SH_BTB)) return btb_draw(dev);
   const bool worldSpace = g_curInfo && (g_curInfo->flags & SH_WORLDSPACE);
   if (worldSpace && !g_frameCam) {                     // first world-space draw of the frame defines the camera
     DMat V, P, vpinv;
@@ -1170,10 +1265,10 @@ void log_frame(const wchar_t* why) {
   D3DMATRIX vinv = {};
   const bool okInv = g_haveCam && inverse(g_V, vinv);
   const float fovY = g_haveCam && g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f;
-  clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u], transformed %u, no-camera %u, "
+  clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed)], transformed %u, no-camera %u, "
        L"scenes %u, world-check max err %.5f, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
        L"UI trigger %s at draw %u (occlusion queries open then %u, now %d), %s",
-       g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.xformed, g_st.noCamera,
+       g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.xformed, g_st.noCamera,
        g_st.scenes, g_st.worldErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
        g_st.skyDraws, g_st.skyErr, g_st.skyCamOff, g_glassOn ? L"on" : L"off", g_st.glassSkipped, g_st.screenSpace, g_uiTriggerOn ? L"on" : L"off",
        g_st.uiTriggerAt, g_st.oqAtUi, g_oqActive, kTestModes[g_testMode]);
@@ -1707,10 +1802,21 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWO
     auto it = g_vso.find(h);
     if (it != g_vso.end()) name = &it->second;
     else if ((it = g_vsoCode.find(code_hash(fn, 1u << 16))) != g_vsoCode.end()) { name = &it->second; how = L", matched without comments"; }
+    std::wstring ctab;
     if (name) { info.name = *name; info.flags = flags_for(*name); ++g_vsKnown; }
+    else if (parse_btb_ctab(fn, 1u << 16, info, ctab)) {
+      info.name = info.wvp.reg >= 0 ? L"(BTB effect)" : L"(BTB effect, instanced)";
+      info.flags = SH_KNOWN | SH_BTB | SH_SCENERY;
+      ++g_vsKnown;
+      ++g_btbShaders;
+    }
     else { info.name = L"(not an RBR .vso)"; ++g_vsUnknown; }
     g_vs[*out] = info;
     clog(L"VS %p = %s (%zu bytes, hash %016llx%s)", static_cast<void*>(*out), info.name.c_str(), size, h, how);
+    if (info.flags & SH_BTB)
+      clog(L"  BTB constants: worldviewproj c%d/%d, worldMatrix c%d/%d, viewproj c%d/%d (%s); table: %s", info.wvp.reg,
+           info.wvp.count, info.world.reg, info.world.count, info.vp.reg, info.vp.count,
+           info.wvp.columns ? L"column_major" : L"row_major", ctab.c_str());
   }
   return hr;
 }
@@ -2188,8 +2294,8 @@ std::wstring stage_line(const RbrStageInfo& si) {
   wchar_t s[1024];
   swprintf_s(s, L"stage %d \"%s\" (%S, surface tarmac %d / gravel %d / snow %d %%), car slot %d = %s, sky %s, clouds %s, %s, "
                 L"surface %s (age %d), tyres %d, weather %s, game mode %d",
-             si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", si.tarmac, si.gravel, si.snow,
-             si.carId, car_desc(si.carId).c_str(), rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay),
+             si.trackId, si.trackId == 41 && g_btbShaders ? L"BTB track via rbr_rx (slot 41, name not read)" : si.name[0] ? si.name : L"?",
+             si.country[0] ? si.country : "?", si.tarmac, si.gravel, si.snow, si.carId, car_desc(si.carId).c_str(), rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay),
              rbrrtx_wetness_name(si.wetness), si.surfaceAge, si.tyreType,
              si.weatherType == 0 ? L"Good" : si.weatherType == 1 ? L"Random" : si.weatherType == 2 ? L"Bad" : L"?", si.gameMode);
   return s;
