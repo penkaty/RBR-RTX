@@ -33,24 +33,24 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
            25 seconds until the beep (screenshots taken apart layer by layer, Remix debug views, every texture with
            its Remix hash, a Remix scene capture). Result: rbr-rtx\logs\sweep-<date-time>\; zip that folder and send it.
            Run the game windowed or borderless, or the screenshots come out black. Alt+K again aborts.
-  P        record everything drawn in the next frame into rbr-rtx\logs (test builds with diagnostics.txt)
+  8        record everything drawn in the next frame into rbr-rtx\logs (test builds with diagnostics.txt)
 
   Is it RBR-RTX or Remix? Switch one part off and back (press again):
-  K        ray tracing on/off: the original raster image of the same scene
+  0        ray tracing on/off: the original raster image of the same scene
   O        RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on)
   L        Remix sun on/off
-  N        sky: Remix sky (default) <-> no sky
+  6        sky: Remix sky (default) <-> no sky
   J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
   I        cockpit windscreen on (default) / off
-  Alt+J    faster scenery: default (trees/grass/flags beyond 40 m stop swaying) -> off (old, slower) -> static only
-  M        distance culling on/off: far geometry outside the view left out of path tracing (rbr-rtx\config\culling.ini)
+  K        faster scenery: default (trees/grass/flags beyond 40 m stop swaying) -> off (old, slower) -> static only
+  U        distance culling on/off: far geometry outside the view left out of path tracing (rbr-rtx\config\culling.ini)
 
   Tuning:
-  U        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
-  Alt+H / Alt+N  sun brighter / dimmer (10 % per press; the log shows the value to keep)
+  7        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
+  Alt+N / Alt+M  sun brighter / dimmer (10 % per press; the log shows the value to keep)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
-  Alt+T    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
+  9        performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
            setting in rbr-rtx\logs\rbrrtx_comp.log
 
 Reporting a problem (please do!)
