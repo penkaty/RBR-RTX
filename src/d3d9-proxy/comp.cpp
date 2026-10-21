@@ -563,6 +563,12 @@ bool g_sunFallbackFixed = false;                       // RBRRTX_SUN_FALLBACK se
 // Per-stage sun direction (atmosphere.ini [stage.<id>] sun_dir.<Time> / sun_dir = "azimuth, elevation"): replaces the
 // game's SunDir where it does not match the stage's own bake (Carvalho de Rei reverse: file 53.8 deg, bake ~22 deg).
 bool g_sunOverride = false;
+// Main menu (and any time no stage is loaded): RBR's menu sun (162.5 / 22.9) does not match the menu backdrop's bake.
+// The user turned it to azimuth 28.0, height kept (2026-10-22). atmosphere.ini [atmosphere] menu_sun_azimuth
+// (none = off); the elevation stays the game's.
+bool g_inMenu = true;
+float g_menuSunAz = 28.0f;
+bool g_menuSunOn = true;
 float g_sunOverrideAz = 0.0f, g_sunOverrideEl = 0.0f;
 int g_sunRuleLogged = -1;                              // last rule logged (0 none, 1 capped, 2 fallback)
 
@@ -571,7 +577,8 @@ void sun_rule(float d[3]) {
   const float elev = std::atan2(-d[1], horiz) * 57.2958f;
   int rule = 0;
   float az = std::atan2(d[2], d[0]) * 57.2958f, el = elev;
-  if (g_sunOverride) { rule = 3; az = g_sunOverrideAz; el = g_sunOverrideEl; }
+  if (g_inMenu && g_menuSunOn) { rule = 4; az = g_menuSunAz; }
+  else if (g_sunOverride) { rule = 3; az = g_sunOverrideAz; el = g_sunOverrideEl; }
   else if (elev > g_sunValidMax) { rule = 2; az = g_sunFallbackAz; el = g_sunFallbackEl; }
   else if (elev > g_sunMaxElev) { rule = 1; el = g_sunMaxElev; }
   if (rule) {
@@ -583,7 +590,7 @@ void sun_rule(float d[3]) {
   if (rule != g_sunRuleLogged) {
     g_sunRuleLogged = rule;
     clog(L"sun rule: game sun elevation %.1f deg -> %s (azimuth %.1f, elevation %.1f)", elev,
-         rule == 3 ? L"stage override (atmosphere.ini)" : rule == 2 ? L"missing or overhead, fallback" : rule == 1 ? L"capped" : L"kept 1:1", az, el);
+         rule == 4 ? L"menu azimuth (atmosphere.ini)" : rule == 3 ? L"stage override (atmosphere.ini)" : rule == 2 ? L"missing or overhead, fallback" : rule == 1 ? L"capped" : L"kept 1:1", az, el);
   }
 }
 
@@ -751,6 +758,11 @@ void atmo_load() {
   wchar_t* path = g_atmoPath;
   rbrrtx_config_path(L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", path, MAX_PATH * 2);
   g_atmoEnabled = GetPrivateProfileIntW(L"atmosphere", L"enable", 1, path) != 0;
+  {
+    wchar_t v[32] = {};
+    GetPrivateProfileStringW(L"atmosphere", L"menu_sun_azimuth", L"28.0", v, 32, path);
+    g_menuSunOn = swscanf_s(v, L"%f", &g_menuSunAz) == 1;
+  }
   wchar_t names[8192];
   if (!GetPrivateProfileSectionNamesW(names, 8192, path)) { g_atmoEnabled = false; clog(L"atmosphere: no %s, off", path); return; }
   for (const wchar_t* sec = names; *sec; sec += wcslen(sec) + 1) {
@@ -811,10 +823,15 @@ std::wstring car_desc(int carId) {
 void atmo_frame() {
   if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
   if (!g_atmoLoaded) atmo_load();
-  if (!g_atmoEnabled) return;
   RbrStageInfo si;
-  if (!rbrrtx_stage_info(&si) || si.trackId <= 0) return;
-  if (si.gameMode != 1 && si.gameMode != 2 && si.gameMode != 5 && si.gameMode != 8 && si.gameMode != 10) return;
+  const bool inStage = rbrrtx_stage_info(&si) && si.trackId > 0 &&
+                       (si.gameMode == 1 || si.gameMode == 2 || si.gameMode == 5 || si.gameMode == 8 || si.gameMode == 10);
+  if (inStage == g_inMenu) {                           // menu <-> stage: log the sun rule again
+    g_inMenu = !inStage;
+    g_sunRuleLogged = -1;
+    if (g_inMenu) g_atmoKey.clear();                   // the next stage applies its look again
+  }
+  if (!g_atmoEnabled || !inStage) return;
   wchar_t key[96];
   swprintf_s(key, L"%d|%d|%d|%d", si.trackId, si.skyType, si.clouds, si.timeOfDay);
   if (g_atmoKey == key) return;
