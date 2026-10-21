@@ -88,6 +88,8 @@ Known issues:
 - The HUD doesn't show properly in replays: it only flashes up for a moment when you press F11 for a screenshot.
 - DirectorsCut text in the interior view can be blank. With Cubic env maps on, the 3rd-person car looks wrong.
 - Some modern RSF cars use shaders I don't handle yet. Please send a sweep.
+- **BTB stages** (made with Bob's Track Builder, e.g. Ruuhimaki) don't work with path tracing yet: the stage is
+  missing or floats in the sky. Press **0** to switch ray tracing off on those stages.
 
 ## Credits
 

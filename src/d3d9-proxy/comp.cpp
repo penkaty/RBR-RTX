@@ -261,6 +261,9 @@ std::unordered_map<void*, ShaderInfo> g_vs;                     // created verte
 unsigned g_vsKnown = 0, g_vsUnknown = 0;                        // CreateVertexShader results (unknown-shader warning)
 bool g_unknownWarned = false;
 unsigned g_btbShaders = 0;                                      // BTB effect shaders created (BTB track loaded)
+// BTB transforms (btb_draw, btb_instanced_draw) are parked, off unless RBRRTX_BTB=1: three attempts on Ruuhimaki
+// (2026-10-22, playtests/2026-10-22-btb-ruuhimaki.md) gave the same broken picture. Recognition and the stage label stay.
+bool g_btbOn = false;
 
 float g_c[256][4] = {};
 bool g_cset[256] = {};
@@ -1313,7 +1316,7 @@ BtbMerged* btb_merged(IDirect3DDevice9* dev, UINT n, IDirect3DVertexBuffer9* ins
 
 // false = not handled (the caller draws as usual).
 bool btb_instanced_draw(IDirect3DDevice9* dev, HRESULT& hr) {
-  if (!g_inDip || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & SH_BTB) || g_curInfo->vp.reg < 0) return false;
+  if (!g_btbOn || !g_inDip || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & SH_BTB) || g_curInfo->vp.reg < 0) return false;
   UINT f0 = 0, f1 = 0;
   if (FAILED(dev->lpVtbl->GetStreamSourceFreq(dev, 0, &f0)) || !(f0 & D3DSTREAMSOURCE_INDEXEDDATA)) return false;
   const UINT n = f0 & 0x3FFFFFFFu;
@@ -1425,7 +1428,10 @@ bool before_draw(IDirect3DDevice9* dev) {
       return apply_material_hint(dev);
     }
   }
-  if (g_curInfo && (g_curInfo->flags & SH_BTB)) return btb_draw(dev);
+  if (g_curInfo && (g_curInfo->flags & SH_BTB)) {
+    if (!g_btbOn) { ++g_st.btb; ++g_st.btbSkipped; return false; }
+    return btb_draw(dev);
+  }
   const bool worldSpace = g_curInfo && (g_curInfo->flags & SH_WORLDSPACE);
   if (worldSpace && !g_frameCam) {                     // first world-space draw of the frame defines the camera
     DMat V, P, vpinv;
@@ -2932,6 +2938,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     wchar_t sky[8];
     if (GetEnvironmentVariableW(L"RBRRTX_SKY", sky, 8)) g_skyMode = std::clamp(_wtoi(sky), 0, 2);
     g_glassOn = rbrrtx_env_flag(L"RBRRTX_GLASS", true);
+    g_btbOn = rbrrtx_env_flag(L"RBRRTX_BTB", false);
     g_uiTriggerOn = rbrrtx_env_flag(L"RBRRTX_UI_TRIGGER", true);
     g_skipOffscreen = !rbrrtx_env_flag(L"RBRRTX_OFFSCREEN", false);
     wchar_t fol[16];

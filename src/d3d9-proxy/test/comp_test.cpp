@@ -69,6 +69,7 @@ int main() {
   *(wcsrchr(dir, L'\\') + 1) = 0;
   wchar_t path[MAX_PATH];
   swprintf_s(path, L"%sd3d9.dll", dir);
+  SetEnvironmentVariableW(L"RBRRTX_BTB", L"1");     // BTB transforms are parked (off) in the game; test them anyway
   HMODULE proxy = LoadLibraryW(path);
   if (!proxy) { printf("cannot load proxy\n"); return 2; }
   auto create = reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(proxy, "Direct3DCreate9"));
