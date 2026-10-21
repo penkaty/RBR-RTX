@@ -335,6 +335,9 @@ unsigned g_opaqueDraws = 0;                            // draws made opaque this
 // are drawn from a copy of their cards clipped to it. RBRRTX_ALPHACUT=0 = off; key alpha_cut (Alt+O; Alt+C also pressed the game's camera key C); experiment
 // steps "alphacut = 0|1".
 int g_alphaCut = 1, g_alphaCutBase = 1;
+// Go/no-go timing (experiment step "alphacut_solid = 1"): clipped copies drawn with the alpha test forced off, hull ones
+// too (wrong look: solid outlines). Tells whether the extra triangles cost more than the alpha test they could save.
+bool g_alphaCutSolid = false;
 struct { bool valid; INT base; UINT minIdx, numV, startIdx, count; } g_dip = {};   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
@@ -1165,6 +1168,7 @@ struct ExpStep {
   int ff = -1;                                               // fixed-function scenery mode for this step (-1 = start value)
   int opaque = -1;                                           // opaque cut-outs for this step (-1 = start value)
   int alphacut = -1;                                         // alpha-card cut-outs for this step (-1 = start value)
+  bool alphacutSolid = false;                                // clipped copies without alpha test (timing only)
   int sun = -1;                                              // 0 = Remix sun off for this step (-1 = as it was)
   bool shot = false, dump = false, capture = false;          // sweep: screenshot / draw list / Remix USD capture
   double measure = -1.0;                                     // measure_seconds for this step only (-1 = [run])
@@ -1250,6 +1254,8 @@ void exp_load(bool sweep) {
         step.opaque = _wtoi(v.c_str()) != 0 ? 1 : 0;
       } else if (k == L"alphacut") {
         step.alphacut = _wtoi(v.c_str()) != 0 ? 1 : 0;
+      } else if (k == L"alphacut_solid") {
+        step.alphacutSolid = _wtoi(v.c_str()) != 0;
       } else if (k == L"measure_seconds") {
         step.measure = (std::max)(0.1, _wtof(v.c_str()));
       } else if (k == L"sun") {
@@ -1301,6 +1307,7 @@ void exp_apply(int step) {
   g_ffMode = step > 0 && g_exp[step].ff >= 0 ? g_exp[step].ff : g_ffBase;
   g_opaqueAlpha = step > 0 && g_exp[step].opaque >= 0 ? g_exp[step].opaque : g_opaqueBase;
   g_alphaCut = step > 0 && g_exp[step].alphacut >= 0 ? g_exp[step].alphacut : g_alphaCutBase;
+  g_alphaCutSolid = step > 0 && g_exp[step].alphacutSolid;
   const bool sunWanted = step > 0 && g_exp[step].sun >= 0 ? g_exp[step].sun != 0 : g_sunOnBefore;
   if (sunWanted != g_sunOn) {
     g_sunOn = sunWanted;
@@ -2346,7 +2353,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   RbrAlphaCut ac = {};
   const bool cut = g_alphaCut && g_dip.valid && !atOff && is_scenery_draw() &&
                    rbrrtx_alphacut_find(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, &ac);
-  if (cut && ac.alphaTestOff && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
+  if (cut && (ac.alphaTestOff || g_alphaCutSolid) && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
   const HRESULT hr = cut ? alphacut_draw(dev, ac) : draw();
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
