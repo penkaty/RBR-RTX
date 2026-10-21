@@ -323,6 +323,12 @@ bool is_glass_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInf
 //   1 = scenery cut-outs use ALPHAREF g_cutoutRef (RBRRTX_ALPHAREF, default 96) and the soft pass is skipped (default)
 //   2 = lower ALPHAREF, soft pass kept      0 = game values (old behaviour)
 int g_foliageMode = 1;
+// Opaque cut-outs (docs/research/adr-001-alphacards.md, tier 1): an alpha-tested draw whose stage-0 texture never falls
+// below the ALPHAREF in effect (min alpha of mip 0, harvest.cpp) passes every pixel anyway; drawn without alpha test,
+// Remix treats it as opaque (no alpha test per ray hit). Many RBR trunks, IO props and foliage atlases are such.
+// RBRRTX_OPAQUE_ALPHA=0 = off; key opaque_alpha (Alt+O); experiment steps "opaque = 0|1".
+int g_opaqueAlpha = 1, g_opaqueBase = 1;
+unsigned g_opaqueDraws = 0;                            // draws made opaque this way since the last log line
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
 
@@ -1096,7 +1102,10 @@ void log_frame(const wchar_t* why) {
        g_ffMode, g_ffMode == 0 ? L"off, vertex capture" : g_ffMode == 1 ? L"static RL scenery" : L"static RL scenery + far swaying foliage",
        g_dustFrames ? static_cast<double>(g_ffDraws) / g_dustFrames : 0.0,
        g_dustFrames ? static_cast<double>(g_ffSwayFar) / g_dustFrames : 0.0, g_ffSwayNear);
+  clog(L"  opaque cut-outs %s: %.0f alpha-tested draws per frame drawn without alpha test (texture never below ALPHAREF)",
+       g_opaqueAlpha ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_opaqueDraws) / g_dustFrames : 0.0);
   g_refLowered = g_softSkipped = g_midQuadSkipped = g_dustTrimmed = g_dustQuads = g_dustFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
+  g_opaqueDraws = 0;
   if (okInv)
     clog(L"  camera pos (%.2f, %.2f, %.2f) vs c50 (%.2f, %.2f, %.2f); camera up (%.3f, %.3f, %.3f); fovY %.1f deg, "
          L"P._11 %.3f P._22 %.3f P._31 %.3f P._32 %.3f P._33 %.4f P._34 %.3f P._43 %.3f; sun c41 (%.3f, %.3f, %.3f)",
@@ -1144,6 +1153,7 @@ struct ExpStep {
   std::vector<std::wstring> skip;
   std::vector<std::wstring> solid;                           // alpha test off for these shader name parts
   int ff = -1;                                               // fixed-function scenery mode for this step (-1 = start value)
+  int opaque = -1;                                           // opaque cut-outs for this step (-1 = start value)
   int sun = -1;                                              // 0 = Remix sun off for this step (-1 = as it was)
   bool shot = false, dump = false, capture = false;          // sweep: screenshot / draw list / Remix USD capture
   double measure = -1.0;                                     // measure_seconds for this step only (-1 = [run])
@@ -1225,6 +1235,8 @@ void exp_load(bool sweep) {
         step.name = v;
       } else if (k == L"ff") {
         step.ff = std::clamp(_wtoi(v.c_str()), 0, 2);
+      } else if (k == L"opaque") {
+        step.opaque = _wtoi(v.c_str()) != 0 ? 1 : 0;
       } else if (k == L"measure_seconds") {
         step.measure = (std::max)(0.1, _wtof(v.c_str()));
       } else if (k == L"sun") {
@@ -1274,6 +1286,7 @@ void exp_apply(int step) {
   g_expSolidCache.clear();
   g_expStep = step;
   g_ffMode = step > 0 && g_exp[step].ff >= 0 ? g_exp[step].ff : g_ffBase;
+  g_opaqueAlpha = step > 0 && g_exp[step].opaque >= 0 ? g_exp[step].opaque : g_opaqueBase;
   const bool sunWanted = step > 0 && g_exp[step].sun >= 0 ? g_exp[step].sun != 0 : g_sunOnBefore;
   if (sunWanted != g_sunOn) {
     g_sunOn = sunWanted;
@@ -1454,7 +1467,7 @@ void end_frame(IDirect3DDevice9* dev) {
              kDust = rbrrtx_key_pressed(RBRKEY_DUST), kGlass = rbrrtx_key_pressed(RBRKEY_WINDSCREEN),
              kSky = rbrrtx_key_pressed(RBRKEY_SKY), kDebugSun = rbrrtx_key_pressed(RBRKEY_DEBUG_SUN);
   const bool kBrighter = rbrrtx_key_pressed(RBRKEY_SUN_BRIGHTER), kDimmer = rbrrtx_key_pressed(RBRKEY_SUN_DIMMER);
-  const bool kFf = rbrrtx_key_pressed(RBRKEY_FF_SCENERY);
+  const bool kFf = rbrrtx_key_pressed(RBRKEY_FF_SCENERY), kOpaque = rbrrtx_key_pressed(RBRKEY_OPAQUE_ALPHA);
   wchar_t why[256];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
@@ -1471,6 +1484,11 @@ void end_frame(IDirect3DDevice9* dev) {
   if (kFf) {                                           // fixed-function scenery 0 -> 1 -> 2 -> 0
     g_ffMode = g_ffBase = (g_ffMode + 1) % 3;           // also what K steps return to
     swprintf_s(why, L"%s: fixed-function scenery mode %d", rbrrtx_key_name(RBRKEY_FF_SCENERY), g_ffMode);
+    log_frame(why);
+  }
+  if (kOpaque) {
+    g_opaqueAlpha = g_opaqueBase = !g_opaqueAlpha;      // also what K steps return to
+    swprintf_s(why, L"%s: opaque cut-outs %s", rbrrtx_key_name(RBRKEY_OPAQUE_ALPHA), g_opaqueAlpha ? L"ON (no alpha test)" : L"off (game's alpha test)");
     log_frame(why);
   }
   if (kSun) {                                          // only the Remix sun on/off (camera and sky stay)
@@ -2171,6 +2189,24 @@ void sweep_dump_end() {
   clog(L"sweep: draw list of one frame: %u draws, %zu textures with a Remix hash", g_sweepDumpN, g_sweepTex.size());
 }
 
+// Opaque cut-out (g_opaqueAlpha): the alpha test of this (alpha-tested) draw passes every texel of its stage-0 texture.
+// Blended draws keep their state (Remix routes them by blend, not by the test).
+bool opaque_cutout(IDirect3DDevice9* dev) {
+  DWORD blend = 0, func = 0, ref = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  if (blend) return false;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAFUNC, &func);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAREF, &ref);
+  IDirect3DBaseTexture9* bt = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &bt);
+  if (!bt) return false;
+  const int minA = rbrrtx_texture_min_alpha(bt);
+  bt->lpVtbl->Release(bt);
+  if (minA < 0) return false;
+  const int r = static_cast<int>(ref & 0xFF);
+  return func == D3DCMP_GREATEREQUAL ? minA >= r : func == D3DCMP_GREATER ? minA > r : func == D3DCMP_ALWAYS;
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -2238,11 +2274,17 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     clog(L"    -> proj [3][3] %.3f [2][3] %.3f, zw %lu, colour write 0x%lx, occlusion queries open %d, UI trigger at draw %u",
          p._44, p._34, zw, cw, g_oqActive, g_st.uiTriggerAt);
   }
-  bool atOff = false;                                  // performance experiment: this class drawn without alpha test
-  if (exp_solid_draw()) {
+  bool atOff = false;                                  // drawn without alpha test: experiment class or opaque cut-out
+  const bool expSolid = exp_solid_draw();
+  if (expSolid || g_opaqueAlpha) {
     DWORD at = 0;
     dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
-    if (at && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) { atOff = true; ++g_expSolid; }
+    const bool opaque = at && !expSolid && opaque_cutout(dev);
+    if (at && (expSolid || opaque) && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) {
+      atOff = true;
+      ++g_expSolid;
+      if (opaque) ++g_opaqueDraws;
+    }
   }
   // Fixed-function scenery (g_ffMode): unbind the VS for this draw, or give the game's VS back after FF draws.
   const int ffClass = g_curVS ? ff_scenery_class() : 0;
@@ -2405,6 +2447,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     if (GetEnvironmentVariableW(L"RBRRTX_FOLIAGE", fol, 16)) g_foliageMode = std::clamp(_wtoi(fol), 0, 2);
     if (GetEnvironmentVariableW(L"RBRRTX_DUST", fol, 16)) g_dustKeep = static_cast<unsigned>(std::clamp(_wtoi(fol), 0, 100));
     if (GetEnvironmentVariableW(L"RBRRTX_FF", fol, 16)) g_ffMode = g_ffBase = std::clamp(_wtoi(fol), 0, 2);
+    g_opaqueAlpha = g_opaqueBase = rbrrtx_env_flag(L"RBRRTX_OPAQUE_ALPHA", true) ? 1 : 0;
     if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = (std::max)(0.0f, static_cast<float>(_wtof(fol)));
     if (GetEnvironmentVariableW(L"RBRRTX_ALPHAREF", fol, 16)) g_cutoutRef = static_cast<DWORD>(std::clamp(_wtoi(fol), 1, 255));
     const DWORD hv = GetEnvironmentVariableW(L"RBRRTX_HARVEST", fol, 16);

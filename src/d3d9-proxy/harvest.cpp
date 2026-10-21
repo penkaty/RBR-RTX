@@ -10,6 +10,7 @@
 // mode. Hashes already in harvest.tsv are not dumped again. Nothing here changes what the game or Remix see.
 #define CINTERFACE
 #include "common.hpp"
+#include "alpha_min.hpp"
 #include <d3d9.h>
 #include <cstdio>
 #include <cwchar>
@@ -37,6 +38,7 @@ std::mutex g_mx;
 std::unordered_map<void*, Lock> g_texLocks, g_surfLocks;   // texture (level 0) / surface -> current whole lock
 std::unordered_set<unsigned long long> g_seen;
 std::unordered_map<void*, unsigned long long> g_texHash;   // texture object -> hash of its mip 0 (this run)
+std::unordered_map<void*, int> g_texMinAlpha;              // texture object -> smallest alpha of its mip 0 (-1 unknown)
 std::unordered_set<std::wstring> g_usage;                  // "shader|hash" pairs already in usage.tsv
 FILE* g_usageTsv = nullptr;
 std::wstring g_dir;
@@ -129,7 +131,10 @@ void record(IDirect3DTexture9* tex, const D3DSURFACE_DESC& d, const Lock& lk) {
   for (UINT r = 0; r < rows; ++r)
     memcpy(&data[static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lk.bits) + static_cast<size_t>(r) * lk.pitch, rowBytes);
   const unsigned long long hx = XXH3_64bits(data.data(), data.size());
-  if (tex) g_texHash[tex] = hx;
+  if (tex) {
+    g_texHash[tex] = hx;
+    g_texMinAlpha[tex] = rbrrtx_min_alpha(d.Format, reinterpret_cast<const unsigned char*>(data.data()), data.size());
+  }
   if (g_dir.empty()) return;                         // hash only (stage sweep), no harvest folder
   ++g_seq;
   if (!g_seen.insert(hx).second) { ++g_dup; return; }
@@ -260,6 +265,13 @@ unsigned long long rbrrtx_texture_hash(void* base_texture) {
   std::lock_guard<std::mutex> g(g_mx);
   auto it = g_texHash.find(base_texture);
   return it != g_texHash.end() ? it->second : 0;
+}
+
+int rbrrtx_texture_min_alpha(void* base_texture) {
+  if (!base_texture) return -1;
+  std::lock_guard<std::mutex> g(g_mx);
+  auto it = g_texMinAlpha.find(base_texture);
+  return it != g_texMinAlpha.end() ? it->second : -1;
 }
 
 void rbrrtx_harvest_install(void* device) {
