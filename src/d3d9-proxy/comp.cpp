@@ -490,15 +490,23 @@ void init_remix_api() {
   else clog(L"sun: Remix API unavailable (error %d)", static_cast<int>(err));
 }
 
-// Stage sun rule (user 2026-10-17). RBR takes the sun from Maps\<id>\TrackSettings<id>.ini SunDir per time of day;
-// 54 of 450 stages miss it or have 0,-1,0, and the game then uses a sun straight overhead (Santa Lucia, 514, 562):
-// flat light, no shadows to read the road by. Rule, for the Remix light only (the game's own constants stay):
-//  - never higher than g_sunMaxElev (default 60 deg ~ noon in mid-June Poland, 52 N: 90 - 52 + 23.4 = 61.4; the user
-//    prefers lower than needed), azimuth kept;
-//  - straight overhead (no usable azimuth, above 85 deg): g_sunFallbackEl (40 deg) from the azimuth of RBR's most used
-//    SunDir preset (-0.843 -0.504 0.187, 709 sections).
-// RBRRTX_SUN_MAX_ELEV = degrees, RBRRTX_SUN_FALLBACK = "azimuth,elevation" (degrees, azimuth as atan2(z, x)).
-float g_sunMaxElev = 60.0f, g_sunFallbackAz = 167.5f, g_sunFallbackEl = 40.0f;
+// Stage sun rule (user 2026-10-17, reworked 2026-10-21). RBR takes the sun (shader constant c41) from
+// Maps\<id>\TrackSettings<id>.ini SunDir, one per section = time of day x weather, so c41 already follows the
+// scene's time and weather. Rule, for the Remix light only (the game's own constants stay):
+//  - a valid stage sun (up to g_sunValidMax, 80 deg) is used 1:1, so Remix shadows match the stage's baked ones;
+//  - missing or 0,-1,0 SunDir (183 of 3364 sections; the game then lights from straight overhead: flat light, no
+//    shadows to read the road by) or above 80 deg (61 sections): fallback from atmosphere.ini, per time of day the
+//    game's own most used preset (time.* fallback_sun), its elevation capped by the lowest sun_max_elev of the
+//    region / sky / clouds / time / stage sections (60 or lower, user).
+// RBRRTX_SUN_MAX_ELEV = degrees: optional cap on valid stage suns too (default none).
+// RBRRTX_SUN_FALLBACK = "azimuth,elevation": fixed fallback, overrides atmosphere.ini (degrees, azimuth = atan2(z, x)).
+float g_sunMaxElev = 90.0f, g_sunValidMax = 80.0f;
+float g_sunFallbackAz = 167.5f, g_sunFallbackEl = 40.0f;   // current fallback (atmosphere.ini per stage/time)
+bool g_sunFallbackFixed = false;                       // RBRRTX_SUN_FALLBACK set: atmosphere.ini does not change it
+// Per-stage sun direction (atmosphere.ini [stage.<id>] sun_dir.<Time> / sun_dir = "azimuth, elevation"): replaces the
+// game's SunDir where it does not match the stage's own bake (Carvalho de Rei reverse: file 53.8 deg, bake ~22 deg).
+bool g_sunOverride = false;
+float g_sunOverrideAz = 0.0f, g_sunOverrideEl = 0.0f;
 int g_sunRuleLogged = -1;                              // last rule logged (0 none, 1 capped, 2 fallback)
 
 void sun_rule(float d[3]) {
@@ -506,7 +514,8 @@ void sun_rule(float d[3]) {
   const float elev = std::atan2(-d[1], horiz) * 57.2958f;
   int rule = 0;
   float az = std::atan2(d[2], d[0]) * 57.2958f, el = elev;
-  if (elev > 85.0f) { rule = 2; az = g_sunFallbackAz; el = g_sunFallbackEl; }
+  if (g_sunOverride) { rule = 3; az = g_sunOverrideAz; el = g_sunOverrideEl; }
+  else if (elev > g_sunValidMax) { rule = 2; az = g_sunFallbackAz; el = g_sunFallbackEl; }
   else if (elev > g_sunMaxElev) { rule = 1; el = g_sunMaxElev; }
   if (rule) {
     const float e = el * 0.0174533f, a = az * 0.0174533f;
@@ -517,7 +526,7 @@ void sun_rule(float d[3]) {
   if (rule != g_sunRuleLogged) {
     g_sunRuleLogged = rule;
     clog(L"sun rule: game sun elevation %.1f deg -> %s (azimuth %.1f, elevation %.1f)", elev,
-         rule == 2 ? L"overhead, stage fallback" : rule == 1 ? L"capped" : L"kept", az, el);
+         rule == 3 ? L"stage override (atmosphere.ini)" : rule == 2 ? L"missing or overhead, fallback" : rule == 1 ? L"capped" : L"kept 1:1", az, el);
   }
 }
 
@@ -641,12 +650,15 @@ extern int g_expStep;                                          // K / sweep runn
 struct AtmoFactors {
   float dist = 1.0f, col[3] = { 1.0f, 1.0f, 1.0f }, sky = 1.0f, sun = 1.0f;
   float albedo = -1.0f, aniso = -1000.0f;              // absolute values when set
+  float sunMaxElev = -1.0f;                            // absolute when set: fallback sun cap (deg)
+  float fbAz = -1000.0f, fbEl = -1.0f;                 // absolute when set: fallback sun "azimuth, elevation" (deg)
 };
 struct AtmoRegion { std::wstring name; std::vector<std::wstring> countries; AtmoFactors f; };
 bool g_atmoEnabled = true, g_atmoLoaded = false;
 std::vector<AtmoRegion> g_atmoRegions;
 std::unordered_map<std::wstring, AtmoFactors> g_atmoSections;   // "sky.Crisp", "clouds.Clear", "time.Noon"
 std::wstring g_atmoKey, g_atmoLine = L"not applied yet";
+wchar_t g_atmoPath[MAX_PATH * 2] = {};
 std::unordered_map<std::string, std::string> g_atmoSent;
 struct { float dist, col[3], albedo[3], aniso, sky; } g_atmoBase = {};
 
@@ -672,12 +684,14 @@ AtmoFactors atmo_read(const wchar_t* path, const wchar_t* sec) {
   if (GetPrivateProfileStringW(sec, L"sun", L"", v, 128, path)) f.sun = static_cast<float>(_wtof(v));
   if (GetPrivateProfileStringW(sec, L"albedo", L"", v, 128, path)) f.albedo = static_cast<float>(_wtof(v));
   if (GetPrivateProfileStringW(sec, L"anisotropy", L"", v, 128, path)) f.aniso = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"sun_max_elev", L"", v, 128, path)) f.sunMaxElev = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"fallback_sun", L"", v, 128, path)) swscanf_s(v, L"%f , %f", &f.fbAz, &f.fbEl);
   return f;
 }
 
 void atmo_load() {
   g_atmoLoaded = true;
-  wchar_t path[MAX_PATH * 2] = {};
+  wchar_t* path = g_atmoPath;
   rbrrtx_config_path(L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", path, MAX_PATH * 2);
   g_atmoEnabled = GetPrivateProfileIntW(L"atmosphere", L"enable", 1, path) != 0;
   wchar_t names[8192];
@@ -692,7 +706,8 @@ void atmo_load() {
       r.countries = split_list(c);
       r.f = atmo_read(path, sec);
       g_atmoRegions.push_back(r);
-    } else if (s.rfind(L"sky.", 0) == 0 || s.rfind(L"clouds.", 0) == 0 || s.rfind(L"time.", 0) == 0) {
+    } else if (s.rfind(L"sky.", 0) == 0 || s.rfind(L"clouds.", 0) == 0 || s.rfind(L"time.", 0) == 0 ||
+               s.rfind(L"stage.", 0) == 0) {
       g_atmoSections[s] = atmo_read(path, sec);
     }
   }
@@ -736,12 +751,15 @@ void atmo_frame() {
     for (const auto& c : r.countries) if (!_wcsicmp(c.c_str(), country.c_str())) { region = &r; break; }
   AtmoFactors total;
   float albedo = -1.0f, aniso = -1000.0f;
+  float sunCap = 60.0f, fbAz = 167.5f, fbEl = 40.0f;   // defaults when atmosphere.ini has none
   auto mul = [&](const AtmoFactors* f) {
     if (!f) return;
     total.dist *= f->dist; total.sky *= f->sky; total.sun *= f->sun;
     for (int i = 0; i < 3; ++i) total.col[i] *= f->col[i];
     if (f->albedo >= 0.0f) albedo = f->albedo;
     if (f->aniso > -999.0f) aniso = f->aniso;
+    if (f->sunMaxElev >= 0.0f) sunCap = (std::min)(sunCap, f->sunMaxElev);
+    if (f->fbAz > -999.0f && f->fbEl >= 0.0f) { fbAz = f->fbAz; fbEl = f->fbEl; }
   };
   auto sec = [&](const wchar_t* prefix, const wchar_t* name) -> const AtmoFactors* {
     auto it = g_atmoSections.find(std::wstring(prefix) + name);
@@ -751,6 +769,17 @@ void atmo_frame() {
   mul(sec(L"sky.", rbrrtx_sky_name(si.skyType)));
   mul(sec(L"clouds.", rbrrtx_cloud_name(si.clouds)));
   mul(sec(L"time.", rbrrtx_time_name(si.timeOfDay)));
+  mul(sec(L"stage.", std::to_wstring(si.trackId).c_str()));   // per-stage look (soft baked shadows: weaker sun)
+  if (!g_sunFallbackFixed) { g_sunFallbackAz = fbAz; g_sunFallbackEl = (std::min)(fbEl, sunCap); }
+  {                                                    // per-stage sun direction: time-specific key first
+    const std::wstring stageSec = L"stage." + std::to_wstring(si.trackId);
+    const std::wstring timeKey = std::wstring(L"sun_dir.") + rbrrtx_time_name(si.timeOfDay);
+    wchar_t v[128] = {};
+    if (!GetPrivateProfileStringW(stageSec.c_str(), timeKey.c_str(), L"", v, 128, g_atmoPath))
+      GetPrivateProfileStringW(stageSec.c_str(), L"sun_dir", L"", v, 128, g_atmoPath);
+    g_sunOverride = v[0] && swscanf_s(v, L"%f , %f", &g_sunOverrideAz, &g_sunOverrideEl) == 2;
+  }
+  g_sunRuleLogged = -1;                                // log the rule again for the new stage / time
   float col[3], alb[3];
   for (int i = 0; i < 3; ++i) {
     col[i] = std::clamp(g_atmoBase.col[i] * total.col[i], 0.05f, 0.999f);
@@ -768,10 +797,10 @@ void atmo_frame() {
   if (std::fabs(total.sun - g_sunWeather) > 0.001f) { g_sunWeather = total.sun; g_sunFade = -1.0f; }   // light re-created
   wchar_t line[512];
   swprintf_s(line, L"stage %d %s (%S, region %s), sky %s, clouds %s, %s -> haze %.0f m (x%.2f), colour (%.2f %.2f %.2f), "
-                   L"albedo %.2f, anisotropy %.2f, sky light %.2f, sun x%.2f",
+                   L"albedo %.2f, anisotropy %.2f, sky light %.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
              si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region ? region->name.c_str() : L"none",
              rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay), dist, total.dist,
-             col[0], col[1], col[2], alb[0], an, sky, total.sun);
+             col[0], col[1], col[2], alb[0], an, sky, total.sun, g_sunFallbackAz, g_sunFallbackEl, g_sunOverride ? L"override" : L"from the game");
   g_atmoLine = line;
   clog(L"atmosphere: %s", line);
 }
@@ -2576,7 +2605,10 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     if (GetEnvironmentVariableW(L"RBRRTX_XF_MODE", xf, 8)) g_testMode = std::clamp(_wtoi(xf), 0, 3);
     wchar_t rad[64];
     if (GetEnvironmentVariableW(L"RBRRTX_SUN_MAX_ELEV", rad, 64)) g_sunMaxElev = std::clamp(static_cast<float>(_wtof(rad)), 5.0f, 90.0f);
-    if (GetEnvironmentVariableW(L"RBRRTX_SUN_FALLBACK", rad, 64)) swscanf_s(rad, L"%f,%f", &g_sunFallbackAz, &g_sunFallbackEl);
+    if (GetEnvironmentVariableW(L"RBRRTX_SUN_FALLBACK", rad, 64)) {
+      swscanf_s(rad, L"%f,%f", &g_sunFallbackAz, &g_sunFallbackEl);
+      g_sunFallbackFixed = true;
+    }
     if (GetEnvironmentVariableW(L"RBRRTX_SUN_RADIANCE", rad, 64))
       swscanf_s(rad, L"%f,%f,%f", &g_sunRadiance[0], &g_sunRadiance[1], &g_sunRadiance[2]);
     load_vso_hashes();
