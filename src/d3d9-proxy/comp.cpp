@@ -339,8 +339,8 @@ float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from
 struct Stats {
   unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace;
   unsigned uiTriggerAt, oqAtUi;                        // draw number of our UI trigger (0 = none); open queries then
-  unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, copies drawn
-  float btbWorldErr;                                   // BTB worldMatrix vs the world its worldviewproj implies
+  unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, their copies
+  unsigned btbRebuilt, btbCamRejected;                 // merged instance buffers built this frame; camera candidates refused
   float worldErr, rlDev, recErr;
   float skyErr, skyCamOff;                              // sky VP split error; sky camera distance from the dome centre
 } g_st = {};
@@ -407,7 +407,11 @@ int g_alphaCut = 1, g_alphaCutBase = 1;
 // too (wrong look: solid outlines). Tells whether the extra triangles cost more than the alpha test they could save.
 bool g_alphaCutSolid = false;
 struct { bool valid; INT base; UINT minIdx, numV, startIdx, count; } g_dip = {};
-bool g_inDip = false;                                  // a DrawIndexedPrimitive (any type) is in flight   // the DrawIndexedPrimitive in flight
+bool g_inDip = false, g_dipTriList = false;            // a DrawIndexedPrimitive (any type / a triangle list) is in flight
+float g_btbShift[3] = {};                              // BTB space + shift = RBR world (see btb_camera)
+bool g_btbPrev = false;                                // last frame had BTB draws: RBR draws use RBR's own camera
+DMat g_rbrVPinv = {};                                  // (RBR view*projection)^-1 from the last car draw with c8
+bool g_rbrVPvalid = false;   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
 
@@ -1124,89 +1128,235 @@ bool ctab_matrix(const CtabMatrix& m, D3DMATRIX& out) {
   return true;
 }
 
-// BTB draw: camera V*P = W^-1 * worldviewproj of the frame's first BTB draw (W = its worldMatrix; like RBR's first
-// world-space draw). Every draw's world then comes from its own worldviewproj and that camera: worldMatrix alone did
-// not match what worldviewproj draws (Ruuhimaki run 01:02, world check 148 units, terrain floating above the car), so
-// it is only trusted for the camera. Instanced draws (world per instance in TEXCOORD1-4): btb_instanced_draw.
+// BTB camera. rbr_rx draws camera-relative (run 01:11: the camera from BTB matrices sat at (0,0,0) while RBR's c50
+// said (-58, 148, 28), so road and trees floated ~148 m above the car), and with its own projection (other near/far).
+// One shared, absolute system anchored on the game's camera: rotation and projection come from BTB's view*projection,
+// the position from c50 (RBR uploads it before the sky, the first draws of a frame). shift = c50 - BTB camera
+// position, so BTB space + shift = RBR world space (shift = 0 if rbr_rx ever draws absolute).
+// RBR's own draws in a BTB frame (car, cockpit) then use their exact world (c8) or c0 * (RBR view*projection)^-1,
+// never BTB's camera, whose projection differs.
+bool btb_camera(const DMat& vpRel) {
+  DMat V, P, vinv;
+  double rec = 0;
+  if (!decompose_vp(vpRel, V, P, rec) || !inverse_d(V, vinv)) return false;
+  const double cam[3] = { vinv.m[12], vinv.m[13], vinv.m[14] };
+  double shift[3] = { 0, 0, 0 };
+  if (g_cset[50]) for (int k = 0; k < 3; ++k) shift[k] = g_c[50][k] - cam[k];
+  const double rel = std::sqrt(cam[0] * cam[0] + cam[1] * cam[1] + cam[2] * cam[2]);
+  const double toC50 = std::sqrt(shift[0] * shift[0] + shift[1] * shift[1] + shift[2] * shift[2]);
+  if (rel > 1.0 && toC50 > 1.0) { ++g_st.btbCamRejected; return false; }   // neither relative nor absolute: bad W
+  DMat T = {};                                         // T(-shift): RBR world -> BTB space
+  T.m[0] = T.m[5] = T.m[10] = T.m[15] = 1.0;
+  T.m[12] = -shift[0]; T.m[13] = -shift[1]; T.m[14] = -shift[2];
+  const DMat vpAbs = mul_d(T, vpRel), vAbs = mul_d(T, V);
+  DMat vpinv;
+  if (!inverse_d(vpAbs, vpinv)) return false;
+  g_V = to_f(vAbs); g_P = to_f(P); g_VPinv = vpinv;
+  g_haveCam = g_frameCam = true;
+  g_st.recErr = static_cast<float>(rec);
+  for (int k = 0; k < 3; ++k) g_btbShift[k] = static_cast<float>(shift[k]);
+  return true;
+}
+
+// BTB draw: the frame's first BTB draw with a usable worldMatrix gives the camera (W^-1 * worldviewproj, accepted only
+// when it puts the camera at BTB's origin or at c50); every draw's world = worldviewproj * camera^-1.
 bool btb_draw(IDirect3DDevice9* dev) {
   ++g_st.btb;
   D3DMATRIX wvp, world;
   if (g_curInfo->wvp.reg < 0) return false;            // instanced: btb_instanced_draw sets the transforms
   if (!ctab_matrix(g_curInfo->wvp, wvp)) { ++g_st.btbSkipped; return false; }
-  const bool haveW = ctab_matrix(g_curInfo->world, world);
-  if (haveW && !g_frameCam) {
-    DMat winv, V, P, vpinv;
-    double rec = 0;
-    if (inverse_d(to_d(world), winv)) {
-      const DMat vp = mul_d(winv, to_d(wvp));
-      if (decompose_vp(vp, V, P, rec) && inverse_d(vp, vpinv)) {
-        g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv;
-        g_haveCam = true;
-        g_frameCam = true;
-        g_st.recErr = static_cast<float>(rec);
-      }
-    }
-  }
+  DMat winv;
+  if (!g_frameCam && ctab_matrix(g_curInfo->world, world) && inverse_d(to_d(world), winv)) btb_camera(mul_d(winv, to_d(wvp)));
   if (!g_haveCam) { ++g_st.noCamera; return false; }
-  const D3DMATRIX derived = to_f(mul_d(to_d(wvp), g_VPinv));
-  if (haveW) g_st.btbWorldErr = (std::max)(g_st.btbWorldErr, max_diff(world, derived));
-  world = derived;
   set_xf(dev, 1, g_V);
   set_xf(dev, 2, g_P);
-  set_xf(dev, 0, world);
+  set_xf(dev, 0, to_f(mul_d(to_d(wvp), g_VPinv)));
   ++g_st.xformed;
   return apply_material_hint(dev);
 }
 
-// Instanced BTB draw (DrawIndexedPrimitive with stream 0 frequency INDEXEDDATA|n, stream 1 = one float4x4 per copy
-// as TEXCOORD1-4 rows; HLSL vpos = mul(float4x4(rows), pos), pos = mul(vpos, viewproj)). Remix places a draw with one
-// world matrix, so the draw is split: per copy, stream 1 points at that copy's element with stride 0 (every vertex
-// reads it, so the raster image stays the game's) and the Remix world = rows^T * viewproj * camera^-1.
+// Instanced BTB draw (stream 0 frequency INDEXEDDATA|n, stream 1 = one float4x4 per copy as TEXCOORD1-4 rows; HLSL
+// vpos = mul(float4x4(rows), pos), pos = mul(vpos, viewproj)). Remix places a draw with one world matrix, and one
+// draw per copy was 22,000 draws a frame (run 01:11: 6 fps). So the copies are merged on the CPU into one vertex/index
+// buffer pair in BTB space (positions and normals through each copy's matrix), cached per draw and rebuilt only when
+// its source (buffers, ranges, instance data hash) changes. Drawn once with stream 1 = an identity matrix at stride 0
+// (the game's shader then rasterises the merged copies as before) and Remix world = viewproj * camera^-1.
+struct BtbMerged {
+  unsigned long long instHash = 0;
+  IDirect3DVertexBuffer9* vb = nullptr;
+  IDirect3DIndexBuffer9* ib = nullptr;
+  UINT verts = 0, prims = 0, stride = 0;
+};
+std::unordered_map<std::string, BtbMerged> g_btbMerged;
+IDirect3DVertexBuffer9* g_btbIdentity = nullptr;        // one float4x4 identity (stream 1 at stride 0)
+
+void btb_merged_release(BtbMerged& m) {
+  if (m.vb) { m.vb->lpVtbl->Release(m.vb); m.vb = nullptr; }
+  if (m.ib) { m.ib->lpVtbl->Release(m.ib); m.ib = nullptr; }
+}
+
+void btb_merged_clear() {
+  for (auto& e : g_btbMerged) btb_merged_release(e.second);
+  g_btbMerged.clear();
+}
+
+// Offsets of stream-0 FLOAT3 POSITION / NORMAL in the current declaration (-1 = none).
+void btb_decl_offsets(IDirect3DDevice9* dev, int& pos, int& nrm) {
+  pos = nrm = -1;
+  IDirect3DVertexDeclaration9* decl = nullptr;
+  if (FAILED(dev->lpVtbl->GetVertexDeclaration(dev, &decl)) || !decl) return;
+  D3DVERTEXELEMENT9 e[MAXD3DDECLLENGTH + 1];
+  UINT n = MAXD3DDECLLENGTH + 1;
+  if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, e, &n)))
+    for (UINT i = 0; i < n && e[i].Stream != 0xFF; ++i)
+      if (e[i].Stream == 0 && e[i].Type == D3DDECLTYPE_FLOAT3 && e[i].UsageIndex == 0) {
+        if (e[i].Usage == D3DDECLUSAGE_POSITION) pos = e[i].Offset;
+        else if (e[i].Usage == D3DDECLUSAGE_NORMAL) nrm = e[i].Offset;
+      }
+  decl->lpVtbl->Release(decl);
+}
+
+// Fills m with the merged copies of the draw in flight. Locks are READONLY; nothing of the game's is changed.
+bool btb_merge_build(IDirect3DDevice9* dev, BtbMerged& m, const std::vector<unsigned char>& rows, UINT n,
+                     IDirect3DVertexBuffer9* vb0, UINT off0, UINT stride0, IDirect3DIndexBuffer9* ib0, int posOff, int nrmOff) {
+  D3DINDEXBUFFER_DESC id = {};
+  if (FAILED(ib0->lpVtbl->GetDesc(ib0, &id))) return false;
+  const UINT isz = id.Format == D3DFMT_INDEX32 ? 4 : 2, nIdx = g_dip.count * 3;
+  std::vector<unsigned> idx(nIdx);
+  std::vector<unsigned char> src(static_cast<size_t>(g_dip.numV) * stride0);
+  void* p = nullptr;
+  if (FAILED(ib0->lpVtbl->Lock(ib0, g_dip.startIdx * isz, nIdx * isz, &p, D3DLOCK_READONLY)) || !p) return false;
+  for (UINT i = 0; i < nIdx; ++i) idx[i] = isz == 4 ? static_cast<const unsigned*>(p)[i] : static_cast<const WORD*>(p)[i];
+  ib0->lpVtbl->Unlock(ib0);
+  for (unsigned v : idx) if (v < g_dip.minIdx || v >= g_dip.minIdx + g_dip.numV) return false;
+  const UINT first = off0 + (static_cast<UINT>(g_dip.base) + g_dip.minIdx) * stride0;
+  if (FAILED(vb0->lpVtbl->Lock(vb0, first, g_dip.numV * stride0, &p, D3DLOCK_READONLY)) || !p) return false;
+  std::memcpy(src.data(), p, src.size());
+  vb0->lpVtbl->Unlock(vb0);
+  const UINT verts = n * g_dip.numV;
+  const bool idx32 = verts > 65535;
+  if (FAILED(dev->lpVtbl->CreateVertexBuffer(dev, verts * stride0, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &m.vb, nullptr)) ||
+      FAILED(dev->lpVtbl->CreateIndexBuffer(dev, n * nIdx * (idx32 ? 4 : 2), D3DUSAGE_WRITEONLY,
+                                            idx32 ? D3DFMT_INDEX32 : D3DFMT_INDEX16, D3DPOOL_MANAGED, &m.ib, nullptr)))
+    return false;
+  void* dst = nullptr;
+  if (FAILED(m.vb->lpVtbl->Lock(m.vb, 0, 0, &dst, 0)) || !dst) return false;
+  unsigned char* out = static_cast<unsigned char*>(dst);
+  for (UINT c = 0; c < n; ++c) {
+    const float (*r)[4] = reinterpret_cast<const float (*)[4]>(&rows[c * 64]);   // vpos_k = dot(row k, (p, 1))
+    for (UINT v = 0; v < g_dip.numV; ++v) {
+      unsigned char* dv = out + (static_cast<size_t>(c) * g_dip.numV + v) * stride0;
+      std::memcpy(dv, &src[static_cast<size_t>(v) * stride0], stride0);
+      float q[3], w[3];
+      std::memcpy(q, dv + posOff, 12);
+      for (int k = 0; k < 3; ++k) w[k] = r[k][0] * q[0] + r[k][1] * q[1] + r[k][2] * q[2] + r[k][3];
+      std::memcpy(dv + posOff, w, 12);
+      if (nrmOff >= 0) {
+        std::memcpy(q, dv + nrmOff, 12);
+        for (int k = 0; k < 3; ++k) w[k] = r[k][0] * q[0] + r[k][1] * q[1] + r[k][2] * q[2];
+        const float l = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+        if (l > 1e-12f) for (float& x : w) x /= l;
+        std::memcpy(dv + nrmOff, w, 12);
+      }
+    }
+  }
+  m.vb->lpVtbl->Unlock(m.vb);
+  if (FAILED(m.ib->lpVtbl->Lock(m.ib, 0, 0, &dst, 0)) || !dst) return false;
+  for (UINT c = 0; c < n; ++c)
+    for (UINT i = 0; i < nIdx; ++i) {
+      const unsigned v = c * g_dip.numV + (idx[i] - g_dip.minIdx);
+      if (idx32) static_cast<unsigned*>(dst)[c * nIdx + i] = v;
+      else static_cast<WORD*>(dst)[c * nIdx + i] = static_cast<WORD>(v);
+    }
+  m.ib->lpVtbl->Unlock(m.ib);
+  m.verts = verts; m.prims = n * g_dip.count; m.stride = stride0;
+  return true;
+}
+
+// The merged buffers for the draw in flight: cached, rebuilt when the instance data changes.
+BtbMerged* btb_merged(IDirect3DDevice9* dev, UINT n, IDirect3DVertexBuffer9* inst, UINT instOff, UINT instStride) {
+  if (g_dip.base < 0 || g_dip.numV == 0 || g_dip.count == 0 || !g_dipTriList || instStride < 64) return nullptr;
+  if (static_cast<unsigned long long>(n) * g_dip.numV > 1500000ull) return nullptr;
+  IDirect3DVertexBuffer9* vb0 = nullptr;
+  IDirect3DIndexBuffer9* ib0 = nullptr;
+  UINT off0 = 0, stride0 = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb0, &off0, &stride0)) || !vb0) return nullptr;
+  dev->lpVtbl->GetIndices(dev, &ib0);
+  int posOff = -1, nrmOff = -1;
+  btb_decl_offsets(dev, posOff, nrmOff);
+  BtbMerged* result = nullptr;
+  std::vector<unsigned char> rows(static_cast<size_t>(n) * 64);
+  void* p = nullptr;
+  if (ib0 && posOff >= 0 && stride0 >= static_cast<UINT>(posOff) + 12 &&
+      SUCCEEDED(inst->lpVtbl->Lock(inst, instOff, n * instStride, &p, D3DLOCK_READONLY)) && p) {
+    for (UINT i = 0; i < n; ++i) std::memcpy(&rows[i * 64], static_cast<const unsigned char*>(p) + i * instStride, 64);
+    inst->lpVtbl->Unlock(inst);
+    char key[192];
+    sprintf_s(key, "%p|%u|%u|%p|%d|%u|%u|%u|%u|%p|%u|%u|%u", static_cast<void*>(vb0), off0, stride0, static_cast<void*>(ib0),
+              g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, static_cast<void*>(inst), instOff, instStride, n);
+    const unsigned long long h = fnv1a(rows.data(), rows.size());
+    BtbMerged& m = g_btbMerged[key];
+    if (m.vb && m.instHash == h) result = &m;
+    else {
+      btb_merged_release(m);
+      if (btb_merge_build(dev, m, rows, n, vb0, off0, stride0, ib0, posOff, nrmOff)) {
+        m.instHash = h;
+        result = &m;
+        ++g_st.btbRebuilt;
+      } else btb_merged_release(m);
+    }
+  }
+  vb0->lpVtbl->Release(vb0);
+  if (ib0) ib0->lpVtbl->Release(ib0);
+  return result;
+}
+
 // false = not handled (the caller draws as usual).
-template <class Draw>
-bool btb_instanced_draw(IDirect3DDevice9* dev, Draw& draw, HRESULT& hr) {
+bool btb_instanced_draw(IDirect3DDevice9* dev, HRESULT& hr) {
   if (!g_inDip || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & SH_BTB) || g_curInfo->vp.reg < 0) return false;
   UINT f0 = 0, f1 = 0;
   if (FAILED(dev->lpVtbl->GetStreamSourceFreq(dev, 0, &f0)) || !(f0 & D3DSTREAMSOURCE_INDEXEDDATA)) return false;
-  const UINT n = (std::min)(f0 & 0x3FFFFFFFu, 4096u);
+  const UINT n = f0 & 0x3FFFFFFFu;
   D3DMATRIX vpm;
   if (!n || !ctab_matrix(g_curInfo->vp, vpm)) return false;
-  if (!g_frameCam) {                                   // no BTB camera this frame yet: viewproj is the camera
-    DMat V, P, vpinv;
-    double rec = 0;
-    if (!decompose_vp(to_d(vpm), V, P, rec) || !inverse_d(to_d(vpm), vpinv)) return false;
-    g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv;
-    g_haveCam = g_frameCam = true;
+  if (!g_frameCam) btb_camera(to_d(vpm));              // viewproj is BTB's camera without any world in it
+  if (!g_haveCam) return false;
+  if (g_btbMerged.size() > 4096) btb_merged_clear();
+  if (!g_btbIdentity) {
+    void* p = nullptr;
+    const float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    if (SUCCEEDED(dev->lpVtbl->CreateVertexBuffer(dev, 64, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &g_btbIdentity, nullptr)) &&
+        SUCCEEDED(g_btbIdentity->lpVtbl->Lock(g_btbIdentity, 0, 0, &p, 0)) && p) {
+      std::memcpy(p, id, 64);
+      g_btbIdentity->lpVtbl->Unlock(g_btbIdentity);
+    }
   }
-  IDirect3DVertexBuffer9* vb = nullptr;
-  UINT off = 0, stride = 0;
+  IDirect3DVertexBuffer9 *inst = nullptr, *vb0 = nullptr;
+  IDirect3DIndexBuffer9* ib0 = nullptr;
+  UINT instOff = 0, instStride = 0, off0 = 0, stride0 = 0;
   dev->lpVtbl->GetStreamSourceFreq(dev, 1, &f1);
-  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 1, &vb, &off, &stride)) || !vb) return false;
-  std::vector<float> rows;
-  void* data = nullptr;
-  if (stride >= 64 && SUCCEEDED(vb->lpVtbl->Lock(vb, off, n * stride, &data, D3DLOCK_READONLY)) && data) {
-    rows.resize(static_cast<size_t>(n) * 16);
-    for (UINT i = 0; i < n; ++i) std::memcpy(&rows[i * 16], static_cast<const char*>(data) + i * stride, 64);
-    vb->lpVtbl->Unlock(vb);
-  }
-  if (rows.empty()) { vb->lpVtbl->Release(vb); return false; }
-  const DMat toCam = mul_d(to_d(vpm), g_VPinv);         // viewproj -> our camera (identity when they agree)
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 1, &inst, &instOff, &instStride)) || !inst) return false;
+  BtbMerged* m = g_btbIdentity ? btb_merged(dev, n, inst, instOff, instStride) : nullptr;
+  if (!m) { inst->lpVtbl->Release(inst); ++g_st.btbSkipped; return false; }
+  dev->lpVtbl->GetStreamSource(dev, 0, &vb0, &off0, &stride0);
+  dev->lpVtbl->GetIndices(dev, &ib0);
   dev->lpVtbl->SetStreamSourceFreq(dev, 0, 1);
   dev->lpVtbl->SetStreamSourceFreq(dev, 1, 1);
+  dev->lpVtbl->SetStreamSource(dev, 0, m->vb, 0, m->stride);
+  dev->lpVtbl->SetStreamSource(dev, 1, g_btbIdentity, 0, 0);
+  dev->lpVtbl->SetIndices(dev, m->ib);
   set_xf(dev, 1, g_V);
   set_xf(dev, 2, g_P);
-  hr = D3D_OK;
-  for (UINT i = 0; i < n; ++i) {
-    const D3DMATRIX w = from_rows(reinterpret_cast<const float (*)[4]>(&rows[i * 16]));
-    set_xf(dev, 0, to_f(mul_d(to_d(w), toCam)));
-    dev->lpVtbl->SetStreamSource(dev, 1, vb, off + i * stride, 0);
-    const HRESULT r = draw();
-    if (FAILED(r)) hr = r;
-  }
-  dev->lpVtbl->SetStreamSource(dev, 1, vb, off, stride);
+  set_xf(dev, 0, to_f(mul_d(to_d(vpm), g_VPinv)));
+  hr = o.DrawIndexedPrimitive(dev, D3DPT_TRIANGLELIST, 0, 0, m->verts, 0, m->prims);
+  dev->lpVtbl->SetIndices(dev, ib0);
+  dev->lpVtbl->SetStreamSource(dev, 0, vb0, off0, stride0);
+  dev->lpVtbl->SetStreamSource(dev, 1, inst, instOff, instStride);
   dev->lpVtbl->SetStreamSourceFreq(dev, 0, f0);
   dev->lpVtbl->SetStreamSourceFreq(dev, 1, f1);
-  vb->lpVtbl->Release(vb);
+  if (vb0) vb0->lpVtbl->Release(vb0);
+  if (ib0) ib0->lpVtbl->Release(ib0);
+  inst->lpVtbl->Release(inst);
   ++g_st.btbInstanced;
   g_st.btbCopies += n;
   ++g_st.xformed;
@@ -1295,12 +1445,17 @@ bool before_draw(IDirect3DDevice9* dev) {
     g_st.rlDev = (std::max)(g_st.rlDev, off);
     if (off < 1e-3f) world = identity();
   }
+  const bool btbFrame = g_btbPrev || g_st.btb > 0;   // the camera is BTB's (other projection): see btb_camera
   if (g_curInfo && (g_curInfo->flags & SH_USES_C8) && all_set(8, 4)) {
     // The shader also gets the exact world matrix in c8-c11: use it when it agrees with the derived one.
     const D3DMATRIX exact = from_rows(&g_c[8]);
     const float err = max_diff(world, exact);
-    g_st.worldErr = (std::max)(g_st.worldErr, err);
-    if (err < 0.05f) world = exact;
+    if (!btbFrame) g_st.worldErr = (std::max)(g_st.worldErr, err);
+    if (err < 0.05f || btbFrame) world = exact;
+    DMat winv;
+    if (btbFrame && inverse_d(to_d(exact), winv) && inverse_d(mul_d(winv, to_d(wvp)), g_rbrVPinv)) g_rbrVPvalid = true;
+  } else if (btbFrame && g_rbrVPvalid && !worldSpace) {
+    world = to_f(mul_d(to_d(wvp), g_rbrVPinv));        // c0 = W * RBR's own view*projection
   }
   const bool oursVP = g_testMode == 0 || g_testMode == 1, oursW = g_testMode == 0 || g_testMode == 2;
   if (oursVP) { set_xf(dev, 1, g_V); set_xf(dev, 2, g_P); } else { set_game_xf(dev, 1); set_game_xf(dev, 2); }
@@ -1324,10 +1479,10 @@ void log_frame(const wchar_t* why) {
   D3DMATRIX vinv = {};
   const bool okInv = g_haveCam && inverse(g_V, vinv);
   const float fovY = g_haveCam && g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f;
-  clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed, %u instanced as %u copies, worldMatrix off by %.2f)], transformed %u, no-camera %u, "
+  clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed, %u instanced = %u copies merged, %u rebuilt, %u camera candidates refused, shift (%.1f %.1f %.1f))], transformed %u, no-camera %u, "
        L"scenes %u, world-check max err %.5f, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
        L"UI trigger %s at draw %u (occlusion queries open then %u, now %d), %s",
-       g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.btbInstanced, g_st.btbCopies, g_st.btbWorldErr, g_st.xformed, g_st.noCamera,
+       g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.btbInstanced, g_st.btbCopies, g_st.btbRebuilt, g_st.btbCamRejected, g_btbShift[0], g_btbShift[1], g_btbShift[2], g_st.xformed, g_st.noCamera,
        g_st.scenes, g_st.worldErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
        g_st.skyDraws, g_st.skyErr, g_st.skyCamOff, g_glassOn ? L"on" : L"off", g_st.glassSkipped, g_st.screenSpace, g_uiTriggerOn ? L"on" : L"off",
        g_st.uiTriggerAt, g_st.oqAtUi, g_oqActive, kTestModes[g_testMode]);
@@ -1827,6 +1982,7 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   debug_sky();
   g_frameCam = false;
+  g_btbPrev = g_st.btb > 0;
   const bool cameraNow = g_st.xformed > 0;
   if (cameraNow && g_detailFrames < 3) { ++g_detailFrames; log_frame(L"first frames with a camera"); }
   else if (g_frame < 3 || g_frame % 600 == 0) { log_frame(L"periodic"); cull_log_stats(); }
@@ -2615,7 +2771,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (cut && (ac.alphaTestOff || g_alphaCutSolid) && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
-  else if (!btb_instanced_draw(dev, draw, hr)) hr = draw();
+  else if (!btb_instanced_draw(dev, hr)) hr = draw();
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
@@ -2649,6 +2805,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIM
   g_drawNumVert = base >= 0 ? numV : 0;
   g_dip = { t == D3DPT_TRIANGLELIST && base >= 0, base, minIdx, numV, startIdx, count };
   g_inDip = true;
+  g_dipTriList = t == D3DPT_TRIANGLELIST;
   const HRESULT hr = comp_draw(dev, [&] { return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
   g_dip.valid = false;
   g_inDip = false;

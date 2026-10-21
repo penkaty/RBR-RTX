@@ -47,6 +47,9 @@ static D3DMATRIX perspective_lh(float fovY, float aspect, float zn, float zf) { 
   return m;
 }
 // RBR uploads a D3D matrix M as shader rows: c[k][i] = M.m[i][k]
+static D3DMATRIX translation(float x, float y, float z) {
+  D3DMATRIX m = {}; m._11 = m._22 = m._33 = m._44 = 1; m._41 = x; m._42 = y; m._43 = z; return m;
+}
 static void to_rows(const D3DMATRIX& m, float out[4][4]) {
   for (int k = 0; k < 4; ++k) for (int i = 0; i < 4; ++i) out[k][i] = m.m[i][k];
 }
@@ -174,14 +177,17 @@ int main() {
       ib->lpVtbl->Lock(ib, 0, 0, &p, 0); memcpy(p, idx, sizeof(idx)); ib->lpVtbl->Unlock(ib);
       D3DMATRIX world2 = world; world2._41 += 5; world2._43 -= 3;
       float copies[2][4][4];                  // float4x4(row1..row4) * pos: row k = column k of the D3D matrix
-      for (int c = 0; c < 2; ++c)
-        for (int k = 0; k < 4; ++k) for (int j = 0; j < 4; ++j) copies[c][k][j] = (c ? world2 : world).m[j][k];
+      const D3DMATRIX toRel = translation(-eye[0], -eye[1], -eye[2]);
+      for (int c = 0; c < 2; ++c) {
+        const D3DMATRIX wr = mul(c ? world2 : world, toRel);
+        for (int k = 0; k < 4; ++k) for (int j = 0; j < 4; ++j) copies[c][k][j] = wr.m[j][k];
+      }
       inst->lpVtbl->Lock(inst, 0, 0, &p, 0); memcpy(p, copies, sizeof(copies)); inst->lpVtbl->Unlock(inst);
       dev->lpVtbl->BeginScene(dev);
       dev->lpVtbl->SetVertexDeclaration(dev, idecl);
       dev->lpVtbl->SetVertexShader(dev, btbInst);
       float t[4][4];
-      const D3DMATRIX vp = mul(view, proj);
+      const D3DMATRIX vp = mul(mul(translation(eye[0], eye[1], eye[2]), view), proj);   // relative viewproj
       for (int i = 0; i < 4; ++i) for (int k = 0; k < 4; ++k) t[i][k] = vp.m[k][i];
       dev->lpVtbl->SetVertexShaderConstantF(dev, 8, &t[0][0], 4);
       dev->lpVtbl->SetStreamSource(dev, 0, geo, 0, 12);
@@ -201,8 +207,9 @@ int main() {
       dev->lpVtbl->GetStreamSourceFreq(dev, 1, &f1);
       dev->lpVtbl->GetStreamSource(dev, 1, &s1, &off, &stride);
       const bool restored = f0 == (D3DSTREAMSOURCE_INDEXEDDATA | 2) && f1 == (D3DSTREAMSOURCE_INSTANCEDATA | 1) && s1 == inst && off == 0 && stride == 64;
-      const float ew = max_diff(gw, world2), ev = max_diff(gv, view), ep = max_diff(gp, proj);   // last copy's world
-      printf("frame 4 (BTB instanced, 2 copies): max error world %.6f  view %.6f  projection %.6f, streams %s, draw 0x%08lX\n",
+      // one merged draw in BTB space: Remix world = BTB space -> world = T(eye)
+      const float ew = max_diff(gw, translation(eye[0], eye[1], eye[2])), ev = max_diff(gv, view), ep = max_diff(gp, proj);
+      printf("frame 4 (BTB instanced, 2 relative copies merged): max error world %.6f  view %.6f  projection %.6f, streams %s, draw 0x%08lX\n",
              ew, ev, ep, restored ? "restored" : "NOT restored", dr);
       if (ew > 1e-3f || ev > 1e-3f || ep > 1e-3f || !restored || FAILED(dr)) ++failures;
       if (s1) s1->lpVtbl->Release(s1);
@@ -225,8 +232,11 @@ int main() {
       dev->lpVtbl->BeginScene(dev);
       dev->lpVtbl->SetVertexDeclaration(dev, decl);
       dev->lpVtbl->SetVertexShader(dev, btb);
-      put(4, mul(mul(world, view), proj));
-      put(12, world);
+      // rbr_rx draws camera-relative: BTB space = world - eye; c50 (RBR) holds the absolute camera
+      const D3DMATRIX wRel = mul(world, translation(-eye[0], -eye[1], -eye[2])), vRel = mul(translation(eye[0], eye[1], eye[2]), view);
+      const float cam[4] = { eye[0], eye[1], eye[2], 1 }; dev->lpVtbl->SetVertexShaderConstantF(dev, 50, cam, 1);
+      put(4, mul(mul(wRel, vRel), proj));
+      put(12, wRel);
       dev->lpVtbl->DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
       dev->lpVtbl->EndScene(dev);
       D3DMATRIX gw, gv, gp;
@@ -234,7 +244,7 @@ int main() {
       dev->lpVtbl->GetTransform(dev, D3DTS_VIEW, &gv);
       dev->lpVtbl->GetTransform(dev, D3DTS_PROJECTION, &gp);
       const float ew = max_diff(gw, world), ev = max_diff(gv, view), ep = max_diff(gp, proj);
-      printf("frame 3 (BTB effect): max error world %.6f  view %.6f  projection %.6f\n", ew, ev, ep);
+      printf("frame 3 (BTB effect, camera-relative): max error world %.6f  view %.6f  projection %.6f\n", ew, ev, ep);
       if (ew > 1e-3f || ev > 1e-3f || ep > 1e-3f) ++failures;
       dev->lpVtbl->Present(dev, nullptr, nullptr, nullptr, nullptr);
       continue;
