@@ -28,6 +28,7 @@
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -2201,10 +2202,16 @@ bool opaque_cutout(IDirect3DDevice9* dev) {
   dev->lpVtbl->GetTexture(dev, 0, &bt);
   if (!bt) return false;
   const int minA = rbrrtx_texture_min_alpha(bt);
+  const unsigned long long hx = minA >= 0 ? rbrrtx_texture_hash(bt) : 0;
   bt->lpVtbl->Release(bt);
   if (minA < 0) return false;
   const int r = static_cast<int>(ref & 0xFF);
-  return func == D3DCMP_GREATEREQUAL ? minA >= r : func == D3DCMP_GREATER ? minA > r : func == D3DCMP_ALWAYS;
+  const bool yes = func == D3DCMP_GREATEREQUAL ? minA >= r : func == D3DCMP_GREATER ? minA > r : func == D3DCMP_ALWAYS;
+  static std::unordered_set<unsigned long long> logged;    // each texture once per run (check against the harvest)
+  if (yes && logged.insert(hx).second)
+    clog(L"opaque cut-out: texture %016llX min alpha %d, ALPHAREF %d (func %lu), shader %s", hx, minA, r, func,
+         g_curInfo ? fs::path(g_curInfo->name).filename().c_str() : g_curVS ? L"(unknown VS)" : L"(fixed-function)");
+  return yes;
 }
 
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).

@@ -217,6 +217,13 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
   const HRESULT hr = ho.CreateTexture(dev, w, hgt, levels, usage, fmt, pool, out, share);
   if (SUCCEEDED(hr) && out && *out) {
     IDirect3DTexture9* t = *out;
+    {
+      // A new object may sit at the address of a released one: forget that one's hash and min alpha until this
+      // texture's own mip 0 is recorded (otherwise a see-through texture could inherit "opaque" and lose its test).
+      std::lock_guard<std::mutex> g(g_mx);
+      g_texHash.erase(t);
+      g_texMinAlpha.erase(t);
+    }
     patch(&t->lpVtbl->LockRect, &hk_TexLock, ho.TexLock);
     patch(&t->lpVtbl->UnlockRect, &hk_TexUnlock, ho.TexUnlock);
     IDirect3DSurface9* s0 = nullptr;
