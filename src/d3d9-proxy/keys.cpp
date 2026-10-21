@@ -39,6 +39,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"sweep", kAlt | 'K', L"stage sweep (screenshots, debug views, texture hashes, report)"},
   {L"raytracing", 'K', L"ray tracing on/off (raster comparison)"},
   {L"opaque_alpha", kAlt | 'O', L"opaque cut-outs without alpha test on/off"},
+  {L"alpha_cut", kAlt | 'C', L"alpha-card cut-outs (clipped foliage cards) on/off"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};

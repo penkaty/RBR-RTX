@@ -22,6 +22,17 @@ unsigned long long rbrrtx_texture_hash(void* base_texture);
 // harvest.cpp: smallest alpha (0..255) of that texture's mip 0, -1 if unknown (same hooks, alpha_min.hpp).
 int rbrrtx_texture_min_alpha(void* base_texture);
 
+// alphacut.cpp: alpha-card cut-outs (adr-001 tiers 2-3). For the current alpha-tested DrawIndexedPrimitive
+// (TRIANGLELIST), our copy of its cards clipped to the stage-0 texture's outline: draw `tris` triangles from
+// vb/ib (stream 0 at offset 0 with `stride`, base vertex 0), alpha test off when alphaTestOff. False = draw as is.
+struct RbrAlphaCut { void* vb; void* ib; unsigned stride, verts, tris; bool alphaTestOff; };
+bool rbrrtx_alphacut_find(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims,
+                          RbrAlphaCut* out);
+void rbrrtx_alphacut_forget(const void* buffer);              // the game created a buffer at this address
+void rbrrtx_alphacut_init();
+void rbrrtx_alphacut_frame(unsigned frame);
+void rbrrtx_alphacut_summary(wchar_t* out, size_t n, unsigned frames);   // stats since the last call
+
 // game_state.cpp: what the player picked, read from RBR's globals (NGPCarMenu RBRAPI.h offsets) and RSF's
 // rsfdata\cache\stages_data.json (name, country, surface). -1 / empty = unknown.
 struct RbrStageInfo {
@@ -48,7 +59,7 @@ void rbrrtx_exception_trace_install();
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);

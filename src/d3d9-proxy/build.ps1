@@ -10,7 +10,7 @@ $bin = Join-Path $here 'bin'; $obj = Join-Path $here 'obj'
 New-Item -ItemType Directory -Force $bin, $obj | Out-Null
 
 $cl = "cl /nologo /O2 /MT /W4 /EHsc /std:c++17 /DUNICODE /D_UNICODE " +
-      "/Fo`"$obj\\`" `"$here\d3d9_proxy.cpp`" `"$here\exception_trace.cpp`" `"$here\comp.cpp`" `"$here\harvest.cpp`" `"$here\keys.cpp`" `"$here\game_state.cpp`" /LD /link /DEF:`"$here\d3d9_proxy.def`" " +
+      "/Fo`"$obj\\`" `"$here\d3d9_proxy.cpp`" `"$here\exception_trace.cpp`" `"$here\comp.cpp`" `"$here\harvest.cpp`" `"$here\alphacut.cpp`" `"$here\keys.cpp`" `"$here\game_state.cpp`" /LD /link /DEF:`"$here\d3d9_proxy.def`" " +
       "/OUT:`"$bin\d3d9.dll`" /IMPLIB:`"$obj\d3d9.lib`" kernel32.lib user32.lib gdi32.lib ole32.lib windowscodecs.lib"
 $env:PATH = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer;$env:PATH"   # vcvarsall calls vswhere
 $ErrorActionPreference = 'Continue'   # tool chatter on stderr must not abort the build

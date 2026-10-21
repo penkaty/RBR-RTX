@@ -8,6 +8,10 @@
 // the backend. Each new hash is written once as <folder>\<HASH>.dds (mip 0 only) plus a line in <folder>\harvest.tsv
 // with format, size, pool, the loaded stage id (RBRMapSettings.trackID at 0x1660804, NGPCarMenu RBRAPI) and the game
 // mode. Hashes already in harvest.tsv are not dumped again. Nothing here changes what the game or Remix see.
+//
+// RBR fills SYSTEMMEM textures and draws DEFAULT-pool copies made by IDirect3DDevice9::UpdateTexture (re/kb
+// materials-textures), so UpdateTexture is hooked too: the copy inherits the source's hash and min alpha, which is
+// also how Remix names it (d3d9_device.cpp UpdateTexture -> SetupForRtxFrom(src)).
 #define CINTERFACE
 #include "common.hpp"
 #include "alpha_min.hpp"
@@ -27,6 +31,7 @@ namespace {
 
 struct {
   decltype(IDirect3DDevice9Vtbl::CreateTexture) CreateTexture;
+  decltype(IDirect3DDevice9Vtbl::UpdateTexture) UpdateTexture;
   decltype(IDirect3DTexture9Vtbl::LockRect) TexLock;
   decltype(IDirect3DTexture9Vtbl::UnlockRect) TexUnlock;
   decltype(IDirect3DSurface9Vtbl::LockRect) SurfLock;
@@ -44,6 +49,7 @@ FILE* g_usageTsv = nullptr;
 std::wstring g_dir;
 FILE* g_tsv = nullptr;
 unsigned g_seq = 0, g_new = 0, g_dup = 0, g_skipped = 0;
+unsigned g_updates = 0, g_updatesKnown = 0;               // UpdateTexture calls / ones whose source had a hash
 
 template <class F>
 void patch(F* slot, F hook, F& orig) {
@@ -236,6 +242,23 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
   return hr;
 }
 
+// SYSTEMMEM -> DEFAULT copy: the destination is what draws bind. Only whole-texture copies count (a dirty-rect update
+// of part of mip 0 would make the destination a mix; RBR copies whole textures).
+HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* src, IDirect3DBaseTexture9* dst) {
+  const HRESULT hr = ho.UpdateTexture(dev, src, dst);
+  if (SUCCEEDED(hr) && src && dst && src != dst) {
+    std::lock_guard<std::mutex> g(g_mx);
+    ++g_updates;
+    auto h = g_texHash.find(src);
+    auto a = g_texMinAlpha.find(src);
+    if (h != g_texHash.end()) { g_texHash[dst] = h->second; ++g_updatesKnown; } else g_texHash.erase(dst);
+    if (a != g_texMinAlpha.end()) g_texMinAlpha[dst] = a->second; else g_texMinAlpha.erase(dst);
+    if (g_updates == 1 || g_updates % 500 == 0)
+      hlog(L"UpdateTexture: %u copies, %u with a known source hash", g_updates, g_updatesKnown);
+  }
+  return hr;
+}
+
 }  // namespace
 
 // Usage: which shader draws which texture (stage 0), with the blend/alpha state, once per (shader, hash, state).
@@ -290,6 +313,7 @@ void rbrrtx_harvest_install(void* device) {
     if (!rbrrtx_env_flag(L"RBRRTX_TEXHASH", true)) return;
     IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
     patch(&dev->lpVtbl->CreateTexture, &hk_CreateTexture, ho.CreateTexture);
+    patch(&dev->lpVtbl->UpdateTexture, &hk_UpdateTexture, ho.UpdateTexture);
     return;
   }
   g_dir = dir;
@@ -313,5 +337,6 @@ void rbrrtx_harvest_install(void* device) {
   if (g_usageTsv && newUsage) fwprintf(g_usageTsv, L"hash\tshader\talphatest\talpharef\tblend\tzwrite\tstage_id\n");
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   patch(&dev->lpVtbl->CreateTexture, &hk_CreateTexture, ho.CreateTexture);
+  patch(&dev->lpVtbl->UpdateTexture, &hk_UpdateTexture, ho.UpdateTexture);
   hlog(L"harvest on: %s (%zu hashes from earlier runs)", dir, g_seen.size());
 }

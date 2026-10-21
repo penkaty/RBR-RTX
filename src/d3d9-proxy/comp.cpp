@@ -187,6 +187,7 @@ struct Orig {
   decltype(IDirect3DDevice9Vtbl::DrawIndexedPrimitiveUP) DrawIndexedPrimitiveUP;
   decltype(IDirect3DDevice9Vtbl::CreateQuery) CreateQuery;
   decltype(IDirect3DDevice9Vtbl::CreateVertexBuffer) CreateVertexBuffer;
+  decltype(IDirect3DDevice9Vtbl::CreateIndexBuffer) CreateIndexBuffer;
   decltype(IDirect3DQuery9Vtbl::Issue) QueryIssue;
   decltype(IDirect3DQuery9Vtbl::Release) QueryRelease;
 } o{};
@@ -330,6 +331,11 @@ int g_foliageMode = 1;
 // RBRRTX_OPAQUE_ALPHA=0 = off; key opaque_alpha (Alt+O); experiment steps "opaque = 0|1".
 int g_opaqueAlpha = 1, g_opaqueBase = 1;
 unsigned g_opaqueDraws = 0;                            // draws made opaque this way since the last log line
+// Alpha-card cut-outs (adr-001 tiers 2-3, alphacut.cpp): alpha-tested scenery draws whose texture has an outline file
+// are drawn from a copy of their cards clipped to it. RBRRTX_ALPHACUT=0 = off; key alpha_cut (Alt+C); experiment
+// steps "alphacut = 0|1".
+int g_alphaCut = 1, g_alphaCutBase = 1;
+struct { bool valid; INT base; UINT minIdx, numV, startIdx, count; } g_dip = {};   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
 
@@ -1105,6 +1111,9 @@ void log_frame(const wchar_t* why) {
        g_dustFrames ? static_cast<double>(g_ffSwayFar) / g_dustFrames : 0.0, g_ffSwayNear);
   clog(L"  opaque cut-outs %s: %.0f alpha-tested draws per frame drawn without alpha test (texture never below ALPHAREF)",
        g_opaqueAlpha ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_opaqueDraws) / g_dustFrames : 0.0);
+  wchar_t acLine[400];
+  rbrrtx_alphacut_summary(acLine, 400, g_dustFrames);
+  clog(L"  alpha-card cut-outs %s: %s", g_alphaCut ? L"ON" : L"off", acLine);
   g_refLowered = g_softSkipped = g_midQuadSkipped = g_dustTrimmed = g_dustQuads = g_dustFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
   g_opaqueDraws = 0;
   if (okInv)
@@ -1155,6 +1164,7 @@ struct ExpStep {
   std::vector<std::wstring> solid;                           // alpha test off for these shader name parts
   int ff = -1;                                               // fixed-function scenery mode for this step (-1 = start value)
   int opaque = -1;                                           // opaque cut-outs for this step (-1 = start value)
+  int alphacut = -1;                                         // alpha-card cut-outs for this step (-1 = start value)
   int sun = -1;                                              // 0 = Remix sun off for this step (-1 = as it was)
   bool shot = false, dump = false, capture = false;          // sweep: screenshot / draw list / Remix USD capture
   double measure = -1.0;                                     // measure_seconds for this step only (-1 = [run])
@@ -1238,6 +1248,8 @@ void exp_load(bool sweep) {
         step.ff = std::clamp(_wtoi(v.c_str()), 0, 2);
       } else if (k == L"opaque") {
         step.opaque = _wtoi(v.c_str()) != 0 ? 1 : 0;
+      } else if (k == L"alphacut") {
+        step.alphacut = _wtoi(v.c_str()) != 0 ? 1 : 0;
       } else if (k == L"measure_seconds") {
         step.measure = (std::max)(0.1, _wtof(v.c_str()));
       } else if (k == L"sun") {
@@ -1288,6 +1300,7 @@ void exp_apply(int step) {
   g_expStep = step;
   g_ffMode = step > 0 && g_exp[step].ff >= 0 ? g_exp[step].ff : g_ffBase;
   g_opaqueAlpha = step > 0 && g_exp[step].opaque >= 0 ? g_exp[step].opaque : g_opaqueBase;
+  g_alphaCut = step > 0 && g_exp[step].alphacut >= 0 ? g_exp[step].alphacut : g_alphaCutBase;
   const bool sunWanted = step > 0 && g_exp[step].sun >= 0 ? g_exp[step].sun != 0 : g_sunOnBefore;
   if (sunWanted != g_sunOn) {
     g_sunOn = sunWanted;
@@ -1469,6 +1482,7 @@ void end_frame(IDirect3DDevice9* dev) {
              kSky = rbrrtx_key_pressed(RBRKEY_SKY), kDebugSun = rbrrtx_key_pressed(RBRKEY_DEBUG_SUN);
   const bool kBrighter = rbrrtx_key_pressed(RBRKEY_SUN_BRIGHTER), kDimmer = rbrrtx_key_pressed(RBRKEY_SUN_DIMMER);
   const bool kFf = rbrrtx_key_pressed(RBRKEY_FF_SCENERY), kOpaque = rbrrtx_key_pressed(RBRKEY_OPAQUE_ALPHA);
+  const bool kAlphaCut = rbrrtx_key_pressed(RBRKEY_ALPHACUT);
   wchar_t why[256];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
@@ -1490,6 +1504,11 @@ void end_frame(IDirect3DDevice9* dev) {
   if (kOpaque) {
     g_opaqueAlpha = g_opaqueBase = !g_opaqueAlpha;      // also what K steps return to
     swprintf_s(why, L"%s: opaque cut-outs %s", rbrrtx_key_name(RBRKEY_OPAQUE_ALPHA), g_opaqueAlpha ? L"ON (no alpha test)" : L"off (game's alpha test)");
+    log_frame(why);
+  }
+  if (kAlphaCut) {
+    g_alphaCut = g_alphaCutBase = !g_alphaCut;          // also what K steps return to
+    swprintf_s(why, L"%s: alpha-card cut-outs %s", rbrrtx_key_name(RBRKEY_ALPHACUT), g_alphaCut ? L"ON (clipped cards)" : L"off (game's cards)");
     log_frame(why);
   }
   if (kSun) {                                          // only the Remix sun on/off (camera and sky stay)
@@ -1564,6 +1583,7 @@ void end_frame(IDirect3DDevice9* dev) {
   g_hinted = 0;
   g_byShader.clear();
   ++g_frame;
+  rbrrtx_alphacut_frame(g_frame);
   g_sunDrawn = false;
   g_uiTriggered = false;
 }
@@ -2214,6 +2234,25 @@ bool opaque_cutout(IDirect3DDevice9* dev) {
   return yes;
 }
 
+// Draws the clipped copy (rbrrtx_alphacut_find) in place of the game's buffers, then gives the game's back.
+// No triangles left = every card missed the outline: nothing to draw.
+HRESULT alphacut_draw(IDirect3DDevice9* dev, const RbrAlphaCut& ac) {
+  if (!ac.tris) return D3D_OK;
+  IDirect3DVertexBuffer9* vb = nullptr;
+  IDirect3DIndexBuffer9* ib = nullptr;
+  UINT offset = 0, stride = 0;
+  dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride);
+  dev->lpVtbl->GetIndices(dev, &ib);
+  dev->lpVtbl->SetStreamSource(dev, 0, static_cast<IDirect3DVertexBuffer9*>(ac.vb), 0, ac.stride);
+  dev->lpVtbl->SetIndices(dev, static_cast<IDirect3DIndexBuffer9*>(ac.ib));
+  const HRESULT hr = o.DrawIndexedPrimitive(dev, D3DPT_TRIANGLELIST, 0, 0, ac.verts, 0, ac.tris);
+  dev->lpVtbl->SetStreamSource(dev, 0, vb, offset, stride);
+  dev->lpVtbl->SetIndices(dev, ib);
+  if (vb) vb->lpVtbl->Release(vb);
+  if (ib) ib->lpVtbl->Release(ib);
+  return hr;
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -2304,7 +2343,11 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   const bool litOff = ff && g_lighting && SUCCEEDED(o.SetRenderState(dev, D3DRS_LIGHTING, FALSE));   // no normals
   if (ff) ++g_ffDraws;
-  const HRESULT hr = draw();
+  RbrAlphaCut ac = {};
+  const bool cut = g_alphaCut && g_dip.valid && !atOff && is_scenery_draw() &&
+                   rbrrtx_alphacut_find(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, &ac);
+  if (cut && ac.alphaTestOff && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
+  const HRESULT hr = cut ? alphacut_draw(dev, ac) : draw();
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
@@ -2327,6 +2370,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETY
   g_pendingPrims = count;
   g_drawFirstVert = start;
   g_drawNumVert = verts_for(t, count);
+  g_dip.valid = false;
   return comp_draw(dev, [&] { return o.DrawPrimitive(dev, t, start, cap_prims(count)); });
 }
 
@@ -2335,12 +2379,16 @@ HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIM
   g_pendingPrims = count;
   g_drawFirstVert = base >= 0 ? static_cast<UINT>(base) + minIdx : 0;
   g_drawNumVert = base >= 0 ? numV : 0;
-  return comp_draw(dev, [&] { return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
+  g_dip = { t == D3DPT_TRIANGLELIST && base >= 0, base, minIdx, numV, startIdx, count };
+  const HRESULT hr = comp_draw(dev, [&] { return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
+  g_dip.valid = false;
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT count, const void* data, UINT stride) {
   g_pendingPrims = count;
   g_drawNumVert = 0;                                   // no vertex buffer: not culled
+  g_dip.valid = false;
   return comp_draw(dev, [&] { return o.DrawPrimitiveUP(dev, t, cap_prims(count), data, stride); });
 }
 
@@ -2348,6 +2396,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitiveUP(IDirect3DDevice9* dev, D3DPR
                                                     UINT count, const void* idx, D3DFORMAT fmt, const void* data, UINT stride) {
   g_pendingPrims = count;
   g_drawNumVert = 0;
+  g_dip.valid = false;
   return comp_draw(dev, [&] { return o.DrawIndexedPrimitiveUP(dev, t, minIdx, numV, cap_prims(count), idx, fmt, data, stride); });
 }
 
@@ -2381,7 +2430,14 @@ ULONG STDMETHODCALLTYPE hk_QueryRelease(IDirect3DQuery9* q) {
 HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len, DWORD usage, DWORD fvf, D3DPOOL pool,
                                                 IDirect3DVertexBuffer9** vb, HANDLE* shared) {
   const HRESULT hr = o.CreateVertexBuffer(dev, len, usage, fvf, pool, vb, shared);
-  if (SUCCEEDED(hr) && vb && *vb) ++g_vbGen[*vb];
+  if (SUCCEEDED(hr) && vb && *vb) { ++g_vbGen[*vb]; rbrrtx_alphacut_forget(*vb); }
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hk_CreateIndexBuffer(IDirect3DDevice9* dev, UINT len, DWORD usage, D3DFORMAT fmt, D3DPOOL pool,
+                                               IDirect3DIndexBuffer9** ib, HANDLE* shared) {
+  const HRESULT hr = o.CreateIndexBuffer(dev, len, usage, fmt, pool, ib, shared);
+  if (SUCCEEDED(hr) && ib && *ib) rbrrtx_alphacut_forget(*ib);
   return hr;
 }
 
@@ -2426,6 +2482,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   patch(&v->DrawIndexedPrimitiveUP, &hk_DrawIndexedPrimitiveUP, o.DrawIndexedPrimitiveUP);
   patch(&v->CreateQuery, &hk_CreateQuery, o.CreateQuery);
   patch(&v->CreateVertexBuffer, &hk_CreateVertexBuffer, o.CreateVertexBuffer);
+  patch(&v->CreateIndexBuffer, &hk_CreateIndexBuffer, o.CreateIndexBuffer);
   remember_backbuffer(dev);
   rbrrtx_harvest_install(dev);
   init_remix_api();
@@ -2455,6 +2512,8 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     if (GetEnvironmentVariableW(L"RBRRTX_DUST", fol, 16)) g_dustKeep = static_cast<unsigned>(std::clamp(_wtoi(fol), 0, 100));
     if (GetEnvironmentVariableW(L"RBRRTX_FF", fol, 16)) g_ffMode = g_ffBase = std::clamp(_wtoi(fol), 0, 2);
     g_opaqueAlpha = g_opaqueBase = rbrrtx_env_flag(L"RBRRTX_OPAQUE_ALPHA", true) ? 1 : 0;
+    g_alphaCut = g_alphaCutBase = rbrrtx_env_flag(L"RBRRTX_ALPHACUT", true) ? 1 : 0;
+    rbrrtx_alphacut_init();
     if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = (std::max)(0.0f, static_cast<float>(_wtof(fol)));
     if (GetEnvironmentVariableW(L"RBRRTX_ALPHAREF", fol, 16)) g_cutoutRef = static_cast<DWORD>(std::clamp(_wtoi(fol), 1, 255));
     const DWORD hv = GetEnvironmentVariableW(L"RBRRTX_HARVEST", fol, 16);
