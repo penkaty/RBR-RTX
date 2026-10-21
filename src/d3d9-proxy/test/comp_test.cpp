@@ -3,7 +3,8 @@
 // Creates a device through the proxy (RBRRTX_COMP=1 must be set), draws once with RBR's RLDoubleTexture shader
 // (world-space terrain) and once with CarPaint1 (object with world matrix in c8), each with constants built from
 // known World/View/Projection matrices exactly as RBR uploads them, then reads back World/View/Projection with
-// GetTransform. Exit code 0 when all three match within 1e-3.
+// GetTransform. Exit code 0 when all three match within 1e-3. A third frame repeats the terrain draw with the
+// shader's comment blocks stripped and a moved camera (shader recognition without comments).
 #define WIN32_LEAN_AND_MEAN
 #define CINTERFACE
 #include <windows.h>
@@ -84,6 +85,21 @@ int main() {
   if (rlCode.empty() || carCode.empty()) { printf("shader files missing\n"); return 2; }
   dev->lpVtbl->CreateVertexShader(dev, reinterpret_cast<const DWORD*>(rlCode.data()), &rl);
   dev->lpVtbl->CreateVertexShader(dev, reinterpret_cast<const DWORD*>(carCode.data()), &car);
+  // Frame 2: the same terrain shader with its comment blocks stripped (as some testers' hooks hand it to the device);
+  // the proxy must still recognise it, or View/Projection stay at frame 1's camera.
+  std::vector<DWORD> rlStrippedCode;
+  {
+    const DWORD* t = reinterpret_cast<const DWORD*>(rlCode.data());
+    const size_t n = rlCode.size() / 4;
+    rlStrippedCode.push_back(t[0]);
+    for (size_t i = 1; i < n; ++i) {
+      if ((t[i] & 0xFFFF) == 0xFFFE) { i += (t[i] >> 16) & 0x7FFF; continue; }
+      rlStrippedCode.push_back(t[i]);
+      if (t[i] == 0x0000FFFF) break;
+    }
+  }
+  IDirect3DVertexShader9* rlStripped = nullptr;
+  dev->lpVtbl->CreateVertexShader(dev, rlStrippedCode.data(), &rlStripped);
 
   D3DVERTEXELEMENT9 el[] = {
     { 0, 0, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_POSITION, 0 }, { 0, 12, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_NORMAL, 0 },
@@ -95,8 +111,8 @@ int main() {
     { {0,0,0}, {0,1,0}, 0xffffffff, {0,0}, {0,0} }, { {1,0,0}, {0,1,0}, 0xffffffff, {1,0}, {1,0} },
     { {0,1,0}, {0,1,0}, 0xffffffff, {0,1}, {0,1} } };
 
-  const float eye[3] = { 120, 35, -260 }, at[3] = { 100, 30, -200 }, up[3] = { 0, 1, 0 };
-  const D3DMATRIX view = look_at_lh(eye, at, up);
+  float eye[3] = { 120, 35, -260 }; const float at[3] = { 100, 30, -200 }, up[3] = { 0, 1, 0 };
+  D3DMATRIX view = look_at_lh(eye, at, up);
   const D3DMATRIX proj = perspective_lh(1.05f, 16.0f / 9.0f, 0.5f, 6000.0f);
   D3DMATRIX world = {};                       // car: rotated 30 degrees about Y, placed near the camera target
   world._11 = std::cos(0.52f); world._13 = -std::sin(0.52f); world._22 = 1; world._31 = std::sin(0.52f); world._33 = std::cos(0.52f);
@@ -104,7 +120,9 @@ int main() {
   float rows[4][4];
 
   int failures = 0;
-  for (int frame = 0; frame < 2; ++frame) {
+  for (int frame = 0; frame < 3; ++frame) {
+    const bool stripped = frame == 2;
+    if (stripped) { eye[0] += 40; eye[2] -= 30; view = look_at_lh(eye, at, up); }
     dev->lpVtbl->BeginScene(dev);
     dev->lpVtbl->SetVertexDeclaration(dev, decl);
     // c20-c23 deliberately off by a few units, like RBR's (the layer must not depend on it)
@@ -113,26 +131,28 @@ int main() {
     const float sun[4] = { 0.3f, -0.8f, 0.52f, 0 }; dev->lpVtbl->SetVertexShaderConstantF(dev, 41, sun, 1);
     const float cam[4] = { eye[0], eye[1], eye[2], 1 }; dev->lpVtbl->SetVertexShaderConstantF(dev, 50, cam, 1);
     // terrain: vertices in world space, c0-c3 = View * Projection
-    dev->lpVtbl->SetVertexShader(dev, rl);
+    dev->lpVtbl->SetVertexShader(dev, stripped ? rlStripped : rl);
     to_rows(mul(view, proj), rows); dev->lpVtbl->SetVertexShaderConstantF(dev, 0, &rows[0][0], 4);
     dev->lpVtbl->DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
     // car: c0-c3 = World * View * Projection, c8-c11 = World
+    if (!stripped) {
     dev->lpVtbl->SetVertexShader(dev, car);
     to_rows(mul(mul(world, view), proj), rows); dev->lpVtbl->SetVertexShaderConstantF(dev, 0, &rows[0][0], 4);
     to_rows(world, rows); dev->lpVtbl->SetVertexShaderConstantF(dev, 8, &rows[0][0], 4);
     dev->lpVtbl->DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
+    }
     dev->lpVtbl->EndScene(dev);
 
     D3DMATRIX gw, gv, gp;
     dev->lpVtbl->GetTransform(dev, D3DTS_WORLD, &gw);
     dev->lpVtbl->GetTransform(dev, D3DTS_VIEW, &gv);
     dev->lpVtbl->GetTransform(dev, D3DTS_PROJECTION, &gp);
-    const float ew = max_diff(gw, world), ev = max_diff(gv, view), ep = max_diff(gp, proj);
+    const float ew = stripped ? 0.0f : max_diff(gw, world), ev = max_diff(gv, view), ep = max_diff(gp, proj);
     printf("frame %d: max error world %.6f  view %.6f  projection %.6f\n", frame, ew, ev, ep);
     if (ew > 1e-3f || ev > 1e-3f || ep > 1e-3f) ++failures;
     dev->lpVtbl->Present(dev, nullptr, nullptr, nullptr, nullptr);
   }
-  decl->lpVtbl->Release(decl); rl->lpVtbl->Release(rl); car->lpVtbl->Release(car);
+  decl->lpVtbl->Release(decl); rl->lpVtbl->Release(rl); rlStripped->lpVtbl->Release(rlStripped); car->lpVtbl->Release(car);
   dev->lpVtbl->Release(dev); d3d->lpVtbl->Release(d3d);
   printf(failures ? "FAIL\n" : "PASS\n");
   return failures ? 1 : 0;

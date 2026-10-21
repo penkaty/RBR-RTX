@@ -141,6 +141,22 @@ unsigned long long fnv1a(const void* data, size_t size) {
   return h;
 }
 
+// Hash of the instruction tokens only (comment blocks left out). Tester 2026-10-19 (v0.2): some installs hand the
+// device RBR's shaders with the comment blocks stripped (another hook in between, e.g. ReShade), so the full-bytecode
+// hash never matched, every draw was "(unknown VS)" and path tracing stayed black. Instructions are the same.
+unsigned long long code_hash(const DWORD* p, size_t max_dwords) {
+  unsigned long long h = 1469598103934665603ULL;
+  auto mix = [&h](DWORD t) { for (int k = 0; k < 4; ++k) { h ^= (t >> (8 * k)) & 0xFF; h *= 1099511628211ULL; } };
+  mix(p[0]);
+  for (size_t i = 1; i < max_dwords; ++i) {
+    const DWORD t = p[i];
+    if ((t & 0xFFFF) == 0xFFFE) { i += (t >> 16) & 0x7FFF; continue; }
+    mix(t);
+    if (t == 0x0000FFFF) break;
+  }
+  return h;
+}
+
 bool starts_with(const std::wstring& s, const wchar_t* prefix) { return s.rfind(prefix, 0) == 0; }
 
 unsigned flags_for(const std::wstring& rel) {
@@ -194,7 +210,10 @@ struct Orig {
 
 HMODULE g_backend = nullptr;
 std::unordered_map<unsigned long long, std::wstring> g_vso;   // bytecode hash -> path under VertexShaders
+std::unordered_map<unsigned long long, std::wstring> g_vsoCode;   // code_hash -> path (fallback: comments stripped)
 std::unordered_map<void*, ShaderInfo> g_vs;                     // created vertex shader -> identity
+unsigned g_vsKnown = 0, g_vsUnknown = 0;                        // CreateVertexShader results (unknown-shader warning)
+bool g_unknownWarned = false;
 
 float g_c[256][4] = {};
 bool g_cset[256] = {};
@@ -448,6 +467,7 @@ void load_vso_hashes() {
     size_t size = bytecode_size(reinterpret_cast<const DWORD*>(data.data()), data.size() / 4);
     if (!size) size = data.size();
     g_vso[fnv1a(data.data(), size)] = fs::relative(it->path(), dir).wstring();
+    g_vsoCode[code_hash(reinterpret_cast<const DWORD*>(data.data()), data.size() / 4)] = fs::relative(it->path(), dir).wstring();
   }
   clog(L"hashed %zu shader files under %s", g_vso.size(), dir.c_str());
 }
@@ -1147,6 +1167,17 @@ void log_frame(const wchar_t* why) {
     line += part;
   }
   clog(L"  draws by shader (primary/off-screen): %s", line.c_str());
+  // Once per run: a frame whose draws are almost all "(unknown VS)" means the proxy cannot find the camera, so Remix
+  // gets no valid camera and the path-traced image is black (raster via K still fine). Tester 2026-10-19 (v0.2).
+  unsigned known = 0, unknown = 0;
+  for (const auto& r : rows) (r.first == &kUnknownShader ? unknown : known) += r.second.primary;
+  if (!g_unknownWarned && unknown >= 50 && unknown > 4 * known) {
+    g_unknownWarned = true;
+    clog(L"WARNING: game shaders not recognised (%u of %u draws, %u of %u created shaders unknown). Another mod changes "
+         L"RBR's vertex shaders before they reach RBR-RTX (ReShade, a shader pack or a graphics plugin), so path tracing "
+         L"has no camera and stays black. Remove it, or check that VertexShaders\\ holds the game's original files.",
+         unknown, unknown + known, g_vsUnknown, g_vsKnown + g_vsUnknown);
+  }
 }
 
 // ---------------------------------------------------------------- performance experiments (key K)
@@ -1623,11 +1654,15 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWO
     const size_t size = bytecode_size(fn, 1u << 16);
     const unsigned long long h = fnv1a(fn, size);
     ShaderInfo info;
+    const std::wstring* name = nullptr;
+    const wchar_t* how = L"";
     auto it = g_vso.find(h);
-    if (it != g_vso.end()) { info.name = it->second; info.flags = flags_for(it->second); }
-    else info.name = L"(not an RBR .vso)";
+    if (it != g_vso.end()) name = &it->second;
+    else if ((it = g_vsoCode.find(code_hash(fn, 1u << 16))) != g_vsoCode.end()) { name = &it->second; how = L", matched without comments"; }
+    if (name) { info.name = *name; info.flags = flags_for(*name); ++g_vsKnown; }
+    else { info.name = L"(not an RBR .vso)"; ++g_vsUnknown; }
     g_vs[*out] = info;
-    clog(L"VS %p = %s (%zu bytes, hash %016llx)", static_cast<void*>(*out), info.name.c_str(), size, h);
+    clog(L"VS %p = %s (%zu bytes, hash %016llx%s)", static_cast<void*>(*out), info.name.c_str(), size, h, how);
   }
   return hr;
 }

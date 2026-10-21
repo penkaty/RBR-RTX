@@ -77,6 +77,13 @@ Known issues:
   see-through or missing surfaces. Remix knows textures by hash and I haven't sorted all of them yet. A sweep from
   exactly there gives me the hashes to fix it, so logs help a lot.
 - Coming from an older test build? Delete `user.conf` in the RBR folder: old Alt+X settings override the new defaults.
+  The same goes for after you've pressed **Save** in the Alt+X menu.
+- **Black picture with path tracing on, but the normal picture is fine when you press K?** Then RBR-RTX can't
+  recognise the game's shaders, so Remix gets no camera. This usually means another mod changes them: ReShade, a
+  shader pack or a graphics plugin. Remove it (for ReShade, also its Vulkan layer) and check that `VertexShaders\`
+  holds the game's own files. `rbr-rtx\logs\rbrrtx_comp.log` then says "WARNING: game shaders not recognised".
+- **High FPS counter, but it feels choppy?** The counter counts the frames the game sends, not the frames that reach
+  your screen. Try fullscreen instead of windowed, and close other overlays.
 - Trees, dust and smoke cost a lot of FPS.
 - The HUD doesn't show properly in replays: it only flashes up for a moment when you press F11 for a screenshot.
 - DirectorsCut text in the interior view can be blank. With Cubic env maps on, the 3rd-person car looks wrong.
