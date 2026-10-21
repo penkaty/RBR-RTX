@@ -383,12 +383,16 @@ bool is_scenery_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curI
 //   (40 m, RBRRTX_FF_SWAY_NEAR): those stop swaying, near ones keep it (GTA4 idea; all of it frozen gave another
 //   -0.5..-1.9 ms, but the user saw grass and flags stop). Default since 2026-10-17 09:06: user saw near sway kept and
 //   "visibly way better performance"; K -0.4 ms vs mode 1 (noisy run).
+//   Since 2026-10-21 the sway distance defaults to 0 = every swaying draw fixed-function (no sway at all): with OMM off
+//   -2.5 ms Legazpi / -1 ms Chirdonhead vs 40 m, and swaying geometry smudged under the denoiser (adr-001, OMM-off run).
+//   RBRRTX_FF_SWAY_NEAR = metres brings near sway back.
 // The VS is unbound lazily: consecutive FF draws keep it null, the next shader draw rebinds the game's VS (g_vsUnbound).
 int g_ffMode = 2, g_ffBase = 2;                        // g_ffBase: start value (env), restored after K steps
 bool g_vsUnbound = false;                              // device has no VS while the game thinks g_curVS is bound
 unsigned g_ffDraws = 0, g_ffSwayFar = 0;                // FF scenery draws / of those swaying ones, since the last log line
-float g_ffSwayNear = 40.0f;                            // mode 2: swaying draws nearer than this (metres) keep their VS
-float g_ffSwayNearBase = 40.0f;                        // start value; experiment steps "ff_sway_near = m" change it
+// Mode 2: swaying draws nearer than this (metres) keep their VS. -1 = none (also a batch whose bounds hold the camera).
+float g_ffSwayNear = -1.0f;
+float g_ffSwayNearBase = -1.0f;                        // start value; experiment steps "ff_sway_near = m" change it
 
 // 0 = keep the VS, 1 = FF, 2 = swaying draw in mode 2: FF only if far enough (ff_sway_far, needs the draw's bounds).
 int ff_scenery_class() {
@@ -2528,7 +2532,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_opaqueAlpha = g_opaqueBase = rbrrtx_env_flag(L"RBRRTX_OPAQUE_ALPHA", true) ? 1 : 0;
     g_alphaCut = g_alphaCutBase = rbrrtx_env_flag(L"RBRRTX_ALPHACUT", true) ? 1 : 0;
     rbrrtx_alphacut_init();
-    if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = (std::max)(0.0f, static_cast<float>(_wtof(fol)));
+    if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = _wtof(fol) > 0 ? static_cast<float>(_wtof(fol)) : -1.0f;
     g_ffSwayNearBase = g_ffSwayNear;
     if (GetEnvironmentVariableW(L"RBRRTX_ALPHAREF", fol, 16)) g_cutoutRef = static_cast<DWORD>(std::clamp(_wtoi(fol), 1, 255));
     const DWORD hv = GetEnvironmentVariableW(L"RBRRTX_HARVEST", fol, 16);
