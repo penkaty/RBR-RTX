@@ -388,6 +388,7 @@ int g_ffMode = 2, g_ffBase = 2;                        // g_ffBase: start value 
 bool g_vsUnbound = false;                              // device has no VS while the game thinks g_curVS is bound
 unsigned g_ffDraws = 0, g_ffSwayFar = 0;                // FF scenery draws / of those swaying ones, since the last log line
 float g_ffSwayNear = 40.0f;                            // mode 2: swaying draws nearer than this (metres) keep their VS
+float g_ffSwayNearBase = 40.0f;                        // start value; experiment steps "ff_sway_near = m" change it
 
 // 0 = keep the VS, 1 = FF, 2 = swaying draw in mode 2: FF only if far enough (ff_sway_far, needs the draw's bounds).
 int ff_scenery_class() {
@@ -1169,6 +1170,8 @@ struct ExpStep {
   int opaque = -1;                                           // opaque cut-outs for this step (-1 = start value)
   int alphacut = -1;                                         // alpha-card cut-outs for this step (-1 = start value)
   bool alphacutSolid = false;                                // clipped copies without alpha test (timing only)
+  float ffSwayNear = -2.0f;                                  // mode 2 sway distance for this step (-2 = start value;
+                                                             // 0 = every swaying draw fixed-function, none captured)
   int sun = -1;                                              // 0 = Remix sun off for this step (-1 = as it was)
   bool shot = false, dump = false, capture = false;          // sweep: screenshot / draw list / Remix USD capture
   double measure = -1.0;                                     // measure_seconds for this step only (-1 = [run])
@@ -1256,6 +1259,9 @@ void exp_load(bool sweep) {
         step.alphacut = _wtoi(v.c_str()) != 0 ? 1 : 0;
       } else if (k == L"alphacut_solid") {
         step.alphacutSolid = _wtoi(v.c_str()) != 0;
+      } else if (k == L"ff_sway_near") {
+        // <= 0: -1 m, so a batch whose bounds hold the camera (distance 0) goes fixed-function too
+        step.ffSwayNear = _wtof(v.c_str()) > 0 ? static_cast<float>(_wtof(v.c_str())) : -1.0f;
       } else if (k == L"measure_seconds") {
         step.measure = (std::max)(0.1, _wtof(v.c_str()));
       } else if (k == L"sun") {
@@ -1308,6 +1314,7 @@ void exp_apply(int step) {
   g_opaqueAlpha = step > 0 && g_exp[step].opaque >= 0 ? g_exp[step].opaque : g_opaqueBase;
   g_alphaCut = step > 0 && g_exp[step].alphacut >= 0 ? g_exp[step].alphacut : g_alphaCutBase;
   g_alphaCutSolid = step > 0 && g_exp[step].alphacutSolid;
+  g_ffSwayNear = step > 0 && g_exp[step].ffSwayNear > -2.0f ? g_exp[step].ffSwayNear : g_ffSwayNearBase;
   const bool sunWanted = step > 0 && g_exp[step].sun >= 0 ? g_exp[step].sun != 0 : g_sunOnBefore;
   if (sunWanted != g_sunOn) {
     g_sunOn = sunWanted;
@@ -2522,6 +2529,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_alphaCut = g_alphaCutBase = rbrrtx_env_flag(L"RBRRTX_ALPHACUT", true) ? 1 : 0;
     rbrrtx_alphacut_init();
     if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = (std::max)(0.0f, static_cast<float>(_wtof(fol)));
+    g_ffSwayNearBase = g_ffSwayNear;
     if (GetEnvironmentVariableW(L"RBRRTX_ALPHAREF", fol, 16)) g_cutoutRef = static_cast<DWORD>(std::clamp(_wtoi(fol), 1, 255));
     const DWORD hv = GetEnvironmentVariableW(L"RBRRTX_HARVEST", fol, 16);
     g_harvestUsage = hv > 0 && !(hv < 16 && wcscmp(fol, L"0") == 0);
