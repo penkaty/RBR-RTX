@@ -339,7 +339,8 @@ float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from
 struct Stats {
   unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace;
   unsigned uiTriggerAt, oqAtUi;                        // draw number of our UI trigger (0 = none); open queries then
-  unsigned btb, btbSkipped;                            // BTB effect draws; of them left untransformed (instanced)
+  unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, copies drawn
+  float btbWorldErr;                                   // BTB worldMatrix vs the world its worldviewproj implies
   float worldErr, rlDev, recErr;
   float skyErr, skyCamOff;                              // sky VP split error; sky camera distance from the dome centre
 } g_st = {};
@@ -405,7 +406,8 @@ int g_alphaCut = 1, g_alphaCutBase = 1;
 // Go/no-go timing (experiment step "alphacut_solid = 1"): clipped copies drawn with the alpha test forced off, hull ones
 // too (wrong look: solid outlines). Tells whether the extra triangles cost more than the alpha test they could save.
 bool g_alphaCutSolid = false;
-struct { bool valid; INT base; UINT minIdx, numV, startIdx, count; } g_dip = {};   // the DrawIndexedPrimitive in flight
+struct { bool valid; INT base; UINT minIdx, numV, startIdx, count; } g_dip = {};
+bool g_inDip = false;                                  // a DrawIndexedPrimitive (any type) is in flight   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
 
@@ -1122,12 +1124,14 @@ bool ctab_matrix(const CtabMatrix& m, D3DMATRIX& out) {
   return true;
 }
 
-// BTB draw: W = worldMatrix, camera V*P = W^-1 * worldviewproj (first BTB draw of the frame defines it, like RBR's
-// first world-space draw). Without worldMatrix the world comes from worldviewproj and the frame's camera.
-// Instanced draws (world per instance in TEXCOORD1-4) are left to the game: one Remix world matrix cannot place them.
+// BTB draw: camera V*P = W^-1 * worldviewproj of the frame's first BTB draw (W = its worldMatrix; like RBR's first
+// world-space draw). Every draw's world then comes from its own worldviewproj and that camera: worldMatrix alone did
+// not match what worldviewproj draws (Ruuhimaki run 01:02, world check 148 units, terrain floating above the car), so
+// it is only trusted for the camera. Instanced draws (world per instance in TEXCOORD1-4): btb_instanced_draw.
 bool btb_draw(IDirect3DDevice9* dev) {
   ++g_st.btb;
   D3DMATRIX wvp, world;
+  if (g_curInfo->wvp.reg < 0) return false;            // instanced: btb_instanced_draw sets the transforms
   if (!ctab_matrix(g_curInfo->wvp, wvp)) { ++g_st.btbSkipped; return false; }
   const bool haveW = ctab_matrix(g_curInfo->world, world);
   if (haveW && !g_frameCam) {
@@ -1145,13 +1149,68 @@ bool btb_draw(IDirect3DDevice9* dev) {
   }
   if (!g_haveCam) { ++g_st.noCamera; return false; }
   const D3DMATRIX derived = to_f(mul_d(to_d(wvp), g_VPinv));
-  if (haveW) g_st.worldErr = (std::max)(g_st.worldErr, max_diff(world, derived));
-  else world = derived;
+  if (haveW) g_st.btbWorldErr = (std::max)(g_st.btbWorldErr, max_diff(world, derived));
+  world = derived;
   set_xf(dev, 1, g_V);
   set_xf(dev, 2, g_P);
   set_xf(dev, 0, world);
   ++g_st.xformed;
   return apply_material_hint(dev);
+}
+
+// Instanced BTB draw (DrawIndexedPrimitive with stream 0 frequency INDEXEDDATA|n, stream 1 = one float4x4 per copy
+// as TEXCOORD1-4 rows; HLSL vpos = mul(float4x4(rows), pos), pos = mul(vpos, viewproj)). Remix places a draw with one
+// world matrix, so the draw is split: per copy, stream 1 points at that copy's element with stride 0 (every vertex
+// reads it, so the raster image stays the game's) and the Remix world = rows^T * viewproj * camera^-1.
+// false = not handled (the caller draws as usual).
+template <class Draw>
+bool btb_instanced_draw(IDirect3DDevice9* dev, Draw& draw, HRESULT& hr) {
+  if (!g_inDip || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & SH_BTB) || g_curInfo->vp.reg < 0) return false;
+  UINT f0 = 0, f1 = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSourceFreq(dev, 0, &f0)) || !(f0 & D3DSTREAMSOURCE_INDEXEDDATA)) return false;
+  const UINT n = (std::min)(f0 & 0x3FFFFFFFu, 4096u);
+  D3DMATRIX vpm;
+  if (!n || !ctab_matrix(g_curInfo->vp, vpm)) return false;
+  if (!g_frameCam) {                                   // no BTB camera this frame yet: viewproj is the camera
+    DMat V, P, vpinv;
+    double rec = 0;
+    if (!decompose_vp(to_d(vpm), V, P, rec) || !inverse_d(to_d(vpm), vpinv)) return false;
+    g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv;
+    g_haveCam = g_frameCam = true;
+  }
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT off = 0, stride = 0;
+  dev->lpVtbl->GetStreamSourceFreq(dev, 1, &f1);
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 1, &vb, &off, &stride)) || !vb) return false;
+  std::vector<float> rows;
+  void* data = nullptr;
+  if (stride >= 64 && SUCCEEDED(vb->lpVtbl->Lock(vb, off, n * stride, &data, D3DLOCK_READONLY)) && data) {
+    rows.resize(static_cast<size_t>(n) * 16);
+    for (UINT i = 0; i < n; ++i) std::memcpy(&rows[i * 16], static_cast<const char*>(data) + i * stride, 64);
+    vb->lpVtbl->Unlock(vb);
+  }
+  if (rows.empty()) { vb->lpVtbl->Release(vb); return false; }
+  const DMat toCam = mul_d(to_d(vpm), g_VPinv);         // viewproj -> our camera (identity when they agree)
+  dev->lpVtbl->SetStreamSourceFreq(dev, 0, 1);
+  dev->lpVtbl->SetStreamSourceFreq(dev, 1, 1);
+  set_xf(dev, 1, g_V);
+  set_xf(dev, 2, g_P);
+  hr = D3D_OK;
+  for (UINT i = 0; i < n; ++i) {
+    const D3DMATRIX w = from_rows(reinterpret_cast<const float (*)[4]>(&rows[i * 16]));
+    set_xf(dev, 0, to_f(mul_d(to_d(w), toCam)));
+    dev->lpVtbl->SetStreamSource(dev, 1, vb, off + i * stride, 0);
+    const HRESULT r = draw();
+    if (FAILED(r)) hr = r;
+  }
+  dev->lpVtbl->SetStreamSource(dev, 1, vb, off, stride);
+  dev->lpVtbl->SetStreamSourceFreq(dev, 0, f0);
+  dev->lpVtbl->SetStreamSourceFreq(dev, 1, f1);
+  vb->lpVtbl->Release(vb);
+  ++g_st.btbInstanced;
+  g_st.btbCopies += n;
+  ++g_st.xformed;
+  return true;
 }
 
 bool before_draw(IDirect3DDevice9* dev) {
@@ -1265,10 +1324,10 @@ void log_frame(const wchar_t* why) {
   D3DMATRIX vinv = {};
   const bool okInv = g_haveCam && inverse(g_V, vinv);
   const float fovY = g_haveCam && g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f;
-  clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed)], transformed %u, no-camera %u, "
+  clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed, %u instanced as %u copies, worldMatrix off by %.2f)], transformed %u, no-camera %u, "
        L"scenes %u, world-check max err %.5f, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
        L"UI trigger %s at draw %u (occlusion queries open then %u, now %d), %s",
-       g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.xformed, g_st.noCamera,
+       g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.btbInstanced, g_st.btbCopies, g_st.btbWorldErr, g_st.xformed, g_st.noCamera,
        g_st.scenes, g_st.worldErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
        g_st.skyDraws, g_st.skyErr, g_st.skyCamOff, g_glassOn ? L"on" : L"off", g_st.glassSkipped, g_st.screenSpace, g_uiTriggerOn ? L"on" : L"off",
        g_st.uiTriggerAt, g_st.oqAtUi, g_oqActive, kTestModes[g_testMode]);
@@ -2554,7 +2613,9 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   const bool cut = g_alphaCut && g_dip.valid && !atOff && is_scenery_draw() &&
                    rbrrtx_alphacut_find(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, &ac);
   if (cut && (ac.alphaTestOff || g_alphaCutSolid) && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
-  const HRESULT hr = cut ? alphacut_draw(dev, ac) : draw();
+  HRESULT hr = D3D_OK;
+  if (cut) hr = alphacut_draw(dev, ac);
+  else if (!btb_instanced_draw(dev, draw, hr)) hr = draw();
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
@@ -2587,8 +2648,10 @@ HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIM
   g_drawFirstVert = base >= 0 ? static_cast<UINT>(base) + minIdx : 0;
   g_drawNumVert = base >= 0 ? numV : 0;
   g_dip = { t == D3DPT_TRIANGLELIST && base >= 0, base, minIdx, numV, startIdx, count };
+  g_inDip = true;
   const HRESULT hr = comp_draw(dev, [&] { return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
   g_dip.valid = false;
+  g_inDip = false;
   return hr;
 }
 
