@@ -25,7 +25,8 @@ $here = $PSScriptRoot
 $dist = Join-Path $here 'dist\RBR-RTX'
 if (-not $Remix) {
   $Remix = Get-ChildItem (Join-Path $here '..\remix\runtime') -Directory -ErrorAction SilentlyContinue |
-           Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+           Where-Object Name -match '^remix-\d+(\.\d+)+$' |
+           Sort-Object { [version]($_.Name -replace '^remix-') } -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $Remix -or -not (Test-Path (Join-Path $Remix '.trex\NvRemixBridge.exe'))) {
   throw 'RTX Remix runtime not found. Pass -Remix <extracted Remix release folder with d3d9.dll and .trex\>.'
