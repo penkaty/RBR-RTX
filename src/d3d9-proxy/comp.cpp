@@ -328,11 +328,11 @@ int g_foliageMode = 1;
 // Opaque cut-outs (docs/research/adr-001-alphacards.md, tier 1): an alpha-tested draw whose stage-0 texture never falls
 // below the ALPHAREF in effect (min alpha of mip 0, harvest.cpp) passes every pixel anyway; drawn without alpha test,
 // Remix treats it as opaque (no alpha test per ray hit). Many RBR trunks, IO props and foliage atlases are such.
-// RBRRTX_OPAQUE_ALPHA=0 = off; key opaque_alpha (Alt+O); experiment steps "opaque = 0|1".
+// RBRRTX_OPAQUE_ALPHA=0 = off; key opaque_alpha (none by default); experiment steps "opaque = 0|1".
 int g_opaqueAlpha = 1, g_opaqueBase = 1;
 unsigned g_opaqueDraws = 0;                            // draws made opaque this way since the last log line
 // Alpha-card cut-outs (adr-001 tiers 2-3, alphacut.cpp): alpha-tested scenery draws whose texture has an outline file
-// are drawn from a copy of their cards clipped to it. RBRRTX_ALPHACUT=0 = off; key alpha_cut (Alt+C); experiment
+// are drawn from a copy of their cards clipped to it. RBRRTX_ALPHACUT=0 = off; key alpha_cut (Alt+O; Alt+C also pressed the game's camera key C); experiment
 // steps "alphacut = 0|1".
 int g_alphaCut = 1, g_alphaCutBase = 1;
 struct { bool valid; INT base; UINT minIdx, numV, startIdx, count; } g_dip = {};   // the DrawIndexedPrimitive in flight
