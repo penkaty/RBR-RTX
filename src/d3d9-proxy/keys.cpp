@@ -4,7 +4,8 @@
 // tester's on-screen keyboard lost the game's focus. A key only counts while the game window has the focus (the
 // proxy reads the keyboard globally, so typing elsewhere must not toggle anything) and while neither Ctrl nor Alt
 // is held (Alt+X opens Remix; other plugins use combos). Quick taps between two frames are caught too.
-// Exception: a key written as Alt+<key> fires only while Alt is held (sun brightness Alt+H / Alt+N, user 2026-10-17).
+// Exception: a key written as Alt+<key> fires only while Alt is held (sun brightness Alt+N / Alt+M, user 2026-10-17).
+// Number row for toggles (0 ray tracing, 6 sky, 7 dust, 8 frame dump, 9 experiment; user 2026-10-22).
 //
 // keys.ini:  [keys]  <action> = <key>   key = a letter or digit, F1..F24, a name from kNames below, 0x<VK hex>,
 //            optionally with an Alt+ prefix, or none (action off). Missing file or entry = default.
@@ -19,25 +20,25 @@ constexpr int kAlt = 0x1000;                                 // in Action::vk: t
 
 // Order = RbrKey enum in common.hpp.
 Action g_actions[RBRKEY_COUNT] = {
-  {L"frame_dump", 'P', L"frame dump"},
+  {L"frame_dump", '8', L"frame dump"},
   {L"layer", 'O', L"RBR-RTX layer"},
   {L"sun", 'L', L"Remix sun"},
   {L"foliage", 'J', L"foliage mode"},
-  {L"dust", 'U', L"dust"},
+  {L"dust", '7', L"dust"},
   {L"windscreen", 'I', L"windscreen"},
-  {L"sky", 'N', L"sky mode"},
+  {L"sky", '6', L"sky mode"},
   {L"debug_sun", 'H', L"debug sun"},
   {L"debug_sun_left", VK_OEM_4, L"debug sun turn left"},     // [
   {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
-  {L"experiment", kAlt | 'T', L"performance experiment run"},
-  {L"culling", 'M', L"distance culling on/off"},
-  {L"sun_brighter", kAlt | 'H', L"sun brightness +10 %"},
-  {L"sun_dimmer", kAlt | 'N', L"sun brightness -10 %"},
-  {L"ff_scenery", kAlt | 'J', L"fixed-function scenery mode"},
+  {L"experiment", '9', L"performance experiment run"},
+  {L"culling", 'U', L"distance culling on/off"},
+  {L"sun_brighter", kAlt | 'N', L"sun brightness +10 %"},
+  {L"sun_dimmer", kAlt | 'M', L"sun brightness -10 %"},
+  {L"ff_scenery", 'K', L"fixed-function scenery mode"},
   {L"sweep", kAlt | 'K', L"stage sweep (screenshots, debug views, texture hashes, report)"},
-  {L"raytracing", 'K', L"ray tracing on/off (raster comparison)"},
+  {L"raytracing", '0', L"ray tracing on/off (raster comparison)"},
   {L"opaque_alpha", 0, L"opaque cut-outs without alpha test on/off"},   // no key: ~0 ms with OMM on (adr-001)
   {L"alpha_cut", kAlt | 'O', L"alpha-card cut-outs (clipped foliage cards) on/off"},
 };

@@ -1,5 +1,5 @@
 // Test of keys.cpp parsing: builds keys.cpp with a printing log stub, loads keys.ini files given by RBRRTX_KEYS.
-//   test\build_keys_test.cmd  (x86 cl)  ->  keys_test.exe
+//   x86 cl test\keys_test.cpp -> keys_test.exe [--shipped=<package keys.ini>] [other keys.ini ...]
 #include "../keys.cpp"
 #include <cstdarg>
 #include <cstdio>
@@ -38,9 +38,18 @@ int wmain(int argc, wchar_t** argv) {
   fails += check(L"alt+F5", 0x1000 | VK_F5);
   fails += check(L"Alt+", -1);
   fails += check(L"Alt+Alt+H", -1);
+  int defaults[RBRKEY_COUNT];
+  for (int i = 0; i < RBRKEY_COUNT; ++i) defaults[i] = g_actions[i].vk;
   for (int i = 1; i < argc; ++i) {           // each argument: a keys.ini to load and print
-    SetEnvironmentVariableW(L"RBRRTX_KEYS", argv[i]);
+    const bool shipped = !wcsncmp(argv[i], L"--shipped=", 10);   // the package keys.ini: must equal the defaults
+    SetEnvironmentVariableW(L"RBRRTX_KEYS", shipped ? argv[i] + 10 : argv[i]);
     rbrrtx_keys_load();
+    if (shipped)
+      for (int k = 0; k < RBRKEY_COUNT; ++k)
+        if (g_actions[k].vk != defaults[k]) {
+          wprintf(L"FAIL default %s = 0x%X, shipped keys.ini = 0x%X\n", g_actions[k].ini, defaults[k], g_actions[k].vk);
+          ++fails;
+        }
   }
   wprintf(fails ? L"%d FAILED\n" : L"parse checks passed\n", fails);
   return fails;

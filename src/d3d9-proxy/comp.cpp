@@ -285,7 +285,7 @@ unsigned g_sunCreates = 0;
 bool g_sunManual = false, g_sunMoving = false;
 float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon
 float g_sunFade = 1.0f;                                // sun radiance factor of the light currently created
-float g_sunScale = 1.0f;                               // live brightness (Alt+H / Alt+N), times g_sunRadiance
+float g_sunScale = 1.0f;                               // live brightness (sun_brighter / sun_dimmer keys), times g_sunRadiance
 float g_sunWeather = 1.0f;                             // stage atmosphere: cloud cover / rain / fog (atmosphere.ini)
 float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from the conf (-1 = not read) / last set
 
@@ -312,7 +312,7 @@ bool g_uiTriggerOn = true, g_uiTriggered = false;
 
 // Sky. RBR draws SkyDome.vso and Clouds*.vso as real meshes around the stage; under Remix such a shell is ray
 // traced as an opaque occluder that blocks the sun and sky light (the stage went dark, the menu backdrop without a dome
-// was lit, 2026-10-15). Modes (RBRRTX_SKY = 0..2; the sky key (N) toggles 2 <-> 1 live; primary target only):
+// was lit, 2026-10-15). Modes (RBRRTX_SKY = 0..2; the sky key toggles 2 <-> 1 live; primary target only):
 //   2 = draw them as Remix sky: viewport depth range 1..1 for these draws. Remix categorises a draw whose viewport
 //       MinZ >= rtx.skyMinZThreshold (default 1.0) as Sky (rtx_types.cpp) and rasterises it into the sky and the sky
 //       probe instead of the BVH. On screen nothing changes: the sky sits at the far plane and writes no depth.
@@ -364,13 +364,13 @@ unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQu
 // Dust/smoke (Valstagna replay 05:57, user): RBR draws gravel dust as Particle.vso batches of alpha-tested, blended
 // sprites. Path traced, hundreds of stacked translucent quads cost a lot and fill the screen as a brown wall (onboard
 // replays at slow hairpins). Only the first g_dustKeep percent of each batch's triangles is drawn (rounded to whole
-// quads). RBRRTX_DUST=<percent> (100 = all, 0 = none); the dust key (U) cycles them live.
+// quads). RBRRTX_DUST=<percent> (100 = all, 0 = none); the dust key cycles them live.
 // Run 06:19 (user): with the sprites tagged as Remix particles (rtx.conf) full dust looked best; 15% left a few flat
 // sprite planes trailing the car. Run 16:52 (user): full dust is far too expensive (the test install has ParticleMod by
 // Kahoo: many fine sprites); wanted: cheap and not too dense. ParticleQuality = low (the 2004 PS_*_LOW.ini) drew no
 // dust at all under Remix (run 18:26, Alt+Pause had nothing to trim), so ParticleMod's sprites. Trimming keeps the
 // first part of each batch, which in a TV-cam replay (run 18:41) cut the trail into dust / gap / dust instead of
-// thinning it, so the default is 100 again until thinning is spread evenly. Dust key (U): 100 -> 0 -> 25 -> 50.
+// thinning it, so the default is 100 again until thinning is spread evenly. Dust key: 100 -> 0 -> 25 -> 50.
 // g_dustQuads counts drawn quads for the log.
 unsigned g_dustKeep = 100, g_dustTrimmed = 0, g_dustQuads = 0, g_dustFrames = 0;
 UINT g_primCap = UINT_MAX, g_pendingPrims = 0;                             // set per draw by comp_draw, applied by the draw hooks
@@ -396,7 +396,7 @@ bool is_scenery_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curI
 // interactive objects the car can push (start clock board, signs, cones): FF needs an exact WORLD and the derived one
 // put them in the wrong place (Rosciszow-Walim 4/5, 2026-10-17; vertex capture is immune, it undoes our matrices);
 // they move anyway, so a cached BLAS buys nothing there.
-// Modes (RBRRTX_FF, ff_scenery key Alt+J cycles 0 -> 1 -> 2 -> 0, K steps "ff = n"):
+// Modes (RBRRTX_FF, ff_scenery key cycles 0 -> 1 -> 2 -> 0, K steps "ff = n"):
 //   0 = off (vertex capture, the old way)   1 = static RL* scenery (2026-10-17 K runs: -1.1 ms Walim, -2.4
 //   Chirdonhead, -5.9 Santa Lucia)   2 = also swaying foliage/flags/grass farther than g_ffSwayNear from the camera
 //   (40 m, RBRRTX_FF_SWAY_NEAR): those stop swaying, near ones keep it (GTA4 idea; all of it frozen gave another
@@ -639,7 +639,7 @@ void debug_sky() {
 
 // ---------------------------------------------------------------- stage atmosphere
 std::vector<std::wstring> split_list(const std::wstring& v);   // culling section
-extern int g_expStep;                                          // K / sweep runner (-1 = idle)
+extern int g_expStep;                                          // experiment / sweep runner (-1 = idle)
 // RBR's weather and the stage's region drive Remix's volumetrics (user 2026-10-17): haze density (transmittance
 // measurement distance, lower = denser), haze colour, scattering albedo and anisotropy, sky light and sun strength.
 // rbr-rtx\config\atmosphere.ini (env RBRRTX_ATMOSPHERE): [region.<name>] with countries = FI,SE,..., [sky.<SkyType>],
@@ -1620,7 +1620,7 @@ void end_frame(IDirect3DDevice9* dev) {
     log_frame(why);
   }
   ++g_dustFrames;
-  if (kBrighter || kDimmer) {                          // sun brightness live (Alt+H / Alt+N), game or debug sun
+  if (kBrighter || kDimmer) {                          // sun brightness live (sun_brighter / sun_dimmer), game or debug sun
     g_sunScale = std::clamp(g_sunScale * (kBrighter ? 1.1f : 1.0f / 1.1f), 0.05f, 20.0f);
     g_sunFade = -1.0f;                                 // forces the light to be re-created with the new radiance
     swprintf_s(why, L"%s: sun brightness x%.2f = radiance (%.2f, %.2f, %.2f); keep it: -SunRadiance %.2f,%.2f,%.2f",
@@ -1856,7 +1856,7 @@ bool is_midscene_quad(IDirect3DDevice9* dev) {
   return true;
 }
 
-// ---------------------------------------------------------------- distance culling (culling.ini, key M, K steps)
+// ---------------------------------------------------------------- distance culling (culling.ini, culling key, experiment steps)
 // K runs 2026-10-17 (Chirdonhead forest): foliage costs ~2.9 ms of ~15 ms, mostly by being in the scene (~1.8 ms; its
 // alpha test only ~1.1), ground ~2.1, objects ~1.1. RBR submits geometry the camera cannot see (behind, beside), which
 // Remix still traces for shadows, reflections and bounce light. Culling those far away costs little in the picture;
