@@ -734,6 +734,23 @@ void atmo_send(const char* key, const std::string& value, const std::string& con
 std::string fmt3(const float v[3]) { char b[64]; sprintf_s(b, "%.3f, %.3f, %.3f", v[0], v[1], v[2]); return b; }
 std::string fmt1(float v) { char b[32]; sprintf_s(b, "%.3f", v); return b; }
 
+// Which car the player drives. RSF loads every car into one slot (carId 6), so the slot number says nothing: the chosen
+// car is written to <game>\Cars\Cars.ini [Car0<slot>], so [Car06] for RSF (CarName, ShaderFile = the car's own shaders .ini).
+std::wstring car_desc(int carId) {
+  if (carId < 0 || carId > 7) return L"?";
+  wchar_t ini[MAX_PATH] = {};
+  DWORD n = GetModuleFileNameW(nullptr, ini, MAX_PATH);
+  wchar_t* slash = (n > 0 && n < MAX_PATH) ? wcsrchr(ini, L'\\') : nullptr;
+  if (!slash) return L"?";
+  wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - ini), L"Cars\\Cars.ini");
+  wchar_t sec[8], name[128] = {}, shaders[MAX_PATH] = {};
+  swprintf_s(sec, L"Car%02d", carId);
+  GetPrivateProfileStringW(sec, L"CarName", L"", name, 128, ini);
+  GetPrivateProfileStringW(sec, L"ShaderFile", L"", shaders, MAX_PATH, ini);
+  return L"\"" + std::wstring(name[0] ? name : L"?") + L"\" ([" + sec + L"] in Cars\\Cars.ini, shaders " +
+         (shaders[0] ? shaders : L"none") + L")";
+}
+
 void atmo_frame() {
   if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
   if (!g_atmoLoaded) atmo_load();
@@ -745,6 +762,8 @@ void atmo_frame() {
   swprintf_s(key, L"%d|%d|%d|%d", si.trackId, si.skyType, si.clouds, si.timeOfDay);
   if (g_atmoKey == key) return;
   g_atmoKey = key;
+  static int carLogged = -1;
+  if (si.carId != carLogged) { carLogged = si.carId; clog(L"car: slot %d = %s", si.carId, car_desc(si.carId).c_str()); }
   const std::wstring country(si.country, si.country + strlen(si.country));
   const AtmoRegion* region = nullptr;
   for (const auto& r : g_atmoRegions)
@@ -2166,11 +2185,11 @@ void sweep_write(const std::wstring& name, const std::wstring& text) {
 }
 
 std::wstring stage_line(const RbrStageInfo& si) {
-  wchar_t s[512];
-  swprintf_s(s, L"stage %d \"%s\" (%S, surface tarmac %d / gravel %d / snow %d %%), car slot %d, sky %s, clouds %s, %s, "
+  wchar_t s[1024];
+  swprintf_s(s, L"stage %d \"%s\" (%S, surface tarmac %d / gravel %d / snow %d %%), car slot %d = %s, sky %s, clouds %s, %s, "
                 L"surface %s (age %d), tyres %d, weather %s, game mode %d",
              si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", si.tarmac, si.gravel, si.snow,
-             si.carId, rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay),
+             si.carId, car_desc(si.carId).c_str(), rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay),
              rbrrtx_wetness_name(si.wetness), si.surfaceAge, si.tyreType,
              si.weatherType == 0 ? L"Good" : si.weatherType == 1 ? L"Random" : si.weatherType == 2 ? L"Bad" : L"?", si.gameMode);
   return s;
