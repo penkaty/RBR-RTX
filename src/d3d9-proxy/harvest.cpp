@@ -51,6 +51,27 @@ FILE* g_tsv = nullptr;
 unsigned g_seq = 0, g_new = 0, g_dup = 0, g_skipped = 0;
 unsigned g_updates = 0, g_updatesKnown = 0;               // UpdateTexture calls / ones whose source had a hash
 
+// Second ground layer (comp.cpp layer_draw, user 2026-10-22). RBR's ground blends two textures by vertex alpha in its
+// pixel shader; Remix takes stage 0 only. The second texture is drawn again as a decal, and it needs a hash of its own
+// (the same texture is the FIRST layer of other draws, which a decal tag would break). DEFAULT-pool textures cannot be
+// read back, so the SYSTEMMEM source of every block-compressed UpdateTexture (>= 512 wide) is held until another stage is driven (not at the menu: a replay or restart passes through it without uploading
+// again), and
+// on first use as a second layer a twin is made from it: same mips, one index bit of the first block flipped (one texel
+// of mip 0 changes by one palette step), uploaded like the game does it, so the twin has its own Remix hash.
+IDirect3DDevice9* g_dev = nullptr;
+struct Held { IDirect3DTexture9* src = nullptr; IDirect3DTexture9* twin = nullptr; bool failed = false; size_t bytes = 0;
+              int track = 0; DWORD tick = 0; };      // stage id and time of the upload
+std::unordered_map<void*, Held> g_held;                  // DEFAULT texture -> its source (+ twin once made)
+size_t g_heldBytes = 0;
+unsigned g_twins = 0, g_twinFails = 0;
+
+void held_release(Held& h) {
+  if (h.src) h.src->lpVtbl->Release(h.src);
+  if (h.twin) h.twin->lpVtbl->Release(h.twin);
+  g_heldBytes -= h.bytes;
+  h = {};
+}
+
 template <class F>
 void patch(F* slot, F hook, F& orig) {
   DWORD old = 0;
@@ -230,6 +251,8 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
       std::lock_guard<std::mutex> g(g_mx);
       g_texHash.erase(t);
       g_texMinAlpha.erase(t);
+      auto h = g_held.find(t);
+      if (h != g_held.end()) { held_release(h->second); g_held.erase(h); }
     }
     patch(&t->lpVtbl->LockRect, &hk_TexLock, ho.TexLock);
     patch(&t->lpVtbl->UnlockRect, &hk_TexUnlock, ho.TexUnlock);
@@ -255,7 +278,26 @@ HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseT
     if (h != g_texHash.end()) { g_texHash[dst] = h->second; ++g_updatesKnown; } else g_texHash.erase(dst);
     if (a != g_texMinAlpha.end()) g_texMinAlpha[dst] = a->second; else g_texMinAlpha.erase(dst);
     if (g_updates == 1 || g_updates % 500 == 0)
-      hlog(L"UpdateTexture: %u copies, %u with a known source hash", g_updates, g_updatesKnown);
+      hlog(L"UpdateTexture: %u copies, %u with a known source hash, %zu sources held (%.0f MB) for second layers",
+           g_updates, g_updatesKnown, g_held.size(), g_heldBytes / 1048576.0);
+    if (src->lpVtbl->GetType(src) == D3DRTYPE_TEXTURE && dst->lpVtbl->GetType(dst) == D3DRTYPE_TEXTURE) {
+      IDirect3DTexture9* s = reinterpret_cast<IDirect3DTexture9*>(src);
+      D3DSURFACE_DESC d = {};
+      UINT rowBytes = 0, rows = 0;
+      const char* fmt = "?";
+      if (SUCCEEDED(s->lpVtbl->GetLevelDesc(s, 0, &d)) && d.Pool == D3DPOOL_SYSTEMMEM && d.Width >= 512 &&
+          (d.Format == D3DFMT_DXT1 || d.Format == D3DFMT_DXT3 || d.Format == D3DFMT_DXT5) &&
+          layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt)) {
+        Held& held = g_held[dst];
+        held_release(held);
+        s->lpVtbl->AddRef(s);
+        held.src = s;
+        held.bytes = static_cast<size_t>(rowBytes) * rows * 4 / 3;   // with mips
+        held.track = read_int(0x01660804);
+        held.tick = GetTickCount();
+        g_heldBytes += held.bytes;
+      }
+    }
   }
   return hr;
 }
@@ -323,9 +365,86 @@ int rbrrtx_texture_min_alpha(void* base_texture) {
   return it != g_texMinAlpha.end() ? it->second : -1;
 }
 
+void* rbrrtx_layer_twin(void* texture) {
+  IDirect3DTexture9* src = nullptr;
+  {
+    std::lock_guard<std::mutex> g(g_mx);
+    auto it = g_held.find(texture);
+    if (it == g_held.end() || it->second.failed) return nullptr;
+    if (it->second.twin) return it->second.twin;
+    src = it->second.src;
+    src->lpVtbl->AddRef(src);
+  }
+  // Built without the lock: the copy's own Lock/Unlock and UpdateTexture go through the hooks above (hash, inherit).
+  IDirect3DTexture9 *tmp = nullptr, *twin = nullptr;
+  D3DSURFACE_DESC d0 = {};
+  src->lpVtbl->GetLevelDesc(src, 0, &d0);
+  const DWORD levels = src->lpVtbl->GetLevelCount(src);
+  bool ok = g_dev && SUCCEEDED(g_dev->lpVtbl->CreateTexture(g_dev, d0.Width, d0.Height, levels, 0, d0.Format,
+                                                             D3DPOOL_SYSTEMMEM, &tmp, nullptr)) && tmp;
+  for (DWORD lv = 0; ok && lv < levels; ++lv) {
+    D3DSURFACE_DESC d = {};
+    UINT rowBytes = 0, rows = 0;
+    const char* fmt = "?";
+    D3DLOCKED_RECT a = {}, b = {};
+    ok = SUCCEEDED(src->lpVtbl->GetLevelDesc(src, lv, &d)) && layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt) &&
+         SUCCEEDED(src->lpVtbl->LockRect(src, lv, &a, nullptr, D3DLOCK_READONLY));
+    if (!ok) break;
+    if (SUCCEEDED(tmp->lpVtbl->LockRect(tmp, lv, &b, nullptr, 0))) {
+      for (UINT r = 0; r < rows; ++r)
+        memcpy(static_cast<char*>(b.pBits) + static_cast<size_t>(r) * b.Pitch,
+               static_cast<const char*>(a.pBits) + static_cast<size_t>(r) * a.Pitch, rowBytes);
+      if (lv == 0) static_cast<unsigned char*>(b.pBits)[d.Format == D3DFMT_DXT1 ? 4 : 12] ^= 1;   // one texel index
+      tmp->lpVtbl->UnlockRect(tmp, lv);
+    } else ok = false;
+    src->lpVtbl->UnlockRect(src, lv);
+  }
+  ok = ok && SUCCEEDED(g_dev->lpVtbl->CreateTexture(g_dev, d0.Width, d0.Height, levels, 0, d0.Format, D3DPOOL_DEFAULT,
+                                                    &twin, nullptr)) && twin &&
+       SUCCEEDED(ho.UpdateTexture(g_dev, reinterpret_cast<IDirect3DBaseTexture9*>(tmp),   // not held as a source
+                                  reinterpret_cast<IDirect3DBaseTexture9*>(twin)));
+  std::lock_guard<std::mutex> g(g_mx);
+  if (ok) {                                            // the twin is named after the copy, as Remix does
+    auto h = g_texHash.find(tmp);
+    if (h != g_texHash.end()) g_texHash[twin] = h->second;
+    auto a = g_texMinAlpha.find(tmp);
+    if (a != g_texMinAlpha.end()) g_texMinAlpha[twin] = a->second;
+  }
+  if (tmp) tmp->lpVtbl->Release(tmp);
+  src->lpVtbl->Release(src);
+  if (!ok && twin) { twin->lpVtbl->Release(twin); twin = nullptr; }
+  auto it = g_held.find(texture);
+  if (it == g_held.end()) { if (twin) twin->lpVtbl->Release(twin); return nullptr; }
+  if (twin) { it->second.twin = twin; ++g_twins; g_heldBytes += it->second.bytes; it->second.bytes *= 2; }
+  else { it->second.failed = true; ++g_twinFails; }
+  return twin;
+}
+
+// A stage is driven: sources uploaded for another stage go, unless uploaded in the last minute (the stage id may change
+// only after the new stage's textures are in).
+void rbrrtx_layer_release_other(int track) {
+  std::lock_guard<std::mutex> g(g_mx);
+  const DWORD now = GetTickCount();
+  unsigned n = 0;
+  for (auto it = g_held.begin(); it != g_held.end();) {
+    if (it->second.track != track && now - it->second.tick > 60000) { held_release(it->second); it = g_held.erase(it); ++n; }
+    else ++it;
+  }
+  if (n) hlog(L"second layers: stage %d: %u sources of other stages released; %zu held (%.0f MB), %u twins made (%u failed)",
+              track, n, g_held.size(), g_heldBytes / 1048576.0, g_twins, g_twinFails);
+}
+
+void rbrrtx_layer_stats(unsigned* held, unsigned* twins, double* mb) {
+  std::lock_guard<std::mutex> g(g_mx);
+  *held = static_cast<unsigned>(g_held.size());
+  *twins = g_twins;
+  *mb = g_heldBytes / 1048576.0;
+}
+
 void rbrrtx_harvest_install(void* device) {
   wchar_t dir[MAX_PATH] = {};
   if (!device) return;
+  g_dev = static_cast<IDirect3DDevice9*>(device);
   if (!GetEnvironmentVariableW(L"RBRRTX_HARVEST", dir, MAX_PATH) || !dir[0] || !wcscmp(dir, L"0")) {
     // Hash only: the stage sweep (Alt+K) lists each draw's textures by their Remix hash. One XXH3 per texture upload
     // (stage load); nothing written. RBRRTX_TEXHASH=0 = no hooks at all.

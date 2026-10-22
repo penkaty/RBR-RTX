@@ -27,7 +27,8 @@ the original game's.
   sun direction doesn't match their baked shadows; you can fix those yourself (see [Fixing the sun](#fixing-the-sun-on-a-stage)).
 - Weather and region: RBR's sky type, clouds, time of day and the stage's country set Remix haze, sky light and
   sun strength.
-- Fixes for foliage cut-outs, windscreen, dust and the in-car view.
+- Ground textures blended like the original (two-layer stages: sea, coast, cliffs), car dirt, and fixes for
+  foliage cut-outs, windscreen, dust and the in-car view.
 - **Stage reports**: every stage you drive is zipped (frame rate, stutter, car, stage, PC, settings) into
   `rbr-rtx\logs\reports`; **9** marks a problem. Nothing is sent anywhere.
 - **Alt+K stage sweep**: one key collects screenshots, Remix debug views, texture hashes and a scene capture for
