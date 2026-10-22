@@ -33,6 +33,9 @@ void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader);
 unsigned long long rbrrtx_texture_hash(void* base_texture);
 // harvest.cpp: smallest alpha (0..255) of that texture's mip 0, -1 if unknown (same hooks, alpha_min.hpp).
 int rbrrtx_texture_min_alpha(void* base_texture);
+// harvest.cpp: writes mip 0 of a 2D texture to a .dds through a READONLY lock (frame dump; through the Remix bridge
+// that is the client's copy, the bytes it sent). False if the type or format is not handled or the lock fails.
+bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path);
 
 // alphacut.cpp: alpha-card cut-outs (adr-001 tiers 2-3). For the current alpha-tested DrawIndexedPrimitive
 // (TRIANGLELIST), our copy of its cards clipped to the stage-0 texture's outline: draw `tris` triangles from

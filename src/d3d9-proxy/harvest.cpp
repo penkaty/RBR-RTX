@@ -298,6 +298,24 @@ unsigned long long rbrrtx_texture_hash(void* base_texture) {
   return it != g_texHash.end() ? it->second : 0;
 }
 
+bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path) {
+  IDirect3DBaseTexture9* bt = static_cast<IDirect3DBaseTexture9*>(base_texture);
+  if (!bt || bt->lpVtbl->GetType(bt) != D3DRTYPE_TEXTURE) return false;
+  IDirect3DTexture9* t = reinterpret_cast<IDirect3DTexture9*>(bt);
+  D3DSURFACE_DESC d = {};
+  UINT rowBytes = 0, rows = 0;
+  const char* fmt = "?";
+  if (FAILED(t->lpVtbl->GetLevelDesc(t, 0, &d)) || !layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt)) return false;
+  D3DLOCKED_RECT lr = {};
+  if (FAILED(t->lpVtbl->LockRect(t, 0, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits) return false;
+  std::string data(static_cast<size_t>(rowBytes) * rows, '\0');
+  for (UINT r = 0; r < rows; ++r)
+    memcpy(&data[static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
+  t->lpVtbl->UnlockRect(t, 0);
+  write_dds(path, d.Format, d.Width, d.Height, data);
+  return true;
+}
+
 int rbrrtx_texture_min_alpha(void* base_texture) {
   if (!base_texture) return -1;
   std::lock_guard<std::mutex> g(g_mx);

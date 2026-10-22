@@ -250,6 +250,11 @@ struct Orig {
   decltype(IDirect3DDevice9Vtbl::CreateQuery) CreateQuery;
   decltype(IDirect3DDevice9Vtbl::CreateVertexBuffer) CreateVertexBuffer;
   decltype(IDirect3DDevice9Vtbl::CreateIndexBuffer) CreateIndexBuffer;
+  decltype(IDirect3DDevice9Vtbl::CreateStateBlock) CreateStateBlock;
+  decltype(IDirect3DDevice9Vtbl::BeginStateBlock) BeginStateBlock;
+  decltype(IDirect3DDevice9Vtbl::EndStateBlock) EndStateBlock;
+  decltype(IDirect3DStateBlock9Vtbl::Capture) StateBlockCapture;
+  decltype(IDirect3DStateBlock9Vtbl::Apply) StateBlockApply;
   decltype(IDirect3DQuery9Vtbl::Issue) QueryIssue;
   decltype(IDirect3DQuery9Vtbl::Release) QueryRelease;
 } o{};
@@ -288,8 +293,17 @@ std::unordered_map<const ShaderInfo*, DrawCount> g_byShader;
 // Vertex layouts (diagnostics): what each shader is fed. Remix needs float UVs/normals it can read from the
 // declaration; RBR's world went black with "Trying to bind a texture to a mesh without UVs" (2026-10-15).
 std::unordered_map<void*, std::wstring> g_declText;            // created declaration -> element list
+std::unordered_set<void*> g_declRhw;                           // created declarations with POSITIONT (screen space)
 void* g_curDecl = nullptr;
 DWORD g_curFVF = 0;
+// Which vertex input the device uses: the last of SetFVF / SetVertexDeclaration (0 = not known). The Remix bridge
+// cannot tell: its GetFVF keeps the last SetFVF after a SetVertexDeclaration and GetVertexDeclaration the last
+// declaration after a SetFVF (bridge client d3d9_device.cpp). DirectorsCut's menu text (ID3DXFont, declaration) was
+// taken for its XYZRHW panels' FVF, drawn with identity transforms and so off screen (2026-10-22).
+enum { kVinUnknown, kVinFvf, kVinDecl };
+int g_vin = kVinUnknown;
+bool g_recording = false;                                      // between BeginStateBlock and EndStateBlock
+bool screen_space_input(IDirect3DDevice9* dev);
 std::unordered_map<unsigned long long, bool> g_layoutLogged;    // (shader, layout) pairs already logged
 
 // Material hint for Remix. Remix builds a draw's material from the fixed-function stage-0 states (COLOROP/ARGs,
@@ -1051,6 +1065,78 @@ void tex_desc(IDirect3DDevice9* dev, DWORD stage, wchar_t* out, size_t n) {
   bt->lpVtbl->Release(bt);
 }
 
+// Fixed-function draws on the primary target (HUD, menus, plugin overlays): every state that decides what such a draw
+// shows, and stage 0's texture as a .dds (small A8R8G8B8/X8R8G8B8 ones, once per dump) next to the log. Written for
+// DirectorsCut's menu text, blank under Remix while its panels draw (2026-10-22).
+std::wstring sweep_log_dir();
+std::unordered_set<void*> g_dumpTexSaved;
+
+void dump_ff_state(IDirect3DDevice9* dev) {
+  auto rs = [&](D3DRENDERSTATETYPE s) { DWORD v = 0; dev->lpVtbl->GetRenderState(dev, s, &v); return v; };
+  auto ts = [&](DWORD st, D3DTEXTURESTAGESTATETYPE s) { DWORD v = 0; dev->lpVtbl->GetTextureStageState(dev, st, s, &v); return v; };
+  auto ss = [&](D3DSAMPLERSTATETYPE s) { DWORD v = 0; dev->lpVtbl->GetSamplerState(dev, 0, s, &v); return v; };
+  RECT sc = {};
+  dev->lpVtbl->GetScissorRect(dev, &sc);
+  clog(L"    ff: tss0 col %lu(%lx,%lx) alpha %lu(%lx,%lx) tci %lx ttf %lu; tss1 col %lu alpha %lu; alphafunc %lu tfactor %08lx "
+       L"cw %lx blendop %lu sepalpha %lu srgbw %lu light %lu colvtx %lu diffsrc %lu fog %lu cull %lu fill %lu scissor %lu (%ld,%ld-%ld,%ld) "
+       L"clip %lu planes %lx; samp0 mag %lu min %lu mip %lu maxmip %lu lodbias %08lx srgb %lu addr %lu/%lu",
+       ts(0, D3DTSS_COLOROP), ts(0, D3DTSS_COLORARG1), ts(0, D3DTSS_COLORARG2), ts(0, D3DTSS_ALPHAOP), ts(0, D3DTSS_ALPHAARG1),
+       ts(0, D3DTSS_ALPHAARG2), ts(0, D3DTSS_TEXCOORDINDEX), ts(0, D3DTSS_TEXTURETRANSFORMFLAGS), ts(1, D3DTSS_COLOROP),
+       ts(1, D3DTSS_ALPHAOP), rs(D3DRS_ALPHAFUNC), rs(D3DRS_TEXTUREFACTOR), rs(D3DRS_COLORWRITEENABLE), rs(D3DRS_BLENDOP),
+       rs(D3DRS_SEPARATEALPHABLENDENABLE), rs(D3DRS_SRGBWRITEENABLE), rs(D3DRS_LIGHTING), rs(D3DRS_COLORVERTEX),
+       rs(D3DRS_DIFFUSEMATERIALSOURCE), rs(D3DRS_FOGENABLE), rs(D3DRS_CULLMODE), rs(D3DRS_FILLMODE), rs(D3DRS_SCISSORTESTENABLE),
+       sc.left, sc.top, sc.right, sc.bottom, rs(D3DRS_CLIPPING), rs(D3DRS_CLIPPLANEENABLE), ss(D3DSAMP_MAGFILTER),
+       ss(D3DSAMP_MINFILTER), ss(D3DSAMP_MIPFILTER), ss(D3DSAMP_MAXMIPLEVEL), ss(D3DSAMP_MIPMAPLODBIAS), ss(D3DSAMP_SRGBTEXTURE),
+       ss(D3DSAMP_ADDRESSU), ss(D3DSAMP_ADDRESSV));
+  std::wstring decl = L"(none)";
+  IDirect3DVertexDeclaration9* vd = nullptr;
+  dev->lpVtbl->GetVertexDeclaration(dev, &vd);
+  if (vd) {
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1] = {};
+    UINT n = MAXD3DDECLLENGTH + 1;
+    if (SUCCEEDED(vd->lpVtbl->GetDeclaration(vd, el, &n))) {
+      decl.clear();
+      for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
+        wchar_t e[48];
+        swprintf_s(e, L"%s s%u+%u t%u u%u.%u", i ? L"," : L"", el[i].Stream, el[i].Offset, el[i].Type, el[i].Usage, el[i].UsageIndex);
+        decl += e;
+      }
+    }
+    vd->lpVtbl->Release(vd);
+  }
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT off = 0, stride = 0;
+  dev->lpVtbl->GetStreamSource(dev, 0, &vb, &off, &stride);
+  if (vb) vb->lpVtbl->Release(vb);
+  D3DMATRIX w = {}, v = {}, p = {};
+  dev->lpVtbl->GetTransform(dev, D3DTS_WORLD, &w);
+  dev->lpVtbl->GetTransform(dev, D3DTS_VIEW, &v);
+  dev->lpVtbl->GetTransform(dev, D3DTS_PROJECTION, &p);
+  std::wstring tex = L"";
+  IDirect3DBaseTexture9* bt = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &bt);
+  if (bt) {
+    wchar_t tx[160] = L"";
+    if (bt->lpVtbl->GetType(bt) == D3DRTYPE_TEXTURE) {
+      IDirect3DTexture9* t = reinterpret_cast<IDirect3DTexture9*>(bt);
+      D3DSURFACE_DESC d = {};
+      t->lpVtbl->GetLevelDesc(t, 0, &d);
+      swprintf_s(tx, L"; t0 levels %lu pool %d usage %lx hash %016llX", t->lpVtbl->GetLevelCount(t), static_cast<int>(d.Pool), d.Usage,
+                 rbrrtx_texture_hash(bt));
+      tex = tx;
+      if ((d.Format == D3DFMT_A8R8G8B8 || d.Format == D3DFMT_X8R8G8B8) && d.Width <= 512 && d.Height <= 512 &&
+          g_dumpTexSaved.insert(bt).second) {
+        wchar_t path[MAX_PATH * 2];
+        swprintf_s(path, L"%s\\dump-%u-tex-%p.dds", sweep_log_dir().c_str(), g_frame, static_cast<void*>(bt));
+        tex += rbrrtx_save_texture_dds(bt, path) ? L" saved " + fs::path(path).filename().wstring() : L" (not saved)";
+      }
+    }
+    bt->lpVtbl->Release(bt);
+  }
+  clog(L"    ff: decl %s; stride %u; world %.2f %.2f view %.2f %.2f proj %.4f %.4f %.4f %.4f%s", decl.c_str(), stride,
+       w._11, w._41, v._11, v._43, p._11, p._22, p._41, p._44, tex.c_str());
+}
+
 void dump_draw(IDirect3DDevice9* dev, const wchar_t* fate) {
   if (++g_dumpDraws > 1500) return;
   const ShaderInfo* key = !g_curVS ? &kFixedFunction : g_curInfo ? g_curInfo : &kUnknownShader;
@@ -1071,14 +1157,17 @@ void dump_draw(IDirect3DDevice9* dev, const wchar_t* fate) {
   wchar_t t0[96], t1[96];
   tex_desc(dev, 0, t0, 96);
   tex_desc(dev, 1, t1, 96);
-  clog(L"  dump #%u %s %s %s: vp %lu,%lu %lux%lu z %.2f..%.2f fvf 0x%lx%s blend %lu %lu/%lu z %lu zw %lu at %lu/%lu ps %s%s; t0 %s; t1 %s",
+  if (g_vin == kVinFvf) fvf = g_curFVF;
+  clog(L"  dump #%u %s %s %s: vp %lu,%lu %lux%lu z %.2f..%.2f %s 0x%lx%s blend %lu %lu/%lu z %lu zw %lu at %lu/%lu ps %s%s; t0 %s; t1 %s",
        g_dumpDraws, fs::path(key->name).filename().c_str(), g_primaryRT ? L"P" : L"O", fate, vp.X, vp.Y, vp.Width, vp.Height,
-       vp.MinZ, vp.MaxZ, fvf, (fvf & D3DFVF_POSITION_MASK) == D3DFVF_XYZRHW ? L" (XYZRHW screen-space)" : L"", blend, src, dst,
+       vp.MinZ, vp.MaxZ, g_vin == kVinDecl ? L"decl" : L"fvf", g_vin == kVinDecl ? reinterpret_cast<uintptr_t>(g_curDecl) : fvf,
+       screen_space_input(dev) ? L" (screen-space)" : L"", blend, src, dst,
        z, zw, at, aref, ps ? L"yes" : L"no", g_oqActive > 0 ? L" IN-OCCLUSION-QUERY" : L"", t0, t1);
   if (g_curVS && !g_curInfo) {                         // unknown vertex shader: which one, and what it is fed
     auto it = g_curDecl ? g_declText.find(g_curDecl) : g_declText.end();
     clog(L"    vs %p decl %s", g_curVS, it != g_declText.end() ? it->second.c_str() : L"(fvf)");
   }
+  if (!g_curVS && g_primaryRT) dump_ff_state(dev);
 }
 
 // Sets the stage-0 states Remix reads to "texture x vertex colour" and lighting off; true = after_draw must restore.
@@ -1114,13 +1203,22 @@ void trigger_ui(IDirect3DDevice9* dev) {
   dev->lpVtbl->GetStreamSource(dev, 0, &vb, &vbOffset, &vbStride);
   IDirect3DVertexDeclaration9* decl = nullptr;
   dev->lpVtbl->GetVertexDeclaration(dev, &decl);
+  // Remix takes the quad as UI only with an orthographic PROJECTION ([3][3] == 1): the callers outside the screen-space
+  // path have the game's (or a plugin's) perspective matrix set.
+  D3DMATRIX proj = {};
+  dev->lpVtbl->GetTransform(dev, D3DTS_PROJECTION, &proj);
+  const bool projSwap = proj._44 != 1.0f;
+  const D3DMATRIX id = identity();
+  if (projSwap) o.SetTransform(dev, D3DTS_PROJECTION, &id);
   if (zw) o.SetRenderState(dev, D3DRS_ZWRITEENABLE, FALSE);
   if (cw != 0xF) o.SetRenderState(dev, D3DRS_COLORWRITEENABLE, 0xF);
   if (fog) o.SetRenderState(dev, D3DRS_FOGENABLE, FALSE);
   if (ps) dev->lpVtbl->SetPixelShader(dev, nullptr);
   o.SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
   o.DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V));
-  if (fvf) o.SetFVF(dev, fvf);
+  if (g_vin == kVinDecl && g_curDecl) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
+  else if (g_vin == kVinFvf) o.SetFVF(dev, g_curFVF);
+  else if (fvf) o.SetFVF(dev, fvf);                    // set before our hooks: what the bridge reports
   else if (decl) o.SetVertexDeclaration(dev, decl);
   dev->lpVtbl->SetStreamSource(dev, 0, vb, vbOffset, vbStride);   // not hooked
   if (vb) vb->lpVtbl->Release(vb);
@@ -1129,6 +1227,7 @@ void trigger_ui(IDirect3DDevice9* dev) {
   if (fog) o.SetRenderState(dev, D3DRS_FOGENABLE, fog);
   if (cw != 0xF) o.SetRenderState(dev, D3DRS_COLORWRITEENABLE, cw);
   if (zw) o.SetRenderState(dev, D3DRS_ZWRITEENABLE, zw);
+  if (projSwap) o.SetTransform(dev, D3DTS_PROJECTION, &proj);
   g_st.uiTriggerAt = g_st.draws;
   g_st.oqAtUi = static_cast<unsigned>(g_oqActive);
 }
@@ -1401,14 +1500,45 @@ bool before_draw(IDirect3DDevice9* dev) {
     // path-traced image at Present (frame dump 2026-10-15 23:15; re/kb/systems/remix-source.md row 14). For these draws
     // force identity: restoring the game's own matrices fixed external cameras only (23:26); in cockpit views UI stayed
     // hidden even with forced identity (23:37); see g_uiTriggerOn for what is tried next.
-    DWORD fvf = 0;
-    dev->lpVtbl->GetFVF(dev, &fvf);
-    const bool screenSpace = (fvf & D3DFVF_POSITION_MASK) == D3DFVF_XYZRHW;
+    const bool screenSpace = screen_space_input(dev);
     for (int i = 0; i < 3; ++i)
       if (screenSpace) { g_devValid[i] = false; set_xf(dev, i, identity()); }   // uncached: suspect b)
       else if (g_gameSet[i]) set_xf(dev, i, g_game[i]);
-    if (screenSpace) {
-      ++g_st.screenSpace;
+    if (screenSpace) ++g_st.screenSpace;
+    // Overlay = screen-space, or depth test and depth writes off: PaceNote pastes its HUD (drawn into its own render
+    // target) with a perspective projection, which Remix does not take as UI, so in replays without another HUD
+    // element it was painted over (2026-10-22 dump: no trigger in that frame). RBR's only depth-off FF draw in the
+    // scene is untextured (dump 2026-10-16 #127).
+    bool overlay = screenSpace;
+    if (!overlay && g_uiTriggerOn && !g_uiTriggered && g_primaryRT) {
+      DWORD z = 1, zw = 1;
+      dev->lpVtbl->GetRenderState(dev, D3DRS_ZENABLE, &z);
+      dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
+      overlay = !z && !zw;
+    }
+    // A plugin drawing its HUD into its own render target after the 3D scene (PaceNote: a 300x450 target, pasted onto
+    // the screen later): what it draws before Remix composites does not show (2026-10-22 dumps: its menu showed only
+    // when something earlier in the frame triggered, e.g. the pause menu or RSF's frame counter). Trigger first, on
+    // the back buffer.
+    if (!g_primaryRT && g_uiTriggerOn && !g_uiTriggered && g_enabled && g_st.xformed > 0 && g_backbuffer) {
+      IDirect3DBaseTexture9* t0 = nullptr;
+      dev->lpVtbl->GetTexture(dev, 0, &t0);
+      if (t0) {
+        t0->lpVtbl->Release(t0);
+        IDirect3DSurface9* rt = nullptr;
+        D3DVIEWPORT9 vp = {};
+        dev->lpVtbl->GetViewport(dev, &vp);
+        if (SUCCEEDED(dev->lpVtbl->GetRenderTarget(dev, 0, &rt)) && rt) {
+          g_uiTriggered = true;
+          o.SetRenderTarget(dev, 0, static_cast<IDirect3DSurface9*>(g_backbuffer));   // also resets the viewport
+          trigger_ui(dev);
+          o.SetRenderTarget(dev, 0, rt);
+          dev->lpVtbl->SetViewport(dev, &vp);
+          rt->lpVtbl->Release(rt);
+        }
+      }
+    }
+    if (overlay && g_uiTriggerOn && !g_uiTriggered && g_primaryRT && g_enabled && g_st.xformed > 0) {
       // Only a textured quad counts as the start of the HUD: RBR also draws an untextured additive screen-space quad in
       // the middle of the 3D scene (Zlin chase-cam dump 05:52, #1155 between the car and the water). Triggering there
       // made Remix rasterize every later draw, so the car body lost ray tracing in chase cameras (d3d9_rtx.cpp:573).
@@ -1416,7 +1546,7 @@ bool before_draw(IDirect3DDevice9* dev) {
       dev->lpVtbl->GetTexture(dev, 0, &t0);
       const bool textured = t0 != nullptr;
       if (t0) t0->lpVtbl->Release(t0);
-      if (g_uiTriggerOn && !g_uiTriggered && textured && g_primaryRT && g_enabled && g_st.xformed > 0) { g_uiTriggered = true; trigger_ui(dev); }
+      if (textured) { g_uiTriggered = true; trigger_ui(dev); }
     }
     return false;
   }
@@ -1918,6 +2048,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
     g_dumpFrames = 1;                                  // the whole next frame, ended at its end_frame
     g_dumpDraws = 0;
+    g_dumpTexSaved.clear();
     swprintf_s(why, L"%s: frame dump of the next frame", rbrrtx_key_name(RBRKEY_DUMP));
     log_frame(why);
   }
@@ -2023,7 +2154,7 @@ void end_frame(IDirect3DDevice9* dev) {
 // ---------------------------------------------------------------- device hooks
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UINT start, const float* data, UINT count) {
-  if (data && start < 256) {
+  if (data && start < 256 && !g_recording) {
     const UINT n = (std::min)(count, 256u - start);
     std::memcpy(g_c[start], data, n * 4 * sizeof(float));
     for (UINT i = start; i < start + n; ++i) g_cset[i] = true;
@@ -2062,7 +2193,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWO
   return hr;
 }
 
-HRESULT STDMETHODCALLTYPE hk_SetVertexShader(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
+void track_vs(void* vs) {
   g_curVS = vs;
   g_vsUnbound = false;                                 // the device gets the game's VS again
   g_curInfo = nullptr;
@@ -2070,28 +2201,123 @@ HRESULT STDMETHODCALLTYPE hk_SetVertexShader(IDirect3DDevice9* dev, IDirect3DVer
     auto it = g_vs.find(vs);
     if (it != g_vs.end() && (it->second.flags & SH_KNOWN)) g_curInfo = &it->second;
   }
+}
+
+// State blocks. ID3DXSprite / ID3DXFont (DirectorsCut's menu text) set their vertex declaration, WORLD and VIEW and
+// render states by recording state blocks (BeginStateBlock .. EndStateBlock) and Apply-ing them around each batch, then
+// Apply a Captured block to give the device back (traced through the bridge 2026-10-22). Calls made while recording
+// change nothing on the device, and Apply changes it behind our Set* hooks. So per block we keep what it holds of the
+// state we track (transforms, vertex input, VS), filled from the recorded calls or at Capture, and put it back at Apply.
+struct BlockState {
+  bool hasXf[3] = {}, hasVin = false, hasVS = false;
+  D3DMATRIX game[3] = {}, dev[3] = {};
+  bool gameSet[3] = {}, devValid[3] = {};
+  int vin = kVinUnknown;
+  void* decl = nullptr;
+  DWORD fvf = 0;
+  void* vs = nullptr;
+  bool vsUnbound = false;
+};
+std::unordered_map<void*, BlockState> g_blocks;
+BlockState g_rec;
+
+void capture_into(BlockState& b) {
+  for (int i = 0; i < 3; ++i)
+    if (b.hasXf[i]) { b.game[i] = g_game[i]; b.gameSet[i] = g_gameSet[i]; b.dev[i] = g_dev[i]; b.devValid[i] = g_devValid[i]; }
+  if (b.hasVin) { b.vin = g_vin; b.decl = g_curDecl; b.fvf = g_curFVF; }
+  if (b.hasVS) { b.vs = g_curVS; b.vsUnbound = g_vsUnbound; }
+}
+
+HRESULT STDMETHODCALLTYPE hk_StateBlockCapture(IDirect3DStateBlock9* sb) {
+  const HRESULT hr = o.StateBlockCapture(sb);
+  auto it = g_blocks.find(sb);
+  if (SUCCEEDED(hr) && it != g_blocks.end()) capture_into(it->second);
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hk_StateBlockApply(IDirect3DStateBlock9* sb) {
+  const HRESULT hr = o.StateBlockApply(sb);
+  auto it = g_blocks.find(sb);
+  if (FAILED(hr) || it == g_blocks.end()) return hr;
+  const BlockState& b = it->second;
+  for (int i = 0; i < 3; ++i)
+    if (b.hasXf[i]) { g_game[i] = b.game[i]; g_gameSet[i] = b.gameSet[i]; g_dev[i] = b.dev[i]; g_devValid[i] = b.devValid[i]; }
+  if (b.hasVin) { g_vin = b.vin; g_curDecl = b.decl; g_curFVF = b.fvf; }
+  if (b.hasVS) { track_vs(b.vs); g_vsUnbound = b.vsUnbound; }
+  return hr;
+}
+
+void hook_block(IDirect3DStateBlock9* sb, const BlockState& b) {
+  g_blocks[sb] = b;                                    // a new block may sit at a released one's address
+  patch(&sb->lpVtbl->Capture, &hk_StateBlockCapture, o.StateBlockCapture);
+  patch(&sb->lpVtbl->Apply, &hk_StateBlockApply, o.StateBlockApply);
+}
+
+HRESULT STDMETHODCALLTYPE hk_CreateStateBlock(IDirect3DDevice9* dev, D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
+  const HRESULT hr = o.CreateStateBlock(dev, type, out);
+  if (SUCCEEDED(hr) && out && *out) {                 // holds the current state of its type from the start
+    BlockState b;
+    b.hasVin = b.hasVS = type == D3DSBT_ALL || type == D3DSBT_VERTEXSTATE;
+    for (int i = 0; i < 3; ++i) b.hasXf[i] = type == D3DSBT_ALL;
+    capture_into(b);
+    hook_block(*out, b);
+  }
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hk_BeginStateBlock(IDirect3DDevice9* dev) {
+  const HRESULT hr = o.BeginStateBlock(dev);
+  if (SUCCEEDED(hr)) { g_recording = true; g_rec = BlockState(); }
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hk_EndStateBlock(IDirect3DDevice9* dev, IDirect3DStateBlock9** out) {
+  const HRESULT hr = o.EndStateBlock(dev, out);
+  g_recording = false;
+  if (SUCCEEDED(hr) && out && *out) hook_block(*out, g_rec);
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hk_SetVertexShader(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
+  if (g_recording) { g_rec.hasVS = true; g_rec.vs = vs; g_rec.vsUnbound = false; }
+  else track_vs(vs);
   return o.SetVertexShader(dev, vs);
 }
 
 HRESULT STDMETHODCALLTYPE hk_CreateVertexDeclaration(IDirect3DDevice9* dev, const D3DVERTEXELEMENT9* e,
                                                      IDirect3DVertexDeclaration9** out) {
   const HRESULT hr = o.CreateVertexDeclaration(dev, e, out);
-  if (SUCCEEDED(hr) && out && *out) g_declText[*out] = describe_decl(e);
+  if (SUCCEEDED(hr) && out && *out) {
+    g_declText[*out] = describe_decl(e);
+    bool rhw = false;
+    for (const D3DVERTEXELEMENT9* p = e; p && p->Stream != 0xFF; ++p) rhw |= p->Usage == D3DDECLUSAGE_POSITIONT;
+    if (rhw) g_declRhw.insert(*out); else g_declRhw.erase(*out);
+  }
   return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexDeclaration(IDirect3DDevice9* dev, IDirect3DVertexDeclaration9* decl) {
-  g_curDecl = decl;
+  if (g_recording) { g_rec.hasVin = true; g_rec.vin = kVinDecl; g_rec.decl = decl; g_rec.fvf = 0; }
+  else { g_curDecl = decl; g_vin = kVinDecl; }
   return o.SetVertexDeclaration(dev, decl);
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetFVF(IDirect3DDevice9* dev, DWORD fvf) {
-  g_curDecl = nullptr;
-  g_curFVF = fvf;
+  if (g_recording) { g_rec.hasVin = true; g_rec.vin = kVinFvf; g_rec.decl = nullptr; g_rec.fvf = fvf; }
+  else { g_curDecl = nullptr; g_curFVF = fvf; g_vin = kVinFvf; }
   return o.SetFVF(dev, fvf);
 }
 
+// Pre-transformed (XYZRHW / POSITIONT) vertices: HUD, menus, plugin overlays.
+bool screen_space_input(IDirect3DDevice9* dev) {
+  if (g_vin == kVinDecl) return g_curDecl && g_declRhw.count(g_curDecl);
+  DWORD fvf = g_curFVF;
+  if (g_vin == kVinUnknown) dev->lpVtbl->GetFVF(dev, &fvf);   // set before our hooks
+  return (fvf & D3DFVF_POSITION_MASK) == D3DFVF_XYZRHW;
+}
+
 HRESULT STDMETHODCALLTYPE hk_SetTextureStageState(IDirect3DDevice9* dev, DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD v) {
+  if (g_recording) return o.SetTextureStageState(dev, stage, type, v);
   if (stage == 0)
     for (int i = 0; i < 6; ++i)
       if (type == kTss[i]) g_tss0[i] = v;
@@ -2099,7 +2325,7 @@ HRESULT STDMETHODCALLTYPE hk_SetTextureStageState(IDirect3DDevice9* dev, DWORD s
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetRenderState(IDirect3DDevice9* dev, D3DRENDERSTATETYPE state, DWORD v) {
-  if (state == D3DRS_LIGHTING) g_lighting = v;
+  if (state == D3DRS_LIGHTING && !g_recording) g_lighting = v;
   return o.SetRenderState(dev, state, v);
 }
 
@@ -2111,8 +2337,12 @@ HRESULT STDMETHODCALLTYPE hk_SetTransform(IDirect3DDevice9* dev, D3DTRANSFORMSTA
       clog(L"game SetTransform %s at frame %u: _11 %.3f _22 %.3f _33 %.4f _34 %.3f _43 %.3f _44 %.3f", i == 0 ? L"WORLD" : i == 1 ? L"VIEW"
            : L"PROJECTION", g_frame, m->_11, m->_22, m->_33, m->_34, m->_43, m->_44);
     }
+  BlockState* rec = g_recording ? &g_rec : nullptr;   // recorded: lands on the device at Apply
   for (int i = 0; i < 3; ++i)
-    if (state == kXf[i] && m) { g_game[i] = *m; g_gameSet[i] = true; g_dev[i] = *m; g_devValid[i] = true; }
+    if (state == kXf[i] && m) {
+      if (rec) { rec->hasXf[i] = true; rec->game[i] = rec->dev[i] = *m; rec->gameSet[i] = rec->devValid[i] = true; }
+      else { g_game[i] = *m; g_gameSet[i] = true; g_dev[i] = *m; g_devValid[i] = true; }
+    }
   return o.SetTransform(dev, state, m);
 }
 
@@ -2197,6 +2427,8 @@ HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS*
     g_curVS = nullptr;
     g_curInfo = nullptr;
     g_curDecl = nullptr;
+    g_curFVF = 0;
+    g_vin = kVinUnknown;
     std::memcpy(g_tss0, kTssDefault, sizeof(g_tss0));
     g_lighting = TRUE;
     remember_backbuffer(dev);
@@ -2213,9 +2445,7 @@ HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS*
 // visibility test, dump 06:00): Remix rasterizes query draws without its UI check, and the game needs the result.
 bool is_midscene_quad(IDirect3DDevice9* dev) {
   if (g_curVS || !g_primaryRT || !g_enabled || g_uiTriggered || g_st.xformed == 0 || g_oqActive > 0) return false;
-  DWORD fvf = 0;
-  dev->lpVtbl->GetFVF(dev, &fvf);
-  if ((fvf & D3DFVF_POSITION_MASK) != D3DFVF_XYZRHW) return false;
+  if (!screen_space_input(dev)) return false;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
   if (t0) { t0->lpVtbl->Release(t0); return false; }
@@ -2928,6 +3158,9 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   patch(&v->CreateVertexDeclaration, &hk_CreateVertexDeclaration, o.CreateVertexDeclaration);
   patch(&v->SetVertexDeclaration, &hk_SetVertexDeclaration, o.SetVertexDeclaration);
   patch(&v->SetFVF, &hk_SetFVF, o.SetFVF);
+  patch(&v->CreateStateBlock, &hk_CreateStateBlock, o.CreateStateBlock);
+  patch(&v->BeginStateBlock, &hk_BeginStateBlock, o.BeginStateBlock);
+  patch(&v->EndStateBlock, &hk_EndStateBlock, o.EndStateBlock);
   patch(&v->SetTextureStageState, &hk_SetTextureStageState, o.SetTextureStageState);
   patch(&v->SetRenderState, &hk_SetRenderState, o.SetRenderState);
   patch(&v->DrawPrimitive, &hk_DrawPrimitive, o.DrawPrimitive);
