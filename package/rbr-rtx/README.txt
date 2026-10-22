@@ -48,6 +48,9 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   K        faster scenery: default (static scenery, trees/grass/flags do not sway) -> off (old, slower) -> static
            only (everything sways)
   U        distance culling on/off: far geometry outside the view left out of path tracing (rbr-rtx\config\culling.ini)
+  Alt+Y    ground second layer on/off (off by default): stages that mix two ground textures (sea and coast, cliffs,
+           road markings) get the second one too. Turn it on before loading a stage. Known issue: road markings
+           and damp patches can show as black, mirror-like holes, and it uses a lot of memory on big stages.
 
   Tuning:
   7        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)

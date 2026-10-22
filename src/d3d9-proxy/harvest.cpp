@@ -64,7 +64,7 @@ struct Held { IDirect3DTexture9* src = nullptr; IDirect3DTexture9* twin = nullpt
 std::unordered_map<void*, Held> g_held;                  // DEFAULT texture -> its source (+ twin once made)
 size_t g_heldBytes = 0;
 unsigned g_twins = 0, g_twinFails = 0;
-bool g_holdOn = true;                                    // second layer on: hold sources (rbrrtx_layer_enable)
+bool g_holdOn = false;                                   // second layer on: hold sources (rbrrtx_layer_enable)
 
 void held_release(Held& h) {
   if (h.src) h.src->lpVtbl->Release(h.src);

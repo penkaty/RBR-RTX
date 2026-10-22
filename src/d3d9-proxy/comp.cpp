@@ -279,7 +279,7 @@ bool g_cset[256] = {};
 float g_psc[8][4] = {};                                // pixel shader constants (ps_1_1: c0-c7)
 bool g_dirtOn = true;                                  // car dirt decal pass (dirt_draw)
 unsigned g_dirtDraws = 0, g_dirtUntagged = 0;
-bool g_layerOn = true;                                 // ground second layer (layer_draw)
+bool g_layerOn = false;                                // ground second layer (layer_draw)
 unsigned g_layerDraws = 0, g_layerMissing = 0, g_layerUntagged = 0;
 bool g_haveCam = false, g_frameCam = false;
 D3DMATRIX g_V = {}, g_P = {};
@@ -3237,7 +3237,9 @@ void dirt_draw(IDirect3DDevice9* dev, Draw draw) {
 // RLDoubleTexture*: lrp(t1.a * v0.a, t1, t0) in the pixel shader (re/kb materials-textures); Remix shows t0 alone. After
 // such a draw (fixed-function scenery, VS unbound) the geometry is drawn again with a twin of t1 (harvest.cpp: same
 // image, own hash, tagged decal) in stage 0, alpha = texture x vertex alpha, blended, no depth write, and a vertex
-// declaration with TEXCOORD0/1 swapped so stage 0 and Remix both read t1's UV set. RBRRTX_GROUND_LAYER=0 = off.
+// declaration with TEXCOORD0/1 swapped so stage 0 and Remix both read t1's UV set.
+// Off by default since 2026-10-22 (black decal holes on Gabiria road markings, KNOWN-ISSUES); Alt+Y or
+// RBRRTX_GROUND_LAYER=1 = on.
 std::unordered_map<void*, IDirect3DVertexDeclaration9*> g_uvSwapped;   // game declaration -> TEXCOORD0/1 swapped
 
 IDirect3DVertexDeclaration9* uv_swapped(IDirect3DDevice9* dev, IDirect3DVertexDeclaration9* decl) {
@@ -3603,7 +3605,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_glassOn = rbrrtx_env_flag(L"RBRRTX_GLASS", true);
     g_btbOn = rbrrtx_env_flag(L"RBRRTX_BTB", false);
     g_dirtOn = rbrrtx_env_flag(L"RBRRTX_CAR_DIRT", true);
-    g_layerOn = rbrrtx_env_flag(L"RBRRTX_GROUND_LAYER", true);
+    g_layerOn = rbrrtx_env_flag(L"RBRRTX_GROUND_LAYER", false);
     rbrrtx_layer_enable(g_layerOn);
     g_clockOn = rbrrtx_env_flag(L"RBRRTX_CLOCK", true);
     g_ffNormals = rbrrtx_env_flag(L"RBRRTX_FF_NORMALS", false);
