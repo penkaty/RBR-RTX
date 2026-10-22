@@ -2330,6 +2330,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   if (rbrrtx_key_pressed(RBRKEY_GROUND_LAYER)) {
     g_layerOn = !g_layerOn;
+    rbrrtx_layer_enable(g_layerOn);
     wchar_t msg[64];
     swprintf_s(msg, L"%s: ground second layer %s", rbrrtx_key_name(RBRKEY_GROUND_LAYER), g_layerOn ? L"ON" : L"off");
     log_frame(msg);
@@ -3603,6 +3604,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_btbOn = rbrrtx_env_flag(L"RBRRTX_BTB", false);
     g_dirtOn = rbrrtx_env_flag(L"RBRRTX_CAR_DIRT", true);
     g_layerOn = rbrrtx_env_flag(L"RBRRTX_GROUND_LAYER", true);
+    rbrrtx_layer_enable(g_layerOn);
     g_clockOn = rbrrtx_env_flag(L"RBRRTX_CLOCK", true);
     g_ffNormals = rbrrtx_env_flag(L"RBRRTX_FF_NORMALS", false);
     g_uiTriggerOn = rbrrtx_env_flag(L"RBRRTX_UI_TRIGGER", true);

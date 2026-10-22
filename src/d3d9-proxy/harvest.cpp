@@ -64,6 +64,7 @@ struct Held { IDirect3DTexture9* src = nullptr; IDirect3DTexture9* twin = nullpt
 std::unordered_map<void*, Held> g_held;                  // DEFAULT texture -> its source (+ twin once made)
 size_t g_heldBytes = 0;
 unsigned g_twins = 0, g_twinFails = 0;
+bool g_holdOn = true;                                    // second layer on: hold sources (rbrrtx_layer_enable)
 
 void held_release(Held& h) {
   if (h.src) h.src->lpVtbl->Release(h.src);
@@ -285,7 +286,7 @@ HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseT
       D3DSURFACE_DESC d = {};
       UINT rowBytes = 0, rows = 0;
       const char* fmt = "?";
-      if (SUCCEEDED(s->lpVtbl->GetLevelDesc(s, 0, &d)) && d.Pool == D3DPOOL_SYSTEMMEM && d.Width >= 512 &&
+      if (SUCCEEDED(s->lpVtbl->GetLevelDesc(s, 0, &d)) && g_holdOn && d.Pool == D3DPOOL_SYSTEMMEM && d.Width >= 512 &&
           (d.Format == D3DFMT_DXT1 || d.Format == D3DFMT_DXT3 || d.Format == D3DFMT_DXT5) &&
           layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt)) {
         Held& held = g_held[dst];
@@ -450,6 +451,20 @@ void rbrrtx_layer_release_other(int track) {
   }
   if (n) hlog(L"second layers: stage %d: %u sources of other stages released; %zu held (%.0f MB), %u twins made (%u failed)",
               track, n, g_held.size(), g_heldBytes / 1048576.0, g_twins, g_twinFails);
+}
+
+// Layer off: nothing is held (Gabiria 2026-10-22: 933 MB held in the 32-bit game with the layer off, then a crash in a
+// sweep). Switched on again, it has sources only for textures uploaded from then on (the next stage).
+void rbrrtx_layer_enable(bool on) {
+  std::lock_guard<std::mutex> g(g_mx);
+  g_holdOn = on;
+  if (on || g_held.empty()) return;
+  const size_t n = g_held.size();
+  const double mb = g_heldBytes / 1048576.0;
+  for (auto& kv : g_held) held_release(kv.second);
+  g_held.clear();
+  g_heldBytes = 0;
+  hlog(L"second layers off: %zu sources and their twins released (%.0f MB)", n, mb);
 }
 
 void rbrrtx_layer_stats(unsigned* held, unsigned* twins, double* mb) {

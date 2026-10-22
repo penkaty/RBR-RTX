@@ -33,7 +33,8 @@ void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader);
 unsigned long long rbrrtx_texture_hash(void* base_texture);
 // Second ground layer (harvest.cpp): a twin of a game texture with its own Remix hash (nullptr = no source held).
 void* rbrrtx_layer_twin(void* texture);
-void rbrrtx_layer_release_other(int track);                   // stage driven: other stages' sources and twins go
+void rbrrtx_layer_release_other(int track);
+void rbrrtx_layer_enable(bool on);                            // off: release every source and twin, hold no more                   // stage driven: other stages' sources and twins go
 void rbrrtx_layer_stats(unsigned* held, unsigned* twins, double* mb);
 // harvest.cpp: smallest alpha (0..255) of that texture's mip 0, -1 if unknown (same hooks, alpha_min.hpp).
 int rbrrtx_texture_min_alpha(void* base_texture);
