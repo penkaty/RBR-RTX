@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -238,6 +239,7 @@ struct Orig {
   decltype(IDirect3DDevice9Vtbl::CreateVertexShader) CreateVertexShader;
   decltype(IDirect3DDevice9Vtbl::SetVertexShader) SetVertexShader;
   decltype(IDirect3DDevice9Vtbl::SetVertexShaderConstantF) SetVertexShaderConstantF;
+  decltype(IDirect3DDevice9Vtbl::SetPixelShaderConstantF) SetPixelShaderConstantF;
   decltype(IDirect3DDevice9Vtbl::CreateVertexDeclaration) CreateVertexDeclaration;
   decltype(IDirect3DDevice9Vtbl::SetVertexDeclaration) SetVertexDeclaration;
   decltype(IDirect3DDevice9Vtbl::SetFVF) SetFVF;
@@ -272,6 +274,9 @@ bool g_btbOn = false;
 
 float g_c[256][4] = {};
 bool g_cset[256] = {};
+float g_psc[8][4] = {};                                // pixel shader constants (ps_1_1: c0-c7)
+bool g_dirtOn = true;                                  // car dirt decal pass (dirt_draw)
+unsigned g_dirtDraws = 0, g_dirtUntagged = 0;
 bool g_haveCam = false, g_frameCam = false;
 D3DMATRIX g_V = {}, g_P = {};
 float g_carPos[3] = {};                               // last car draw's world position (culling keep radius)
@@ -1703,6 +1708,9 @@ void log_frame(const wchar_t* why) {
        g_dustFrames ? static_cast<double>(g_ffSwayFar) / g_dustFrames : 0.0, g_ffSwayNear);
   clog(L"  opaque cut-outs %s: %.0f alpha-tested draws per frame drawn without alpha test (texture never below ALPHAREF)",
        g_opaqueAlpha ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_opaqueDraws) / g_dustFrames : 0.0);
+  clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",
+       g_dirtOn ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_dirtDraws) / g_dustFrames : 0.0, g_dirtUntagged);
+  g_dirtDraws = g_dirtUntagged = 0;
   wchar_t acLine[400];
   rbrrtx_alphacut_summary(acLine, 400, g_dustFrames);
   clog(L"  alpha-card cut-outs %s: %s", g_alphaCut ? L"ON" : L"off", acLine);
@@ -2214,6 +2222,12 @@ HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UIN
     for (UINT i = start; i < start + n; ++i) g_cset[i] = true;
   }
   return o.SetVertexShaderConstantF(dev, start, data, count);
+}
+
+HRESULT STDMETHODCALLTYPE hk_SetPixelShaderConstantF(IDirect3DDevice9* dev, UINT start, const float* data, UINT count) {
+  if (data && start < 8 && !g_recording)               // ps_1_1 has c0-c7; c3 = car dirt colour (dirt_draw)
+    std::memcpy(g_psc[start], data, (std::min)(count, 8u - start) * 4 * sizeof(float));
+  return o.SetPixelShaderConstantF(dev, start, data, count);
 }
 
 HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWORD* fn, IDirect3DVertexShader9** out) {
@@ -2986,6 +3000,101 @@ HRESULT alphacut_draw(IDirect3DDevice9* dev, const RbrAlphaCut& ac) {
   return hr;
 }
 
+// Car dirt (user 2026-10-22: dirt has to show; it always renders as a decal in Remix). RBR blends dirt only in the car
+// pixel shaders: CarTexture/CarColor lrp(t1.a, c3, t0), CarPaint1 lrp(t2.a * c3.a, c3, t0) (re/kb materials-textures).
+// Remix ignores pixel shaders and takes stage 0 alone, so cars were always clean with ray tracing. After such a draw the
+// same geometry is drawn again without the pixel shader: stage 0 = the dirt map (alpha = dirt amount), colour = c3
+// (texture factor), alpha blended, no depth write. Its texture hash goes into rtx.decalTextures (with rtx.conf's own),
+// so Remix lays it on the body instead of tracing a second surface. Render-target dirt maps have no hash: drawn untagged.
+// RBRRTX_CAR_DIRT=0 = off. Raster (key 0) turns the layer off, and the game's own shader shows the dirt there.
+std::string g_decalBase;                               // rtx.decalTextures from rtx.conf ("" = none)
+std::set<unsigned long long> g_dirtHashes;
+
+std::string conf_string(const char* name) {
+  wchar_t path[MAX_PATH];
+  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
+  std::ifstream in(path);
+  std::string v;
+  for (std::string l; std::getline(in, l);) {
+    const size_t k = l.find(name);
+    if (k == std::string::npos || l.find_first_not_of(" \t") != k || l.find_first_of(" \t=", k) != k + std::strlen(name)) continue;
+    const size_t eq = l.find('=', k);
+    if (eq == std::string::npos) continue;
+    v = l.substr(l.find_first_not_of(" \t", eq + 1) == std::string::npos ? l.size() : l.find_first_not_of(" \t", eq + 1));
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) v.pop_back();
+  }
+  return v;
+}
+
+void dirt_tag(unsigned long long hx) {
+  if (!g_dirtHashes.insert(hx).second) return;
+  static bool baseRead = false;
+  if (!baseRead) { baseRead = true; g_decalBase = conf_string("rtx.decalTextures"); }
+  std::string list = g_decalBase;
+  char b[24];
+  for (unsigned long long h : g_dirtHashes) {
+    sprintf_s(b, "0x%016llX", h);
+    list += (list.empty() ? "" : ", ") + std::string(b);
+  }
+  remix_set("rtx.decalTextures", list.c_str());
+  clog(L"car dirt: map %016llX tagged as decal (%zu dirt maps)", hx, g_dirtHashes.size());
+}
+
+// Stage of the dirt map for this car shader, -1 = no dirt.
+int dirt_stage() {
+  if (!g_curInfo || !(g_curInfo->flags & SH_CAR)) return -1;
+  const std::wstring n = fs::path(g_curInfo->name).filename().wstring();
+  if (!_wcsicmp(n.c_str(), L"CarTexture.vso") || !_wcsicmp(n.c_str(), L"CarColor.vso")) return 1;
+  if (!_wcsicmp(n.c_str(), L"CarPaint1.vso")) return 2;
+  return -1;
+}
+
+template <class Draw>
+void dirt_draw(IDirect3DDevice9* dev, Draw draw) {
+  const int stage = dirt_stage();
+  if (stage < 0 || !g_dirtOn || !g_enabled || !g_primaryRT || !g_curVS) return;
+  IDirect3DBaseTexture9* dirt = nullptr;
+  dev->lpVtbl->GetTexture(dev, stage, &dirt);
+  if (!dirt) return;
+  const unsigned long long hx = rbrrtx_texture_hash(dirt);
+  if (hx) dirt_tag(hx); else ++g_dirtUntagged;
+  const float* c3 = g_psc[3];
+  auto u8 = [](float f) { return static_cast<DWORD>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
+  const DWORD factor = ((stage == 2 ? u8(c3[3]) : 255u) << 24) | (u8(c3[0]) << 16) | (u8(c3[1]) << 8) | u8(c3[2]);
+  static const D3DRENDERSTATETYPE rs[] = { D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_DESTBLEND, D3DRS_BLENDOP,
+                                           D3DRS_ZWRITEENABLE, D3DRS_ALPHATESTENABLE, D3DRS_TEXTUREFACTOR };
+  static const D3DTEXTURESTAGESTATETYPE ts[] = { D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_COLORARG2, D3DTSS_ALPHAOP,
+                                                 D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2 };
+  DWORD rsOld[7], ts0Old[6], ts1Color = 0, ts1Alpha = 0;
+  for (int i = 0; i < 7; ++i) dev->lpVtbl->GetRenderState(dev, rs[i], &rsOld[i]);
+  for (int i = 0; i < 6; ++i) dev->lpVtbl->GetTextureStageState(dev, 0, ts[i], &ts0Old[i]);
+  dev->lpVtbl->GetTextureStageState(dev, 1, D3DTSS_COLOROP, &ts1Color);
+  dev->lpVtbl->GetTextureStageState(dev, 1, D3DTSS_ALPHAOP, &ts1Alpha);
+  IDirect3DBaseTexture9* t0 = nullptr;
+  IDirect3DPixelShader9* ps = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t0);
+  dev->lpVtbl->GetPixelShader(dev, &ps);
+  const DWORD rsNew[7] = { TRUE, D3DBLEND_SRCALPHA, D3DBLEND_INVSRCALPHA, D3DBLENDOP_ADD, FALSE, FALSE, factor };
+  const DWORD tsNew[6] = { D3DTOP_SELECTARG1, D3DTA_TFACTOR, D3DTA_TEXTURE, D3DTOP_MODULATE, D3DTA_TEXTURE, D3DTA_TFACTOR };
+  for (int i = 0; i < 7; ++i) o.SetRenderState(dev, rs[i], rsNew[i]);
+  for (int i = 0; i < 6; ++i) o.SetTextureStageState(dev, 0, ts[i], tsNew[i]);
+  o.SetTextureStageState(dev, 1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+  o.SetTextureStageState(dev, 1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+  dev->lpVtbl->SetTexture(dev, 0, dirt);
+  dev->lpVtbl->SetPixelShader(dev, nullptr);
+  draw();
+  ++g_dirtDraws;
+  dev->lpVtbl->SetPixelShader(dev, ps);
+  dev->lpVtbl->SetTexture(dev, 0, t0);
+  o.SetTextureStageState(dev, 1, D3DTSS_COLOROP, ts1Color);
+  o.SetTextureStageState(dev, 1, D3DTSS_ALPHAOP, ts1Alpha);
+  for (int i = 0; i < 6; ++i) o.SetTextureStageState(dev, 0, ts[i], ts0Old[i]);
+  for (int i = 0; i < 7; ++i) o.SetRenderState(dev, rs[i], rsOld[i]);
+  if (ps) ps->lpVtbl->Release(ps);
+  if (t0) t0->lpVtbl->Release(t0);
+  dirt->lpVtbl->Release(dirt);
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -3083,6 +3192,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!btb_instanced_draw(dev, hr)) hr = draw();
+  if (SUCCEEDED(hr) && !ff) dirt_draw(dev, draw);
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
@@ -3209,6 +3319,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   patch(&v->CreateVertexShader, &hk_CreateVertexShader, o.CreateVertexShader);
   patch(&v->SetVertexShader, &hk_SetVertexShader, o.SetVertexShader);
   patch(&v->SetVertexShaderConstantF, &hk_SetVertexShaderConstantF, o.SetVertexShaderConstantF);
+  patch(&v->SetPixelShaderConstantF, &hk_SetPixelShaderConstantF, o.SetPixelShaderConstantF);
   patch(&v->CreateVertexDeclaration, &hk_CreateVertexDeclaration, o.CreateVertexDeclaration);
   patch(&v->SetVertexDeclaration, &hk_SetVertexDeclaration, o.SetVertexDeclaration);
   patch(&v->SetFVF, &hk_SetFVF, o.SetFVF);
@@ -3249,6 +3360,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     if (GetEnvironmentVariableW(L"RBRRTX_SKY", sky, 8)) g_skyMode = std::clamp(_wtoi(sky), 0, 2);
     g_glassOn = rbrrtx_env_flag(L"RBRRTX_GLASS", true);
     g_btbOn = rbrrtx_env_flag(L"RBRRTX_BTB", false);
+    g_dirtOn = rbrrtx_env_flag(L"RBRRTX_CAR_DIRT", true);
     g_uiTriggerOn = rbrrtx_env_flag(L"RBRRTX_UI_TRIGGER", true);
     g_skipOffscreen = !rbrrtx_env_flag(L"RBRRTX_OFFSCREEN", false);
     wchar_t fol[16];
