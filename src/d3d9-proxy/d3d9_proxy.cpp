@@ -25,6 +25,14 @@
 #include <cwchar>
 
 void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...) {
+  if (!wcscmp(file, L"rbrrtx_comp.log")) {                    // warnings also go to the player report (report.cpp)
+    wchar_t line[2048];
+    va_list args;
+    va_start(args, fmt);
+    _vsnwprintf_s(line, _TRUNCATE, fmt, args);
+    va_end(args);
+    rbrrtx_report_log_line(line);
+  }
   wchar_t dir[MAX_PATH];
   DWORD n = GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", dir, MAX_PATH);
   if (n == 0 || n >= MAX_PATH) return;
@@ -166,6 +174,8 @@ FARPROC backend_proc(const char* name) {
   if (!fn) fn = reinterpret_cast<type>(backend_proc(name));
 
 }  // namespace
+
+const wchar_t* rbrrtx_backend_path() { return g_backend_path; }
 
 extern "C" {
 

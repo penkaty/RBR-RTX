@@ -29,6 +29,9 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   tuning and reporting problems.
 
   Something looks wrong, or you want to report a problem:
+  9        mark a problem while driving: press it the moment something goes wrong (stutter, wrong picture,
+           anything). Beep, screenshot, the frame times around that moment. Every stage is recorded anyway (see
+           "Reporting a problem"); a mark names that stage's zip -marked.
   Alt+K    stage sweep: press it on the stage where the problem is, keep the car and camera still and wait about
            25 seconds until the beep (screenshots taken apart layer by layer, Remix debug views, every texture with
            its Remix hash, a Remix scene capture). Result: rbr-rtx\logs\sweep-<date-time>\; zip that folder and send it.
@@ -50,10 +53,17 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   Alt+N / Alt+M  sun brighter / dimmer (10 % per press; the log shows the value to keep)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
-  9        performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
+  Alt+P    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
            setting in rbr-rtx\logs\rbrrtx_comp.log
 
 Reporting a problem (please do!)
+  Stage reports: every stage you drive is recorded and zipped into rbr-rtx\logs\reports\report-<date-time>-<stage>.zip
+  (frame rate and stutter per second, stage and car, hotkeys used, warnings, your PC: Windows, CPU, GPU and driver,
+  Remix version, other plugins, your RBR-RTX settings). Nothing is sent anywhere: you choose what to share. The last
+  20 are kept; zips you marked with 9 are never deleted. A stage left by a crash is zipped at the next start
+  (-unfinished). Driving costs nothing measurable. Off: rbr-rtx\config\report.ini, enabled = 0.
+  Performance or a crash: send the zip of that stage (the -marked one if you pressed 9).
+  Something looks wrong:
   Whatever the problem: run the Alt+K sweep right where it shows (it presses Pause itself at the end for a Remix
   scene capture; keep Pause free), wait for the beep, quit, then zip rbr-rtx\logs (and the newest capture_*.usd
   from rbr-rtx\rtx-remix\captures if you can) and send it with stage, car, weather and what looks wrong:

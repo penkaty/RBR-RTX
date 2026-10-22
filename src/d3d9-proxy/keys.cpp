@@ -32,7 +32,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
-  {L"experiment", '9', L"performance experiment run"},
+  {L"experiment", kAlt | 'P', L"performance experiment run"},
   {L"culling", 'U', L"distance culling on/off"},
   {L"sun_brighter", kAlt | 'N', L"sun brightness +10 %"},
   {L"sun_dimmer", kAlt | 'M', L"sun brightness -10 %"},
@@ -41,6 +41,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"raytracing", '0', L"ray tracing on/off (raster comparison)"},
   {L"opaque_alpha", 0, L"opaque cut-outs without alpha test on/off"},   // no key: ~0 ms with OMM on (adr-001)
   {L"alpha_cut", kAlt | 'O', L"alpha-card cut-outs (clipped foliage cards) on/off"},
+  {L"report_mark", '9', L"stage report: mark a problem now"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};

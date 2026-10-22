@@ -221,6 +221,7 @@ HRESULT STDMETHODCALLTYPE hk_SurfUnlock(IDirect3DSurface9* s) {
 HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT hgt, UINT levels, DWORD usage, D3DFORMAT fmt,
                                            D3DPOOL pool, IDirect3DTexture9** out, HANDLE* share) {
   const HRESULT hr = ho.CreateTexture(dev, w, hgt, levels, usage, fmt, pool, out, share);
+  ++g_rbrrtxCreates;                                          // report.cpp: hitch causes
   if (SUCCEEDED(hr) && out && *out) {
     IDirect3DTexture9* t = *out;
     {

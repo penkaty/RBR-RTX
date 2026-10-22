@@ -6,6 +6,18 @@
 // Appends one timestamped line to <RBRRTX_LOG_DIR>\<file>; does nothing when RBRRTX_LOG_DIR is unset.
 void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...);
 
+// d3d9_proxy.cpp: full path of the loaded D3D9 backend (Remix bridge or system d3d9).
+const wchar_t* rbrrtx_backend_path();
+
+// report.cpp: per-stage player report, zipped to <logs>\reports\ (key report_mark marks a problem). Per frame: a few
+// additions; files and zip on a background thread after the stage.
+struct RbrReportFrame { unsigned draws, xformed, ff, btb; float carPos[3]; };
+void rbrrtx_report_frame(HWND wnd, const RbrReportFrame& f);   // once per Present
+void rbrrtx_report_event(const wchar_t* text);                  // hotkey toggles, sweeps (log_frame reasons)
+void rbrrtx_report_log_line(const wchar_t* line);               // every comp log line; warnings go to problems.txt
+void rbrrtx_report_sweep(const wchar_t* dir);                   // an Alt+K sweep folder finished during the stage
+extern unsigned g_rbrrtxCreates;                                // textures + shaders created (hitch causes)
+
 // True when the environment variable is set to something other than "0" (default when unset).
 bool rbrrtx_env_flag(const wchar_t* name, bool default_value);
 
@@ -59,7 +71,7 @@ void rbrrtx_exception_trace_install();
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);

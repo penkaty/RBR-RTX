@@ -1499,6 +1499,7 @@ void after_draw(IDirect3DDevice9* dev) {
 }
 
 void log_frame(const wchar_t* why) {
+  if (wcscmp(why, L"periodic") && wcscmp(why, L"first frames with a camera")) rbrrtx_report_event(why);
   D3DMATRIX vinv = {};
   const bool okInv = g_haveCam && inverse(g_V, vinv);
   const float fovY = g_haveCam && g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f;
@@ -2009,6 +2010,7 @@ void end_frame(IDirect3DDevice9* dev) {
   const bool cameraNow = g_st.xformed > 0;
   if (cameraNow && g_detailFrames < 3) { ++g_detailFrames; log_frame(L"first frames with a camera"); }
   else if (g_frame < 3 || g_frame % 600 == 0) { log_frame(L"periodic"); cull_log_stats(); }
+  rbrrtx_report_frame(g_wnd, { g_st.draws, g_st.xformed, g_st.ff, g_st.btb, { g_carPos[0], g_carPos[1], g_carPos[2] } });
   g_st = {};
   g_hinted = 0;
   g_byShader.clear();
@@ -2031,6 +2033,7 @@ HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UIN
 
 HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWORD* fn, IDirect3DVertexShader9** out) {
   const HRESULT hr = o.CreateVertexShader(dev, fn, out);
+  ++g_rbrrtxCreates;
   if (SUCCEEDED(hr) && fn && out && *out) {
     const size_t size = bytecode_size(fn, 1u << 16);
     const unsigned long long h = fnv1a(fn, size);
@@ -2584,6 +2587,7 @@ void sweep_end(const wchar_t* why) {
   r += L"\nFiles: stage.txt (stage, weather, camera, sun, proxy modes), draws.tsv (every draw of one frame: shader, fate, "
        L"textures with Remix hashes), NN-*.png (one per step), textures.tsv (unique texture hashes of that frame).\n";
   sweep_write(L"summary.txt", r);
+  rbrrtx_report_sweep(g_sweepDir.c_str());
   clog(L"sweep: %s, output %s", why, g_sweepDir.c_str());
   MessageBeep(MB_ICONASTERISK);                              // done signal: the player can move again
 }
@@ -2941,6 +2945,8 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
 }
 
 }  // namespace
+
+std::wstring rbrrtx_stage_line(const RbrStageInfo& si) { return stage_line(si); }   // report.cpp
 
 void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
   static bool loaded = false;
