@@ -259,6 +259,8 @@ struct Orig {
   decltype(IDirect3DStateBlock9Vtbl::Apply) StateBlockApply;
   decltype(IDirect3DQuery9Vtbl::Issue) QueryIssue;
   decltype(IDirect3DQuery9Vtbl::Release) QueryRelease;
+  decltype(IDirect3DVertexBuffer9Vtbl::Lock) VBLock;
+  decltype(IDirect3DVertexBuffer9Vtbl::Unlock) VBUnlock;
 } o{};
 
 HMODULE g_backend = nullptr;
@@ -1543,8 +1545,122 @@ bool btb_instanced_draw(IDirect3DDevice9* dev, HRESULT& hr) {
   return true;
 }
 
+// Start clock digits (HedgeHog3D, Textures\start_clock_digits.dds; re/out/hh3d/dec_10070b20.c): every frame the game
+// rewrites the 32 vertices of a dynamic buffer (D3DLOCK_DISCARD, XYZ|DIFFUSE|TEX1) with the same positions and new
+// digit UVs and draws them fixed-function (8 quads, 16 triangles, index pattern 4k,4k+1,4k+2 / 4k+2,4k+1,4k+3). Under
+// path tracing the clock kept the digits of the frame Remix first saw it until ray tracing was toggled (a fresh
+// BLAS); flipping a position bit when the UVs changed (2026-10-22 19:45 build) did not help. So each UV change gets a
+// new mesh for Remix: the draw switches to the next of three index buffers of ours (written once; the same quads in
+// another order: another index hash). Remix drops a BLAS not used in the last frame (rtx.numFramesToKeepBLAS = 1), so
+// the one met again three changes later is built anew from the current vertices. RBRRTX_CLOCK=0 = off.
+constexpr unsigned long long kClockDigitsHash = 0x544BB1AB506B2F73ull;
+bool g_clockOn = true;
+IDirect3DVertexBuffer9* g_clockVB = nullptr;           // not owned; compared only
+void* g_clockData = nullptr;                           // pointer of the open Lock on g_clockVB
+UINT g_clockBytes = 0;
+unsigned g_clockUv = 0, g_clockChanges = 0, g_clockVersion = 0, g_clockIbVersion = ~0u;
+bool g_clockNow = false;                               // the current draw is the clock
+IDirect3DIndexBuffer9* g_clockIB[3] = {};              // ours, managed (survives Reset)
+unsigned g_clockSlot = 0;
+
+HRESULT STDMETHODCALLTYPE hk_VBLock(IDirect3DVertexBuffer9* vb, UINT off, UINT size, void** data, DWORD flags) {
+  const HRESULT hr = o.VBLock(vb, off, size, data, flags);
+  if (vb == g_clockVB) {
+    g_clockData = SUCCEEDED(hr) && data && off == 0 && !(flags & D3DLOCK_READONLY) ? *data : nullptr;
+    g_clockBytes = size;
+    if (g_clockData && !size) {
+      D3DVERTEXBUFFER_DESC d = {};
+      vb->lpVtbl->GetDesc(vb, &d);
+      g_clockBytes = d.Size;
+    }
+  }
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hk_VBUnlock(IDirect3DVertexBuffer9* vb) {
+  if (vb == g_clockVB && g_clockData) {
+    const unsigned char* p = static_cast<const unsigned char*>(g_clockData);
+    const UINT n = std::min<UINT>(g_clockBytes / 24, 32);
+    unsigned h = 2166136261u;                          // FNV-1a over the UV dwords of the 32 drawn vertices
+    for (UINT i = 0; i < n; ++i) {
+      unsigned uv[2];
+      std::memcpy(uv, p + i * 24 + 16, 8);
+      h = (h ^ uv[0]) * 16777619u;
+      h = (h ^ uv[1]) * 16777619u;
+    }
+    if (h != g_clockUv) { g_clockUv = h; ++g_clockVersion; ++g_clockChanges; }
+    g_clockData = nullptr;
+  }
+  return o.VBUnlock(vb);
+}
+
+void clock_note(IDirect3DDevice9* dev) {
+  IDirect3DBaseTexture9* t = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t);
+  if (!t) return;
+  t->lpVtbl->Release(t);
+  if (rbrrtx_texture_hash(t) != kClockDigitsHash) return;
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT off = 0, stride = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &off, &stride)) || !vb) return;
+  vb->lpVtbl->Release(vb);
+  if (stride != 24 || off != 0) return;
+  if (vb != g_clockVB) {
+    g_clockVB = vb;
+    IDirect3DVertexBuffer9Vtbl* v = vb->lpVtbl;
+    patch(&v->Lock, &hk_VBLock, o.VBLock);
+    patch(&v->Unlock, &hk_VBUnlock, o.VBUnlock);
+    clog(L"start clock digits: buffer %p, each digit change drawn as a new mesh", static_cast<void*>(vb));
+  }
+  g_clockNow = true;
+}
+
+// The clock's draw with our rotated indices; false = draw it as the game does.
+bool clock_draw(IDirect3DDevice9* dev, HRESULT& hr) {
+  if (!g_clockNow) return false;
+  g_clockNow = false;
+  if (!g_dip.valid || g_dip.count != 16 || g_dip.startIdx != 0 || g_dip.base != 0 || g_dip.minIdx != 0 || g_dip.numV != 32)
+    return false;
+  if (g_clockIbVersion != g_clockVersion) {            // digits changed: next index buffer
+    g_clockIbVersion = g_clockVersion;
+    g_clockSlot = (g_clockSlot + 1) % 3;
+  }
+  IDirect3DIndexBuffer9*& ib = g_clockIB[g_clockSlot];
+  if (!ib) {
+    void* p = nullptr;
+    if (FAILED(dev->lpVtbl->CreateIndexBuffer(dev, 48 * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &ib,
+                                              nullptr)) || !ib) {
+      ib = nullptr;
+      return false;
+    }
+    if (FAILED(ib->lpVtbl->Lock(ib, 0, 0, &p, 0)) || !p) { ib->lpVtbl->Release(ib); ib = nullptr; return false; }
+    unsigned short* ix = static_cast<unsigned short*>(p);
+    for (unsigned i = 0; i < 8; ++i) {
+      // Slot 0: the game's quad order, 1: reversed, 2: shifted by one. Each quad keeps the game's own six indices
+      // (A,B,C / C,B,D): rotating triangle corners (19:54 and 20:05 builds) lost one triangle per quad under path
+      // tracing, and the A,B,C / A,C,D pattern would make Remix turn the quads into camera-facing billboards
+      // (rtx_instance_manager.cpp createBillboards).
+      const unsigned q = g_clockSlot == 0 ? i : g_clockSlot == 1 ? 7 - i : (i + 1) % 8;
+      const unsigned short b = static_cast<unsigned short>(4 * q);
+      const unsigned short quad[6] = { b, static_cast<unsigned short>(b + 1), static_cast<unsigned short>(b + 2),
+                                       static_cast<unsigned short>(b + 2), static_cast<unsigned short>(b + 1),
+                                       static_cast<unsigned short>(b + 3) };
+      for (unsigned short x : quad) *ix++ = x;
+    }
+    ib->lpVtbl->Unlock(ib);
+  }
+  IDirect3DIndexBuffer9* gameIB = nullptr;
+  dev->lpVtbl->GetIndices(dev, &gameIB);
+  dev->lpVtbl->SetIndices(dev, ib);
+  hr = o.DrawIndexedPrimitive(dev, D3DPT_TRIANGLELIST, 0, 0, 32, 0, 16);
+  dev->lpVtbl->SetIndices(dev, gameIB);
+  if (gameIB) gameIB->lpVtbl->Release(gameIB);
+  return true;
+}
+
 bool before_draw(IDirect3DDevice9* dev) {
   ++g_st.draws;
+  g_clockNow = false;
   {
     const ShaderInfo* key = !g_curVS ? &kFixedFunction : g_curInfo ? g_curInfo : &kUnknownShader;
     DrawCount& dc = g_byShader[key];
@@ -1562,6 +1678,7 @@ bool before_draw(IDirect3DDevice9* dev) {
     // force identity: restoring the game's own matrices fixed external cameras only (23:26); in cockpit views UI stayed
     // hidden even with forced identity (23:37); see g_uiTriggerOn for what is tried next.
     const bool screenSpace = screen_space_input(dev);
+    if (g_clockOn && !screenSpace && g_primaryRT) clock_note(dev);
     for (int i = 0; i < 3; ++i)
       if (screenSpace) { g_devValid[i] = false; set_xf(dev, i, identity()); }   // uncached: suspect b)
       else if (g_gameSet[i]) set_xf(dev, i, g_game[i]);
@@ -1723,6 +1840,8 @@ void log_frame(const wchar_t* why) {
          g_layerMissing, g_layerUntagged, held, twins, mb);
     g_layerDraws = g_layerMissing = g_layerUntagged = 0;
   }
+  if (g_clockChanges) clog(L"  start clock digits: %u changes drawn as new meshes since last line", g_clockChanges);
+  g_clockChanges = 0;
   wchar_t acLine[400];
   rbrrtx_alphacut_summary(acLine, 400, g_dustFrames);
   clog(L"  alpha-card cut-outs %s: %s", g_alphaCut ? L"ON" : L"off", acLine);
@@ -2209,6 +2328,12 @@ void end_frame(IDirect3DDevice9* dev) {
     g_sunMoving = moving;
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
+  if (rbrrtx_key_pressed(RBRKEY_GROUND_LAYER)) {
+    g_layerOn = !g_layerOn;
+    wchar_t msg[64];
+    swprintf_s(msg, L"%s: ground second layer %s", rbrrtx_key_name(RBRKEY_GROUND_LAYER), g_layerOn ? L"ON" : L"off");
+    log_frame(msg);
+  }
   debug_sky();
   g_frameCam = false;
   g_btbPrev = g_st.btb > 0;
@@ -3130,6 +3255,29 @@ IDirect3DVertexDeclaration9* uv_swapped(IDirect3DDevice9* dev, IDirect3DVertexDe
   return out;
 }
 
+// Vertex normals on fixed-function scenery. RLDoubleTextureSpecular* (and other specular layouts) carry a FLOAT3 NORMAL
+// the game uses only for its specular term; drawn fixed-function, Remix shades with it. On Tanner's bridge deck those
+// normals point sideways: the deck rendered dark and mirror-like (sweeps 2026-10-22 20:35/20:36, shading normals view
+// blue, ground green). Without NORMAL Remix uses the triangle normals, as for all other RL ground.
+// RBRRTX_FF_NORMALS=1 keeps them.
+bool g_ffNormals = false;
+std::unordered_map<void*, IDirect3DVertexDeclaration9*> g_noNormal;   // game declaration -> copy without NORMAL
+
+IDirect3DVertexDeclaration9* no_normal(IDirect3DDevice9* dev, IDirect3DVertexDeclaration9* decl) {
+  auto it = g_noNormal.find(decl);
+  if (it != g_noNormal.end()) return it->second;
+  D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1], kept[MAXD3DDECLLENGTH + 1];
+  UINT n = MAXD3DDECLLENGTH + 1, k = 0;
+  IDirect3DVertexDeclaration9* out = nullptr;
+  if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n))) {
+    for (UINT i = 0; i < n; ++i)                       // the D3DDECL_END element is copied too
+      if (el[i].Stream == 0xFF || el[i].Usage != D3DDECLUSAGE_NORMAL) kept[k++] = el[i];
+    if (k < n) o.CreateVertexDeclaration(dev, kept, &out);
+  }
+  g_noNormal[decl] = out;                              // nullptr = no NORMAL: draw as is
+  return out;
+}
+
 template <class Draw>
 void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   if (!g_layerOn || !g_enabled || !g_primaryRT || !g_vsUnbound || !g_curInfo || g_vin != kVinDecl ||
@@ -3270,14 +3418,18 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   const bool litOff = ff && g_lighting && SUCCEEDED(o.SetRenderState(dev, D3DRS_LIGHTING, FALSE));   // no normals
   if (ff) ++g_ffDraws;
+  IDirect3DVertexDeclaration9* nn = ff && !g_ffNormals && g_vin == kVinDecl && g_curDecl
+      ? no_normal(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl)) : nullptr;
+  const bool normalsOff = nn && SUCCEEDED(o.SetVertexDeclaration(dev, nn));
   RbrAlphaCut ac = {};
   const bool cut = g_alphaCut && g_dip.valid && !atOff && is_scenery_draw() &&
                    rbrrtx_alphacut_find(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, &ac);
   if (cut && (ac.alphaTestOff || g_alphaCutSolid) && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
-  else if (!btb_instanced_draw(dev, hr)) hr = draw();
+  else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) hr = draw();
   if (SUCCEEDED(hr)) { if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
+  if (normalsOff) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
@@ -3363,7 +3515,11 @@ ULONG STDMETHODCALLTYPE hk_QueryRelease(IDirect3DQuery9* q) {
 HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len, DWORD usage, DWORD fvf, D3DPOOL pool,
                                                 IDirect3DVertexBuffer9** vb, HANDLE* shared) {
   const HRESULT hr = o.CreateVertexBuffer(dev, len, usage, fvf, pool, vb, shared);
-  if (SUCCEEDED(hr) && vb && *vb) { ++g_vbGen[*vb]; rbrrtx_alphacut_forget(*vb); }
+  if (SUCCEEDED(hr) && vb && *vb) {
+    ++g_vbGen[*vb];
+    rbrrtx_alphacut_forget(*vb);
+    if (*vb == g_clockVB) g_clockVB = nullptr;         // a new buffer at the clock's old address
+  }
   return hr;
 }
 
@@ -3447,6 +3603,8 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_btbOn = rbrrtx_env_flag(L"RBRRTX_BTB", false);
     g_dirtOn = rbrrtx_env_flag(L"RBRRTX_CAR_DIRT", true);
     g_layerOn = rbrrtx_env_flag(L"RBRRTX_GROUND_LAYER", true);
+    g_clockOn = rbrrtx_env_flag(L"RBRRTX_CLOCK", true);
+    g_ffNormals = rbrrtx_env_flag(L"RBRRTX_FF_NORMALS", false);
     g_uiTriggerOn = rbrrtx_env_flag(L"RBRRTX_UI_TRIGGER", true);
     g_skipOffscreen = !rbrrtx_env_flag(L"RBRRTX_OFFSCREEN", false);
     wchar_t fol[16];

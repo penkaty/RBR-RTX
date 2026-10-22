@@ -367,6 +367,7 @@ int rbrrtx_texture_min_alpha(void* base_texture) {
 
 void* rbrrtx_layer_twin(void* texture) {
   IDirect3DTexture9* src = nullptr;
+  unsigned long long expected = 0;                     // Remix hash the game texture got from this source
   {
     std::lock_guard<std::mutex> g(g_mx);
     auto it = g_held.find(texture);
@@ -374,6 +375,8 @@ void* rbrrtx_layer_twin(void* texture) {
     if (it->second.twin) return it->second.twin;
     src = it->second.src;
     src->lpVtbl->AddRef(src);
+    auto h = g_texHash.find(texture);
+    expected = h != g_texHash.end() ? h->second : 0;
   }
   // Built without the lock: the copy's own Lock/Unlock and UpdateTexture go through the hooks above (hash, inherit).
   IDirect3DTexture9 *tmp = nullptr, *twin = nullptr;
@@ -390,6 +393,21 @@ void* rbrrtx_layer_twin(void* texture) {
     ok = SUCCEEDED(src->lpVtbl->GetLevelDesc(src, lv, &d)) && layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt) &&
          SUCCEEDED(src->lpVtbl->LockRect(src, lv, &a, nullptr, D3DLOCK_READONLY));
     if (!ok) break;
+    // The source must still hold what was uploaded: the game may reuse a system-memory texture for a later upload
+    // (Tanner 2026-10-22: a twin of the road came out black, a mirror-like patch under path tracing).
+    if (lv == 0) {
+      std::string data(static_cast<size_t>(rowBytes) * rows, '\0');
+      for (UINT r = 0; r < rows; ++r)
+        memcpy(&data[static_cast<size_t>(r) * rowBytes], static_cast<const char*>(a.pBits) + static_cast<size_t>(r) * a.Pitch,
+               rowBytes);
+      const unsigned long long now = XXH3_64bits(data.data(), data.size());
+      if (!expected || now != expected) {
+        hlog(L"second layer: source of %016llX now holds %016llX (reused by the game), no twin", expected, now);
+        ok = false;
+        src->lpVtbl->UnlockRect(src, lv);
+        break;
+      }
+    }
     if (SUCCEEDED(tmp->lpVtbl->LockRect(tmp, lv, &b, nullptr, 0))) {
       for (UINT r = 0; r < rows; ++r)
         memcpy(static_cast<char*>(b.pBits) + static_cast<size_t>(r) * b.Pitch,

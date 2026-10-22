@@ -44,6 +44,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"alpha_cut", kAlt | 'O', L"alpha-card cut-outs (clipped foliage cards) on/off"},
   {L"report_mark", '9', L"stage report: mark a problem now"},
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
+  {L"ground_layer", kAlt | 'Y', L"ground second layer (two-texture blend decals) on/off"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
