@@ -45,7 +45,8 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   6        sky: Remix sky (default) <-> no sky
   J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
   I        cockpit windscreen on (default) / off
-  K        faster scenery: default (trees/grass/flags beyond 40 m stop swaying) -> off (old, slower) -> static only
+  K        faster scenery: default (static scenery, trees/grass/flags do not sway) -> off (old, slower) -> static
+           only (everything sways)
   U        distance culling on/off: far geometry outside the view left out of path tracing (rbr-rtx\config\culling.ini)
 
   Tuning:
@@ -53,6 +54,7 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   Alt+N / Alt+M  sun brighter / dimmer (10 % per press; the log shows the value to keep)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
+  \        keep the sun now shown for this stage and time of day (see "Fixing the sun on a stage")
   Alt+P    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
            setting in rbr-rtx\logs\rbrrtx_comp.log
 
@@ -73,9 +75,13 @@ Reporting a problem (please do!)
   No dynamic lights yet (headlights, night): RBR draws its lights as textures, so each has to be built through
   the Remix API; that is the next big step.
 
-Known issue: in replays the HUD does not show properly; it only appears for a moment when F11 takes a screenshot.
+Fixing the sun on a stage
+  Some stages need their sun position fixed: the Remix sun comes from another direction than the stage's baked
+  shadows. Press H (debug sun), move it with [ ] ; ' until the light matches, then press \ (beep). That sun is kept
+  for this stage and time of day, also after H and next time, in rbr-rtx\config\sun-saved.ini. Please send that
+  file in so the fixes go in for everyone; delete a line there to go back. Uninstall removes it: copy it out first.
 
-Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, P frame dump, crash dumps) into
+Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, 8 frame dump, crash dumps) into
   rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
 
 Uninstall

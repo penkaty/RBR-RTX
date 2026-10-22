@@ -11,8 +11,7 @@ Runs on **Richard Burns Rally + RallySimFans (RSF)**; online functionality has n
 It makes the game compatible with RTX Remix so it can be path traced. The cars, stages and textures are still
 the original game's.
 
-**WIP:** RTX Remix was never meant for RBR. Crashes or broken things come from that incompatibility or from bugs in
-this mod. Please report them (see [Troubleshooting](#troubleshooting)).
+**WIP:** This is not a final release, expect issues. Please report them (see [Troubleshooting](#troubleshooting)).
 
 </div>
 
@@ -21,13 +20,18 @@ this mod. Please report them (see [Troubleshooting](#troubleshooting)).
 - RBR draws everything with vertex shaders, which Remix can't place in 3D on its own. I rebuild the camera and
   object positions from the game's shader data and hand them to Remix.
 - Static scenery and distant trees are drawn the old fixed-function way: faster, and textures keep stable hashes.
+  Since 0.2.5 foliage no longer sways and opacity micromaps are off: a temporary dirty fix, up to about 24 % more
+  FPS than 0.2 on forest stages (Legazpi 19.8 -> 16.0 ms, RTX 2080 Ti).
 - Remix-friendly distance culling: far geometry outside the view is left out of path tracing.
-- A Remix sun that follows RBR's sun, and RBR's sky shown as the Remix sky.
+- A Remix sun that follows each stage's own sun direction, and RBR's sky shown as the Remix sky. Some stages'
+  sun direction doesn't match their baked shadows; you can fix those yourself (see [Fixing the sun](#fixing-the-sun-on-a-stage)).
 - Weather and region: RBR's sky type, clouds, time of day and the stage's country set Remix haze, sky light and
   sun strength.
 - Fixes for foliage cut-outs, windscreen, dust and the in-car view.
+- **Stage reports**: every stage you drive is zipped (frame rate, stutter, car, stage, PC, settings) into
+  `rbr-rtx\logs\reports`; **9** marks a problem. Nothing is sent anywhere.
 - **Alt+K stage sweep**: one key collects screenshots, Remix debug views, texture hashes and a scene capture for
-  bug reports. **K** switches ray tracing off to compare with the original image.
+  bug reports. **0** switches ray tracing off to compare with the original image.
 - A pure add-on: it adds `d3d9.dll` and an `rbr-rtx\` folder, changes no game files, and uninstalls cleanly.
 
 <div align="center">
@@ -53,15 +57,32 @@ and attached to the car. That's my next big step.
 4. Optional: [RBR-RTX-base-mod](https://github.com/penkaty/RBR-RTX-base-mod) adds PBR materials (surface
    detail, roughness, depth) for the original Warthog stages. Install it after RBR-RTX, the same way.
 5. Start the game as usual. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
+   **Updating from 0.2 or older?** Unpack over the old files, then delete `user.conf` in the RBR folder (and an
+   edited `rbr-rtx\config\keys.ini`): old saved settings override the new defaults and many keys moved.
 6. Uninstall: double-click `rbr-rtx\uninstall.cmd`.
 
 All debug keybinds are listed in **`rbr-rtx\README.txt`** and can be changed in
 *`rbr-rtx\config\keys.ini`*.
 
+### Fixing the sun on a stage
+
+Some stages need their sun position fixed: the Remix sun comes from a different direction than the stage's
+baked shadows. To fix it on the stage you're on:
+
+1. Press **H** for the debug sun. Hold **`[`** / **`]`** to turn it and **`;`** / **`'`** to lower / raise it until
+   the light matches the baked shadows.
+2. Press **`\`** (beep). That sun is kept for this stage and time of day, also after you press **H** again and next
+   time you drive it.
+3. The suns are saved in `rbr-rtx\config\sun-saved.ini`. Please send me that file, so the fixes go in for
+   everyone. Delete a line there to go back to the stage's own sun. Uninstall removes `rbr-rtx\`, so copy the file
+   out first.
+
 ## Troubleshooting
 
 **Whatever the problem, run the Alt+K sweep first.** It's my main source of information for fixing things.
 
+0. Performance or a crash? Send the zip of that stage from `rbr-rtx\logs\reports` (press **9** when it happens and
+   that zip is kept as "-marked").
 1. On the spot where the problem shows, stop the car and leave the camera as it is.
 2. Press **Alt+K** and don't touch anything for about 25 seconds. Strange views are normal. At the end the sweep
    presses **Pause** itself for a Remix scene capture, so keep Pause free.
@@ -78,18 +99,18 @@ Known issues:
   exactly there gives me the hashes to fix it, so logs help a lot.
 - Coming from an older test build? Delete `user.conf` in the RBR folder: old Alt+X settings override the new defaults.
   The same goes for after you've pressed **Save** in the Alt+X menu.
-- **Black picture with path tracing on, but the normal picture is fine when you press K?** Then RBR-RTX can't
+- **Black picture with path tracing on, but the normal picture is fine when you press 0?** Then RBR-RTX can't
   recognise the game's shaders, so Remix gets no camera. This usually means another mod changes them: ReShade, a
   shader pack or a graphics plugin. Remove it (for ReShade, also its Vulkan layer) and check that `VertexShaders\`
   holds the game's own files. `rbr-rtx\logs\rbrrtx_comp.log` then says "WARNING: game shaders not recognised".
 - **High FPS counter, but it feels choppy?** The counter counts the frames the game sends, not the frames that reach
   your screen. Try fullscreen instead of windowed, and close other overlays.
-- Trees, dust and smoke cost a lot of FPS.
-- The HUD doesn't show properly in replays: it only flashes up for a moment when you press F11 for a screenshot.
-- DirectorsCut text in the interior view can be blank. With Cubic env maps on, the 3rd-person car looks wrong.
+- Dust and smoke cost a lot of FPS (trees much less since 0.2.5).
+- With Cubic env maps on, the 3rd-person car looks wrong.
 - Some modern RSF cars use shaders I don't handle yet. Please send a sweep.
 - **BTB stages** (made with Bob's Track Builder, e.g. Ruuhimaki) don't work with path tracing yet: the stage is
   missing or floats in the sky. Press **0** to switch ray tracing off on those stages.
+- Fog weather is still too weak, and the first load of a new stage can very rarely hang.
 
 ## Credits
 

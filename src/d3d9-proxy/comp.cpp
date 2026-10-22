@@ -584,6 +584,11 @@ bool g_inMenu = true;
 float g_menuSunAz = 28.0f;
 bool g_menuSunOn = true;
 float g_sunOverrideAz = 0.0f, g_sunOverrideEl = 0.0f;
+// Suns kept in game with the sun_save key (\, user 2026-10-22): rbr-rtx\config\sun-saved.ini, same [stage.<id>]
+// sun_dir.<Time> keys as atmosphere.ini plus name/weather, read before atmosphere.ini. Not in the package, so an
+// update keeps it; testers send it in to be merged into atmosphere.ini.
+wchar_t g_sunSavedPath[MAX_PATH * 2] = {};
+RbrStageInfo g_atmoStage = {};                         // stage of the look applied last (atmo_frame)
 int g_sunRuleLogged = -1;                              // last rule logged (0 none, 1 capped, 2 fallback)
 
 void sun_rule(float d[3]) {
@@ -771,6 +776,7 @@ void atmo_load() {
   g_atmoLoaded = true;
   wchar_t* path = g_atmoPath;
   rbrrtx_config_path(L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", path, MAX_PATH * 2);
+  rbrrtx_config_path(L"RBRRTX_SUN_SAVED", L"sun-saved.ini", g_sunSavedPath, MAX_PATH * 2);
   g_atmoEnabled = GetPrivateProfileIntW(L"atmosphere", L"enable", 1, path) != 0;
   {
     wchar_t v[32] = {};
@@ -878,13 +884,17 @@ void atmo_frame() {
   mul(sec(L"time.", rbrrtx_time_name(si.timeOfDay)));
   mul(sec(L"stage.", std::to_wstring(si.trackId).c_str()));   // per-stage look (soft baked shadows: weaker sun)
   if (!g_sunFallbackFixed) { g_sunFallbackAz = fbAz; g_sunFallbackEl = (std::min)(fbEl, sunCap); }
-  {                                                    // per-stage sun direction: time-specific key first
+  g_atmoStage = si;
+  const wchar_t* sunFrom = L"from the game";
+  {                                                    // per-stage sun direction: saved sun, then time-specific key
     const std::wstring stageSec = L"stage." + std::to_wstring(si.trackId);
     const std::wstring timeKey = std::wstring(L"sun_dir.") + rbrrtx_time_name(si.timeOfDay);
     wchar_t v[128] = {};
-    if (!GetPrivateProfileStringW(stageSec.c_str(), timeKey.c_str(), L"", v, 128, g_atmoPath))
-      GetPrivateProfileStringW(stageSec.c_str(), L"sun_dir", L"", v, 128, g_atmoPath);
+    if (GetPrivateProfileStringW(stageSec.c_str(), timeKey.c_str(), L"", v, 128, g_sunSavedPath)) sunFrom = L"saved (sun-saved.ini)";
+    else if (GetPrivateProfileStringW(stageSec.c_str(), timeKey.c_str(), L"", v, 128, g_atmoPath) ||
+             GetPrivateProfileStringW(stageSec.c_str(), L"sun_dir", L"", v, 128, g_atmoPath)) sunFrom = L"override";
     g_sunOverride = v[0] && swscanf_s(v, L"%f , %f", &g_sunOverrideAz, &g_sunOverrideEl) == 2;
+    if (!g_sunOverride) sunFrom = L"from the game";
   }
   g_sunRuleLogged = -1;                                // log the rule again for the new stage / time
   float col[3], alb[3];
@@ -907,9 +917,52 @@ void atmo_frame() {
                    L"albedo %.2f, anisotropy %.2f, sky light %.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
              si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region ? region->name.c_str() : L"none",
              rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay), dist, total.dist,
-             col[0], col[1], col[2], alb[0], an, sky, total.sun, g_sunFallbackAz, g_sunFallbackEl, g_sunOverride ? L"override" : L"from the game");
+             col[0], col[1], col[2], alb[0], an, sky, total.sun, g_sunFallbackAz, g_sunFallbackEl, sunFrom);
   g_atmoLine = line;
   clog(L"atmosphere: %s", line);
+}
+
+// sun_save key: keeps the sun now drawn (debug sun, or the game/override sun) for this stage and time of day.
+void sun_save() {
+  const RbrStageInfo& si = g_atmoStage;
+  float az = g_sunAz, el = g_sunEl;
+  if (!g_sunManual) {
+    if (g_sunDir[1] == 0.0f) { clog(L"sun save: no sun drawn yet, nothing saved"); return; }
+    el = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f;
+    az = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
+  }
+  if (g_inMenu || si.trackId <= 0 || !g_sunSavedPath[0]) { clog(L"sun save: no stage loaded, nothing saved"); return; }
+  if (GetFileAttributesW(g_sunSavedPath) == INVALID_FILE_ATTRIBUTES) {   // UTF-16 file: stage names keep their letters
+    static const wchar_t head[] =
+        L"\xFEFF; Suns kept in game with the sun_save key (\\ by default): one [stage.<RBR track id>] per stage,\r\n"
+        L"; sun_dir.<time of day> = azimuth, elevation (degrees). Used before atmosphere.ini. Delete a line to go back.\r\n"
+        L"; Send this file in so the suns can go into atmosphere.ini for everyone.\r\n";
+    HANDLE f = CreateFileW(g_sunSavedPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+      DWORD n = 0;
+      WriteFile(f, head, static_cast<DWORD>((sizeof(head) - sizeof(wchar_t))), &n, nullptr);
+      CloseHandle(f);
+    }
+  }
+  const std::wstring sec = L"stage." + std::to_wstring(si.trackId);
+  const wchar_t* time = rbrrtx_time_name(si.timeOfDay);
+  wchar_t v[160];
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  WritePrivateProfileStringW(sec.c_str(), L"name", si.name[0] ? si.name : L"?", g_sunSavedPath);
+  swprintf_s(v, L"%.1f, %.1f", az, el);
+  const bool ok = WritePrivateProfileStringW(sec.c_str(), (std::wstring(L"sun_dir.") + time).c_str(), v, g_sunSavedPath) != 0;
+  swprintf_s(v, L"%s, %s, saved %04d-%02d-%02d", rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), t.wYear, t.wMonth, t.wDay);
+  WritePrivateProfileStringW(sec.c_str(), (std::wstring(L"weather.") + time).c_str(), v, g_sunSavedPath);
+  if (ok) {                                            // used from now on, also with the debug sun off
+    g_sunOverride = true;
+    g_sunOverrideAz = az;
+    g_sunOverrideEl = el;
+    g_sunRuleLogged = -1;
+    MessageBeep(MB_OK);
+  }
+  clog(L"sun save: %s stage %d %s, %s: azimuth %.1f, elevation %.1f -> [%s] in %s", ok ? L"saved" : L"FAILED to save",
+       si.trackId, si.name[0] ? si.name : L"?", time, az, el, sec.c_str(), g_sunSavedPath);
 }
 
 // ---------------------------------------------------------------- per draw
@@ -2135,6 +2188,7 @@ void end_frame(IDirect3DDevice9* dev) {
     }
     g_sunMoving = moving;
   }
+  if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   debug_sky();
   g_frameCam = false;
   g_btbPrev = g_st.btb > 0;

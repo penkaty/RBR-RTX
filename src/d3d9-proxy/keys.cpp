@@ -6,6 +6,7 @@
 // is held (Alt+X opens Remix; other plugins use combos). Quick taps between two frames are caught too.
 // Exception: a key written as Alt+<key> fires only while Alt is held (sun brightness Alt+N / Alt+M, user 2026-10-17).
 // Number row for toggles (0 ray tracing, 6 sky, 7 dust, 8 frame dump, 9 experiment; user 2026-10-22).
+// Backslash keeps the current sun for the stage (user 2026-10-22).
 //
 // keys.ini:  [keys]  <action> = <key>   key = a letter or digit, F1..F24, a name from kNames below, 0x<VK hex>,
 //            optionally with an Alt+ prefix, or none (action off). Missing file or entry = default.
@@ -42,6 +43,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"opaque_alpha", 0, L"opaque cut-outs without alpha test on/off"},   // no key: ~0 ms with OMM on (adr-001)
   {L"alpha_cut", kAlt | 'O', L"alpha-card cut-outs (clipped foliage cards) on/off"},
   {L"report_mark", '9', L"stage report: mark a problem now"},
+  {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
