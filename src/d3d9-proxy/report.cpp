@@ -49,7 +49,7 @@ struct Rec {
   FILE* perf = nullptr;
   FILE* events = nullptr;
   FILE* problems = nullptr;
-  LARGE_INTEGER start = {}, last = {};
+  LARGE_INTEGER start = {}, last = {}, lastEvent = {};
   // the current second
   unsigned secFrames = 0;
   double secSum = 0, secMax = 0, prevAvg = 0;
@@ -113,10 +113,13 @@ std::wstring exe_dir() {
 }
 
 bool is_problem(const wchar_t* l) {
-  static const wchar_t* kWords[] = { L"WARNING", L"warning", L"FAILED", L"failed", L"error", L"ERROR", L"NOT ",
+  if (!wcsncmp(l, L"frame ", 6)) return false;              // log_frame lines ("... candidates refused ...")
+  static const wchar_t* kWords[] = { L"WARNING", L"warning", L"FAILED", L"failed", L"ERROR", L"NOT ",
                                      L"refused", L"not found", L"not understood", L"not recognised" };
   for (const wchar_t* w : kWords)
     if (wcsstr(l, w)) return true;
+  for (const wchar_t* p = l; (p = wcsstr(p, L"error")) != nullptr; p += 5)
+    if (wcsncmp(p, L"error 0", 7) || iswdigit(p[7])) return true;   // "error 0" = Remix API success
   return false;
 }
 
@@ -322,6 +325,7 @@ std::wstring remix_problems() {
     while (fgetws(buf, 1024, f)) {
       std::wstring l = buf;
       while (!l.empty() && (l.back() == L'\n' || l.back() == L'\r')) l.pop_back();
+      if (l.size() > 2 && l[0] == L'[' && l.find(L"] ") != std::wstring::npos) l.erase(0, l.find(L"] ") + 2);   // timestamp: repeats count as one
       std::wstring low = l;
       for (auto& c : low) c = towlower(c);
       if (low.find(L"err") == std::wstring::npos && low.find(L"warn") == std::wstring::npos && low.find(L"fail") == std::wstring::npos) continue;
@@ -472,6 +476,7 @@ void ev(const wchar_t* text) {
   if (!g_rec.events) return;
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
+  g_rec.lastEvent = now;
   fwprintf(g_rec.events, L"%.1f\t%s\n", secs(g_rec.start, now), scrub(text).c_str());
 }
 
@@ -534,7 +539,10 @@ std::wstring summary(double total) {
     if (!p999 && cum >= g_rec.frames * 999 / 1000) p999 = (i + 1) * 0.5;
   }
   std::vector<Hitch> drive;
-  for (const auto& h : g_rec.hitches) if (h.mode == 1) drive.push_back(h);
+  size_t afterHotkey = 0;
+  for (const auto& h : g_rec.hitches)
+    if (h.mode == 1 && h.event) ++afterHotkey;
+    else if (h.mode == 1) drive.push_back(h);
   const double perMin = driving > 0 ? drive.size() * 60.0 / driving : 0.0;
   const double fps = g_rec.sum > 0 ? g_rec.frames * 1000.0 / g_rec.sum : 0.0;
   swprintf_s(s, L"recorded %.0f s, driving %.0f s (pause, replay and loading not counted below)\n", total, driving);
@@ -547,11 +555,15 @@ std::wstring summary(double total) {
   swprintf_s(s, L"hitches while driving: %zu (%.1f per minute; a hitch = a frame over 3x the last second's average and "
                 L"over 25 ms, or over 100 ms)\n", drive.size(), perMin);
   r += s;
+  if (afterHotkey) {
+    swprintf_s(s, L"  + %zu within 1 s after a hotkey or event (not counted here or in fps; see hitches.tsv)\n", afterHotkey);
+    r += s;
+  }
   std::sort(drive.begin(), drive.end(), [](const Hitch& a, const Hitch& b) { return a.ms > b.ms; });
   for (size_t i = 0; i < drive.size() && i < 5; ++i) {
     swprintf_s(s, L"  %.0f ms at second %.1f, car (%.0f, %.0f, %.0f)%s%s\n", drive[i].ms, drive[i].t, drive[i].pos[0],
                drive[i].pos[1], drive[i].pos[2], drive[i].creates ? L", textures/shaders created" : L"",
-               drive[i].event ? L", hotkey/event that frame" : L"");
+               L"");
     r += s;
   }
   swprintf_s(s, L"problem lines: %u (problems.txt); marked problems (key 9): %u\n", g_rec.problemLines, g_rec.marks);
@@ -706,7 +718,10 @@ void rbrrtx_report_frame(HWND wnd, const RbrReportFrame& f) {
   g_rec.secFf += f.ff;
   g_rec.secBtb += f.btb;
   if (f.btb) g_rec.btb = true;
-  if (g_rec.mode == 1) {
+  // Within 1 s after a hotkey or event (debug sun, ray tracing toggle: ~70 ms each, run 20261022-032807) a slow frame
+  // is the player's doing, not the stage's: kept in hitches.tsv, left out of the fps and stutter numbers.
+  const bool nearEvent = g_rec.event || now.QuadPart - g_rec.lastEvent.QuadPart < g_qpf.QuadPart;
+  if (g_rec.mode == 1 && !nearEvent) {
     ++g_rec.hist[(std::min)(static_cast<int>(ms * 2.0f), kHist - 1)];
     ++g_rec.frames;
     g_rec.sum += ms;
@@ -715,7 +730,7 @@ void rbrrtx_report_frame(HWND wnd, const RbrReportFrame& f) {
   const unsigned creates = g_rbrrtxCreates - g_rec.lastCreates;
   g_rec.lastCreates = g_rbrrtxCreates;
   if ((ms > 100.0f || (g_rec.prevAvg > 0 && ms > 3.0 * g_rec.prevAvg && ms > 25.0f)) && g_rec.hitches.size() < kMaxHitches)
-    g_rec.hitches.push_back({ secs(g_rec.start, now), ms, { f.carPos[0], f.carPos[1], f.carPos[2] }, g_rec.mode, creates, g_rec.event });
+    g_rec.hitches.push_back({ secs(g_rec.start, now), ms, { f.carPos[0], f.carPos[1], f.carPos[2] }, g_rec.mode, creates, nearEvent });
   g_rec.event = false;
   if (g_rec.burstAt && g_rec.ringFrames >= g_rec.burstAt) write_burst();
   if (marked) mark(now, f);

@@ -98,6 +98,8 @@ int wmain(int argc, wchar_t** argv) {
   Sleep(150);                                              // hitch
   frames(0.5, 10);
   rbrrtx_log_to(L"rbrrtx_comp.log", L"WARNING: game shaders not recognised (test)");
+  rbrrtx_log_to(L"rbrrtx_comp.log", L"sun: destroyed (raster), error 0");                       // not problems
+  rbrrtx_log_to(L"rbrrtx_comp.log", L"frame 5 (periodic): draws 1 [BTB 0 (0 camera candidates refused)]");
   g_press = true;                                          // key 9
   frames(2.2, 10);                                         // burst written 120 frames after the mark
   g_track = 0;
@@ -121,6 +123,7 @@ int wmain(int argc, wchar_t** argv) {
     printf("---- summary.txt\n%s", summary.c_str());
     expect(summary.find("hitches while driving: 1") != std::string::npos, L"one hitch found");
     expect(summary.find("not recognised") != std::string::npos, L"verdict: shaders not recognised");
+    expect(summary.find("problem lines: 1 ") != std::string::npos, L"only the warning counted as a problem");
     expect(summary.find("marked a problem") != std::string::npos, L"verdict: marked");
     const std::string burst = run(L"tar -xOf \"" + marked[0].wstring() + L"\" burst-1.tsv");
     expect(burst.find("\n0\t") != std::string::npos && burst.find("\n119\t") != std::string::npos, L"burst holds the mark and 120 frames after");
