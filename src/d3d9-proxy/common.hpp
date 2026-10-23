@@ -31,6 +31,7 @@ void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader);
 // harvest.cpp: Remix hash (XXH3 of mip 0) of a texture uploaded while the hooks ran, 0 if unknown. Kept for every
 // texture even without RBRRTX_HARVEST (hash only, no files; RBRRTX_TEXHASH=0 turns it off) for the stage sweep.
 unsigned long long rbrrtx_texture_hash(void* base_texture);
+unsigned long long rbrrtx_xxh3(const void* data, size_t size);   // Remix's texture hash = XXH3_64 of mip 0
 // Second ground layer (harvest.cpp): a twin of a game texture with its own Remix hash (nullptr = no source held).
 void* rbrrtx_layer_twin(void* texture);
 void rbrrtx_layer_release_other(int track);
@@ -90,6 +91,7 @@ void rbrrtx_headlights_destroy();
 bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
 unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of the backfire sprite to watch for (0 = none now)
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
+void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir);  // before Remix starts: lit lamp textures made emissive
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.

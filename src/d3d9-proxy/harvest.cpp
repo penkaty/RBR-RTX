@@ -334,6 +334,8 @@ void rbrrtx_harvest_note_draw(void* device, const wchar_t* shader) {
   fflush(g_usageTsv);
 }
 
+unsigned long long rbrrtx_xxh3(const void* data, size_t size) { return XXH3_64bits(data, size); }
+
 unsigned long long rbrrtx_texture_hash(void* base_texture) {
   if (!base_texture) return 0;
   std::lock_guard<std::mutex> g(g_mx);

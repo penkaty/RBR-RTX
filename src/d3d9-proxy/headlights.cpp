@@ -37,6 +37,7 @@
 #include "third_party/remix_c.h"
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <cwchar>
@@ -87,8 +88,8 @@ struct Settings {
   // red (Cars\*\*_settings.ini Red 255 Green 0 Blue 0). Brightness (user 2026-10-23 tuning, replacing gta4-rtx's
   // half): braking = a headlight's red, tail = 66 % dimmer than that.
   bool rear = true, brakeLights = true;
-  float brakeRadiance[3] = { 11016.0f, 220.0f, 110.0f };   // per lamp while braking: as a headlight, red
-  float tailRadiance[3] = { 3745.0f, 75.0f, 37.0f };   // per lamp with the headlights on: 0.34 x braking
+  float brakeRadiance[3] = { 8262.0f, 165.0f, 83.0f };   // per lamp while braking (a headlight's red, then -25 %)
+  float tailRadiance[3] = { 2809.0f, 56.0f, 28.0f };   // per lamp with the headlights on (0.34 x, then -25 %)
   float rearCone = 36.0f * 0.6f + 5.0f, rearSoftness = 0.15f;
   float rearPitch = 11.3f;                             // degrees below straight back (atan 0.2)
   float rearBack = 0.05f;                              // metres behind the lamp node (outside the lens)
@@ -98,17 +99,32 @@ struct Settings {
   float popRadiance[3] = { 53460.0f, 24057.0f, 6415.0f };   // orange (flame), point light; the high beams before their -15 % (user 2026-10-23)
   float popRadius = 0.08f, popHold = 0.06f, popOut = 0.12f;   // m, s after the last pop draw, m beyond the pipe tip
   unsigned long long popTexture = 0x93E4994710A5380BULL;
+  bool gameLamps = true;                               // L also switches the game's own lit lamp meshes / glow sprites
+  bool followDrawn = true;                             // lamps follow the drawn car (track_drift)
+  // Head lamps this far ahead of their nodes in outside views (car body drawn: chase, TV, 3rd person) and in the
+  // cockpit views (user 2026-10-23: 1.5 m outside made them stop vanishing; they still vanished a few times onboard).
+  float outsideForward = 1.5f, cockpitForward = 0.0f;
 } g_cfg;
+
+// Per-car tuning (experiment, user 2026-10-23): a section named after the car model file ([BMW_M3_E30] for
+// Cars\BMW_M3_E30\BMW_M3_E30.sgc) overrides any [headlights] key for that car.
+std::wstring g_carSection;
+
+void ini_str(const wchar_t* key, wchar_t* v, DWORD n, const wchar_t* path) {
+  v[0] = 0;
+  if (!g_carSection.empty()) GetPrivateProfileStringW(g_carSection.c_str(), key, L"", v, n, path);
+  if (!v[0]) GetPrivateProfileStringW(L"headlights", key, L"", v, n, path);
+}
 
 float ini_float(const wchar_t* path, const wchar_t* key, float dflt) {
   wchar_t v[64] = {};
-  GetPrivateProfileStringW(L"headlights", key, L"", v, 64, path);
+  ini_str(key, v, 64, path);
   return v[0] ? static_cast<float>(_wtof(v)) : dflt;
 }
 
 void ini_rgb(const wchar_t* path, const wchar_t* key, float out[3]) {
   wchar_t v[96] = {};
-  GetPrivateProfileStringW(L"headlights", key, L"", v, 96, path);
+  ini_str(key, v, 96, path);
   float r, g, b;
   if (v[0] && swscanf_s(v, L"%f , %f , %f", &r, &g, &b) == 3) { out[0] = r; out[1] = g; out[2] = b; }
 }
@@ -121,7 +137,7 @@ void load_settings() {
   if (found) {
     s.enabled = ini_float(path, L"enable", 1.0f) != 0.0f;
     wchar_t v[32] = {};
-    GetPrivateProfileStringW(L"headlights", L"auto_below_sun", L"", v, 32, path);
+    ini_str(L"auto_below_sun", v, 32, path);
     if (!_wcsicmp(v, L"none")) s.autoBelow = -90.0f;
     else if (v[0]) s.autoBelow = static_cast<float>(_wtof(v));
     s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 2, 3);   // 1 (centre light) is gone
@@ -155,10 +171,19 @@ void load_settings() {
     s.popHold = std::clamp(ini_float(path, L"backfire_hold", s.popHold), 0.0f, 2.0f);
     s.popOut = std::clamp(ini_float(path, L"backfire_out", s.popOut), -1.0f, 1.0f);
     wchar_t tex[32] = {};
-    GetPrivateProfileStringW(L"headlights", L"backfire_texture", L"", tex, 32, path);
+    ini_str(L"backfire_texture", tex, 32, path);
     if (tex[0]) s.popTexture = wcstoull(tex, nullptr, 16);
+    s.gameLamps = ini_float(path, L"game_lamps", 1.0f) != 0.0f;
+    s.followDrawn = ini_float(path, L"follow_drawn_car", 1.0f) != 0.0f;
+    s.outsideForward = std::clamp(ini_float(path, L"outside_view_forward", s.outsideForward), -1.0f, 5.0f);
+    s.cockpitForward = std::clamp(ini_float(path, L"cockpit_view_forward", s.cockpitForward), -1.0f, 5.0f);
   }
   g_cfg = s;
+  if (!g_carSection.empty()) {
+    wchar_t keys[16] = {};
+    const bool own = GetPrivateProfileSectionW(g_carSection.c_str(), keys, 16, path) > 0;
+    hlog(L"headlights: car section [%s] %s", g_carSection.c_str(), own ? L"found: its keys override [headlights]" : L"not in the ini");
+  }
   hlog(L"headlights (%s): %s, auto below sun %.1f deg in mode %d, radiance %.0f/%.0f/%.0f, "
        L"radius %.3f, cone %.1f, softness %.2f, focus %.2f, pitch %.1f, forward %.2f, volumetric %.2f, "
        L"keep fallback light %s; brights radiance %.0f cone %.1f softness %.3f pitch %.1f inset %.2f forward %.2f",
@@ -404,17 +429,66 @@ int g_sampleLogged = 0;
 
 V3 swap_yz(const float* v) { return { v[0], v[2], v[1] }; }
 
+// Drawn car vs RBR's car object (user 2026-10-23 07:38 sweep, TV camera, replay): the headlights went dark while the
+// car moved in TV / 3rd-person cameras and came back when the replay was paused; tail lights stayed. With the car
+// hidden the scene was 25x brighter (sweep step 07), so the lamps sat inside the drawn car: in those cameras the car
+// is drawn ahead of RBR's car object (draws and physics from different moments; known camera-dependent 3rd-person
+// transform). The lamps now follow the drawn car: g_drift = drawn body root - predicted root, from the body draw of
+// the last frame (smoothed; it fades out in views without the body, e.g. the cockpit).
+V3 g_drift = {};
+unsigned g_driftFrames = 0, g_driftLogged = 0;
+unsigned g_bodyFrames = 0;                             // frames in a row with the car body drawn (outside views)
+float g_driftMax = 0.0f;
+
 // RBR's pose in render space with the model root at d: rows = car axes (x, y = up, z), row 3 = position.
-bool physics_pose(float C[16], V3* phys) {
+// drift = add g_drift (the lamps); without it = RBR's object only (offset measurement).
+bool physics_pose(float C[16], V3* phys, bool drift = false) {
   float r[20];
   if (!rbrrtx_player_car_raw(r)) return false;
   const V3 ax[3] = { swap_yz(r + 4), swap_yz(r + 10), swap_yz(r + 7) };
   for (const V3& a : ax) if (!(len(a) > 0.5f && len(a) < 2.0f)) return false;   // not a rotation: object not ready
   *phys = swap_yz(r + 16);
   for (int i = 0; i < 3; ++i) { C[i * 4] = ax[i].x; C[i * 4 + 1] = ax[i].y; C[i * 4 + 2] = ax[i].z; C[i * 4 + 3] = 0; }
-  const V3 o = *phys + ax[0] * g_off.d.x + ax[1] * g_off.d.y + ax[2] * g_off.d.z;
+  const V3 o = *phys + ax[0] * g_off.d.x + ax[1] * g_off.d.y + ax[2] * g_off.d.z +
+               (drift && g_cfg.followDrawn ? g_drift : V3{ 0, 0, 0 });
   C[12] = o.x; C[13] = o.y; C[14] = o.z; C[15] = 1;
   return true;
+}
+
+// At frame end: where this frame's body draw put the model root, against RBR's object (offset measured only).
+void track_drift() {
+  float Q[16];
+  V3 phys;
+  if (!g_off.locked || !physics_pose(Q, &phys)) { g_drift = g_drift * 0.8f; return; }
+  const V3 want = row(Q, 3);
+  const Group* best = nullptr;
+  V3 root = {};
+  float C[16];
+  for (const Group& g : g_groups) {
+    if (g.prims < 500 || (best && g.prims <= best->prims)) continue;
+    compose(g_car.body, g.m, C);
+    bool axes = true;
+    for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(Q, r))) > 0.995f;
+    if (!axes || len(row(C, 3) - want) > 2.5f) continue;   // not the body, or the wrong 3rd-person body far off
+    best = &g;
+    root = row(C, 3);
+  }
+  if (!best) { g_drift = g_drift * 0.9f; g_bodyFrames = 0; return; }
+  ++g_bodyFrames;
+  // Slow average: the gap comes from speed and timing and changes slowly, while single frames jitter by several cm
+  // (test 2026-10-23 09:00: 0.11 .. 0.23 m with the sign changing; lamps flickered in bonnet and chase cameras).
+  // A frame more than 0.5 m off the average is not trusted.
+  const V3 sample = root - want;
+  if (g_driftFrames > 10 && len(sample - g_drift) > 0.5f) return;
+  g_drift = g_drift * 0.9f + sample * 0.1f;
+  ++g_driftFrames;
+  const float l = len(g_drift);
+  if (l > g_driftMax) g_driftMax = l;
+  if (l > 0.1f && g_driftLogged < 5 && g_driftFrames % 120 == 0) {
+    ++g_driftLogged;
+    hlog(L"headlights: drawn car %.2f m from RBR's car object (%.2f %.2f %.2f); lamps follow the drawn car", l, g_drift.x,
+         g_drift.y, g_drift.z);
+  }
 }
 
 // At frame end, with all of this frame's car draws: one offset sample while the car stands still.
@@ -493,7 +567,7 @@ void measure_frame() {
 
 bool place_frame(float C[16]) {
   V3 phys;
-  return physics_pose(C, &phys);
+  return physics_pose(C, &phys, true);
 }
 
 // ---------------------------------------------------------------- state
@@ -576,6 +650,75 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
   g_api->DrawLightInstance(l.h);
 }
 
+// The game's own lamp switch (user 2026-10-23: lit lamps when the lights are on). RBR never switches the headlights
+// itself, but HedgeHog3D handles a CSigCarLight signal (0x10068E30, re/kb lights-atmosphere.md section 3): +4 index
+// (0 lf, 1 rf), +8 on, +0xC glass on, +0x10 type (1 = headlight). It sets the car's switch boxes light_lf / light_rf
+// (and lightglass_*) "on"/"off" - every model mesh with SwitchBox = light_lf and Switch = true shows or hides by its
+// Predicate (Cars\<car>\<car>.ini: e_light_lf_lit Predicate = on) - and flips the glow sprite of that lamp
+// (<car>_settings.ini [LightN], visible only if its Size > 0, i.e. the skin's "Headlights on" option). The handler's
+// object (CHH_World) is taken from the signal connection the game made for it (0x10065E40: list at
+// *(*0x101DDFC8) + 0x9CF8, connection +4 next, +0x10 object, +0x14 handler); offsets are from HedgeHog3D.dll's image
+// base 0x10000000, the connection with handler == base + 0x68E30 confirms the DLL matches.
+void* g_hhWorld = nullptr;
+int g_gameLampsSent = -1;                              // last state sent (-1 = none)
+unsigned g_gameLampsLog = 0;
+
+void* find_hh_world() {
+  HMODULE hh = GetModuleHandleW(L"HedgeHog3D.dll");
+  if (!hh) hh = GetModuleHandleW(L"HedgeHog3D_NoSSE.dll");
+  if (!hh) return nullptr;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(hh), handler = base + 0x68E30;
+  __try {
+    const uintptr_t disp = *reinterpret_cast<volatile uintptr_t*>(base + 0x1DDFC8);
+    const uintptr_t mgr = disp ? *reinterpret_cast<volatile uintptr_t*>(disp) : 0;
+    uintptr_t c = mgr ? *reinterpret_cast<volatile uintptr_t*>(mgr + 0x9CF8) : 0;
+    for (int i = 0; c && i < 256; ++i) {
+      if (*reinterpret_cast<volatile uintptr_t*>(c + 0x14) == handler) return *reinterpret_cast<void* volatile*>(c + 0x10);
+      c = *reinterpret_cast<volatile uintptr_t*>(c + 4);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  return nullptr;
+}
+
+bool call_car_light(void* world, int type, int index, bool on) {
+  using Handler = void(__thiscall*)(void*, int);
+  HMODULE hh = GetModuleHandleW(L"HedgeHog3D.dll");
+  if (!hh) hh = GetModuleHandleW(L"HedgeHog3D_NoSSE.dll");
+  if (!hh) return false;
+  int sig[5] = { 0, index, on ? 1 : 0, on ? 1 : 0, type };   // CSigCarLight: (vtable), index, on, glass, type
+  __try {
+    reinterpret_cast<Handler>(reinterpret_cast<uintptr_t>(hh) + 0x68E30)(world, reinterpret_cast<int>(sig));
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+  return true;
+}
+
+// Each frame on a stage: send the headlight state when it changed, or when the game made a new world (stage, replay).
+void sync_game_lamps() {
+  if (!g_cfg.gameLamps) return;
+  if (g_frameNo % 30 != 0 && g_gameLampsSent == (g_mode != kOff ? 1 : 0)) return;
+  void* world = find_hh_world();
+  const int want = g_mode != kOff ? 1 : 0;
+  if (!world) {
+    if (g_gameLampsLog < 2 && g_gameLampsSent != -2) { ++g_gameLampsLog; hlog(L"headlights: game lamp switch not found (HedgeHog3D CSigCarLight connection)"); }
+    g_gameLampsSent = -2;
+    return;
+  }
+  if (world == g_hhWorld && want == g_gameLampsSent) return;
+  // Headlights (type 1: light_lf, light_rf) and the tail lamps with them (type 3: index + 2 into the handler's suffix
+  // table _lf _rf _lb _rb _m, prefix "light": light_lb, light_rb, light_m; HedgeHog3D.dll tables 0x101DA26C /
+  // 0x101DA280, read 2026-10-23; type 4 = brake, 5 = reverse are the game's own).
+  bool ok = call_car_light(world, 1, 0, want == 1) && call_car_light(world, 1, 1, want == 1);
+  for (int i = 0; ok && i < 3; ++i) ok = call_car_light(world, 3, i, want == 1);
+  if (g_gameLampsLog < 12) {
+    ++g_gameLampsLog;
+    hlog(L"headlights: game's own head and tail lamps (lit meshes, glow sprites) %s%s (world %p)", want ? L"ON" : L"off",
+         ok ? L"" : L" FAILED", world);
+  }
+  g_hhWorld = world;
+  g_gameLampsSent = want;
+  if (!ok) g_cfg.gameLamps = false;                    // the handler faulted: not again until the settings are read
+}
+
 bool in_stage(RbrStageInfo* si) {
   return rbrrtx_stage_info(si) && si->trackId > 0 &&
          (si->gameMode == 1 || si->gameMode == 2 || si->gameMode == 8 || si->gameMode == 10);
@@ -592,8 +735,9 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
   // Collected while the lights are on, and on a stage until the model offset is measured, lights off too: the
   // game shows the car in a 3rd-person view whenever a stage loads, where several car parts agree (user 2026-10-23;
   // the cockpit view often shows just one, and the lamps then moved once, ~0.3 m, when the view changed).
-  const bool measuring = g_track >= 0 && !g_off.locked;
-  if (!g_cfg.enabled || (g_mode == kOff && !measuring) || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
+  // On a stage always: the offset (until measured) and the drawn car's drift (track_drift) for every lamp, brake and
+  // backfire lights included.
+  if (!g_cfg.enabled || g_track < 0 || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
   for (Group& g : g_groups) if (same_matrix(g.m, world)) { g.prims += prims; return; }
   Group g;
   std::memcpy(g.m, world, sizeof(g.m));
@@ -628,7 +772,17 @@ void rbrrtx_headlights_emit() {
          g_off.locked ? L"measured" : L"not measured yet, 0", g_solved, g_failed);
   const V3 lf = g_car.lamps ? g_car.lf : g_cfg.fallback;
   const V3 rf = g_car.lamps ? g_car.rf : V3{ -g_cfg.fallback.x, g_cfg.fallback.y, g_cfg.fallback.z };
-  const V3 ahead = g_car.forward * g_cfg.forward;
+  // User 2026-10-23: while the car body is drawn (3rd-person, chase, TV views) the car itself blocked the head lamps;
+  // moving them outside_view_forward (1.5 m) ahead fixed it. Cockpit views (no body drawn) have cockpit_view_forward.
+  const bool outside = g_bodyFrames >= 3;
+  const float extra = outside ? g_cfg.outsideForward : g_cfg.cockpitForward;
+  static int viewWas = -1;
+  if (static_cast<int>(outside) != viewWas) {
+    viewWas = outside;
+    hlog(L"headlights: %s view, head lamps %.2f m ahead", outside ? L"outside (car body drawn)" : L"cockpit",
+         g_cfg.forward + extra);
+  }
+  const V3 ahead = g_car.forward * (g_cfg.forward + extra);
   const V3 wl = to_world(C, lf + ahead), wr = to_world(C, rf + ahead);
   const V3 fwd = norm(row(C, 2) * g_car.forward.z);
   const V3 up = norm(row(C, 1));
@@ -663,7 +817,10 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   ++g_frameNo;
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
   g_emitted = false;                                     // emitted at the next first BeginScene
-  if (layerOn && (g_mode != kOff || (g_track >= 0 && !g_off.locked))) measure_frame();   // with every car draw of the frame
+  if (layerOn && g_track >= 0) {                         // with every car draw of the frame
+    measure_frame();
+    track_drift();
+  }
   g_groups.clear();
   if (!g_cfg.enabled || !g_api) return;
   RbrStageInfo si;
@@ -671,7 +828,7 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   if (!stage || !layerOn) {
     if (g_mode != kOff && !stage) set_mode(kOff, L"left the stage");
     if (!layerOn) destroy_all();
-    if (!stage) { g_track = -1; g_manual = false; g_dark = false; }
+    if (!stage) { g_track = -1; g_manual = false; g_dark = false; g_gameLampsSent = -1; g_hhWorld = nullptr; }
     return;
   }
   if (si.trackId != g_track || si.carId != g_carSlot) {  // new stage or car: read the model, automatic again
@@ -683,8 +840,15 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     g_off = Offset();
     g_haveLastPhys = false;
     g_braking = g_popSeen = g_popActive = false;
-    load_settings();
+    g_drift = {};
+    g_driftMax = 0.0f;
+    g_driftFrames = 0;
+    g_gameLampsSent = -1;                              // the stage's world starts with the model ini's states
+    g_hhWorld = nullptr;
     const std::wstring model = car_model_path(si.carId);
+    const size_t slash = model.find_last_of(L"\\/"), dot = model.find_last_of(L'.');
+    g_carSection = model.empty() ? L"" : model.substr(slash + 1, dot != std::wstring::npos && dot > slash ? dot - slash - 1 : std::wstring::npos);
+    load_settings();                                   // after the car is known: its own section may override
     if (model != g_car.file) load_car_model(model);
     auto known = g_offsetByModel.find(g_car.file);         // measured earlier this session
     if (known != g_offsetByModel.end()) { g_off.d = known->second; g_off.locked = true; }
@@ -700,6 +864,7 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     set_mode(dark ? g_cfg.autoMode : kOff, why);
   }
   g_dark = dark;
+  sync_game_lamps();
 }
 
 unsigned long long rbrrtx_headlights_pop_texture() {
@@ -718,8 +883,128 @@ void rbrrtx_headlights_destroy() { destroy_all(); }
 
 void rbrrtx_headlights_status(wchar_t* out, size_t n) {
   swprintf_s(out, n, L"headlights: %s%s, model %s (lamps %s, rear %s, exhaust %s), auto below sun %.1f deg, placed %u / not placed %u frames; "
-             L"brake lights %s; backfire draws %u, flashes %u",
+             L"brake lights %s; backfire draws %u, flashes %u; drawn car %.2f m from RBR's object (max %.2f this stage)",
              mode_name(g_mode), g_manual ? L" (set by key)" : L" (automatic)", g_car.file.empty() ? L"none" : g_car.file.c_str(),
              g_car.lamps ? L"from model" : L"fallback", g_car.rear ? L"yes" : L"no", g_car.exhaust ? L"yes" : L"no",
-             g_cfg.autoBelow, g_solved, g_failed, g_braking ? L"ON" : L"off", g_popDraws, g_popFlashes);
+             g_cfg.autoBelow, g_solved, g_failed, g_braking ? L"ON" : L"off", g_popDraws, g_popFlashes,
+             len(g_drift), g_driftMax);
+}
+
+// Lit lamp textures made emissive (user 2026-10-23: the lamps should look lit inside). Some cars draw their lamps
+// with their own lit texture when the lamp is on (BMW M3 E30: lights_lit.dds, Remix 0xAE5889DDDA655C65, shown by
+// e_light_*_lit meshes; most other cars use their shared car atlas, which cannot glow per texture). Before Remix
+// starts, every Cars\*\*_shaders.ini texture entry named *_lit*.dds is hashed as Remix does (XXH3_64 of mip 0) and a
+// local mod <mods>\rbr_rtx_lit\mod.usda gives that texture hash an emissive material whose emission texture is the
+// player's own file (absolute path: nothing is copied or shipped). headlights.ini lit_glow = emissive intensity
+// (0 = no mod). The file is rewritten only when its content changes.
+// game = game folder with a trailing backslash. Returns the number of textures made emissive.
+size_t write_lit_mod_for(const std::wstring& game, const wchar_t* modsDir, float glow) {
+  const std::wstring dir = std::wstring(modsDir) + L"\\rbr_rtx_lit", file = dir + L"\\mod.usda";
+  std::string body;
+  std::unordered_map<unsigned long long, bool> seen;
+  WIN32_FIND_DATAW fd = {};
+  HANDLE h = glow > 0.0f ? FindFirstFileW((game + L"Cars\\*").c_str(), &fd) : INVALID_HANDLE_VALUE;
+  for (BOOL more = h != INVALID_HANDLE_VALUE; more; more = FindNextFileW(h, &fd)) {
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+    const std::wstring car = game + L"Cars\\" + fd.cFileName + L"\\";
+    WIN32_FIND_DATAW sd;
+    HANDLE hs = FindFirstFileW((car + L"*_shaders.ini").c_str(), &sd);
+    if (hs == INVALID_HANDLE_VALUE) continue;
+    std::ifstream ini(car + sd.cFileName);
+    FindClose(hs);
+    for (std::string line; std::getline(ini, line);) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      std::string key = line.substr(0, eq), val = line.substr(eq + 1);
+      auto trim = [](std::string& t) {
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r' || t.back() == '"')) t.pop_back();
+        size_t a = 0;
+        while (a < t.size() && (t[a] == ' ' || t[a] == '\t' || t[a] == '"')) ++a;
+        t.erase(0, a);
+      };
+      trim(key);
+      trim(val);
+      std::string low = key;
+      for (char& c : low) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      if (low.size() < 5 || low.compare(low.size() - 4, 4, ".dds") || low.find("_lit") == std::string::npos) continue;
+      const std::wstring tex = game + std::wstring(val.begin(), val.end());
+      std::ifstream f(tex, std::ios::binary);
+      const std::vector<char> d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      if (d.size() < 128 || std::memcmp(d.data(), "DDS ", 4)) continue;
+      unsigned hgt, wid, flags, four, bits;
+      std::memcpy(&hgt, d.data() + 12, 4);
+      std::memcpy(&wid, d.data() + 16, 4);
+      std::memcpy(&flags, d.data() + 80, 4);
+      std::memcpy(&four, d.data() + 84, 4);
+      std::memcpy(&bits, d.data() + 88, 4);
+      size_t size = 0;
+      if (flags & 4) {                                 // compressed: DXT1 8 bytes per 4x4 block, DXT2..5 16
+        const size_t blk = four == MAKEFOURCC('D', 'X', 'T', '1') ? 8 : 16;
+        size = (std::max)(1u, (wid + 3) / 4) * static_cast<size_t>((std::max)(1u, (hgt + 3) / 4)) * blk;
+      } else {
+        size = static_cast<size_t>(wid) * hgt * (bits / 8);
+      }
+      if (!size || 128 + size > d.size()) continue;
+      const unsigned long long hx = rbrrtx_xxh3(d.data() + 128, size);
+      if (seen.count(hx)) continue;
+      seen[hx] = true;
+      char u8[MAX_PATH * 4] = {};                      // USD asset paths are UTF-8
+      WideCharToMultiByte(CP_UTF8, 0, tex.c_str(), -1, u8, sizeof(u8), nullptr, nullptr);
+      std::string abs(u8);
+      for (char& c : abs) if (c == '\\') c = '/';
+      char m[1024];
+      sprintf_s(m,
+                "        # %s\n"
+                "        def Material \"mat_%016llX\"\n"
+                "        {\n"
+                "            def Shader \"Shader\"\n"
+                "            {\n"
+                "                uniform token info:implementationSource = \"sourceAsset\"\n"
+                "                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@\n"
+                "                uniform token info:mdl:sourceAsset:subIdentifier = \"AperturePBR_Opacity\"\n"
+                "                bool inputs:enable_emission = 1\n"
+                "                asset inputs:emissive_mask_texture = @%s@ (\n"
+                "                    colorSpace = \"auto\"\n"
+                "                )\n"
+                "                float inputs:emissive_intensity = %.3f\n"
+                "                token outputs:out\n"
+                "            }\n"
+                "        }\n",
+                abs.c_str(), hx, abs.c_str(), glow);
+      body += m;
+    }
+  }
+  if (h != INVALID_HANDLE_VALUE) FindClose(h);
+  std::string old;
+  {
+    std::ifstream in(file, std::ios::binary);
+    old.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  }
+  if (body.empty()) {
+    if (!old.empty()) { DeleteFileW(file.c_str()); RemoveDirectoryW(dir.c_str()); }
+    hlog(L"headlights: no lit lamp textures made emissive (lit_glow %.2f)", glow);
+    return 0;
+  }
+  const std::string usda = "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n\n# Written by RBR-RTX (headlights.cpp) at game start from the installed cars; do not edit.\n"
+                           "def Xform \"RootNode\"\n{\n    def Scope \"Looks\"\n    {\n" + body + "    }\n}\n";
+  if (usda != old) {
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << usda;
+  }
+  hlog(L"headlights: %zu lit lamp texture(s) made emissive (intensity %.2f) in %s%s", seen.size(), glow, file.c_str(),
+       usda != old ? L" (written)" : L"");
+  return seen.size();
+}
+
+void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir) {
+  wchar_t path[MAX_PATH * 2] = {};
+  rbrrtx_config_path(L"RBRRTX_HEADLIGHTS", L"headlights.ini", path, MAX_PATH * 2);
+  const float glow = ini_float(path, L"lit_glow", 3.0f);
+  wchar_t exe[MAX_PATH] = {};
+  const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  wchar_t* slash = (n > 0 && n < MAX_PATH) ? wcsrchr(exe, L'\\') : nullptr;
+  if (!slash) return;
+  slash[1] = 0;
+  write_lit_mod_for(exe, modsDir, glow);
 }

@@ -123,9 +123,17 @@ void seed_user_conf(const wchar_t* addon) {
   if (CopyFileW(seed, L"user.conf", TRUE)) log(L"user.conf seeded from %s", seed);
 }
 
+// Before Remix starts (it reads its mods once, at start): the local mod that makes lit lamp textures emissive.
+void write_lit_mod() {
+  wchar_t mods[MAX_PATH * 2] = {};
+  const DWORD m = GetEnvironmentVariableW(L"DEFAULT_MODS_DIR", mods, MAX_PATH * 2);
+  if (m > 0 && m < MAX_PATH * 2) rbrrtx_headlights_write_lit_mod(mods);
+}
+
 BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
   DWORD n = GetEnvironmentVariableW(L"RBRRTX_D3D9_BACKEND", g_backend_path, MAX_PATH);
   if (n > 0 && n < MAX_PATH) {
+    write_lit_mod();
     if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(nullptr); return TRUE; }
   } else {
     wchar_t dir[MAX_PATH];
@@ -146,6 +154,7 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
         // Kept under a folder literally named rtx-remix: the Toolkit's project wizard only accepts that name.
         default_env_path(L"DEFAULT_MODS_DIR", addon, L"rtx-remix\\mods");
         default_env_path(L"DXVK_CAPTURE_PATH", addon, L"rtx-remix\\captures");
+        write_lit_mod();
         if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(addon); return TRUE; }
       }
     }
