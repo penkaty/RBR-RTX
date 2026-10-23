@@ -1942,6 +1942,8 @@ void log_frame(const wchar_t* why) {
   wchar_t acLine[400];
   rbrrtx_alphacut_summary(acLine, 400, g_dustFrames);
   clog(L"  alpha-card cut-outs %s: %s", g_alphaCut ? L"ON" : L"off", acLine);
+  rbrrtx_radnorm_summary(acLine, 400, g_dustFrames);
+  clog(L"  radial foliage normals %s", acLine);
   g_refLowered = g_softSkipped = g_midQuadSkipped = g_dustTrimmed = g_dustQuads = g_dustFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
   g_opaqueDraws = 0;
   if (okInv)
@@ -2332,6 +2334,7 @@ void end_frame(IDirect3DDevice9* dev) {
   const bool kBrighter = rbrrtx_key_pressed(RBRKEY_SUN_BRIGHTER), kDimmer = rbrrtx_key_pressed(RBRKEY_SUN_DIMMER);
   const bool kFf = rbrrtx_key_pressed(RBRKEY_FF_SCENERY), kOpaque = rbrrtx_key_pressed(RBRKEY_OPAQUE_ALPHA);
   const bool kAlphaCut = rbrrtx_key_pressed(RBRKEY_ALPHACUT);
+  const bool kRadNorm = rbrrtx_key_pressed(RBRKEY_FOLIAGE_NORMALS);
   wchar_t why[256];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
@@ -2359,6 +2362,11 @@ void end_frame(IDirect3DDevice9* dev) {
   if (kAlphaCut) {
     g_alphaCut = g_alphaCutBase = !g_alphaCut;          // also what K steps return to
     swprintf_s(why, L"%s: alpha-card cut-outs %s", rbrrtx_key_name(RBRKEY_ALPHACUT), g_alphaCut ? L"ON (clipped cards)" : L"off (game's cards)");
+    log_frame(why);
+  }
+  if (kRadNorm) {
+    const bool on = rbrrtx_radnorm_toggle();
+    swprintf_s(why, L"%s: radial foliage normals %s", rbrrtx_key_name(RBRKEY_FOLIAGE_NORMALS), on ? L"ON" : L"off (flat cards)");
     log_frame(why);
   }
   if (kSun) {                                          // only the Remix sun on/off (camera and sky stay)
@@ -2480,6 +2488,7 @@ void end_frame(IDirect3DDevice9* dev) {
   g_byShader.clear();
   ++g_frame;
   rbrrtx_alphacut_frame(g_frame);
+  rbrrtx_radnorm_frame(g_frame);
   g_sunDrawn = false;
   g_uiTriggered = false;
 }
@@ -3511,6 +3520,31 @@ IDirect3DVertexDeclaration9* no_normal(IDirect3DDevice9* dev, IDirect3DVertexDec
   return out;
 }
 
+// Radial foliage normals (radnormals.cpp): the game declaration without its NORMAL, plus a FLOAT3 NORMAL read from
+// stream kRadStream (our buffer, numbered like stream 0). nullptr if the game already uses that stream.
+constexpr DWORD kRadStream = 4;
+std::unordered_map<void*, IDirect3DVertexDeclaration9*> g_radDecl;
+
+IDirect3DVertexDeclaration9* rad_normal_decl(IDirect3DDevice9* dev, IDirect3DVertexDeclaration9* decl) {
+  auto it = g_radDecl.find(decl);
+  if (it != g_radDecl.end()) return it->second;
+  D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1], kept[MAXD3DDECLLENGTH + 2];
+  UINT n = MAXD3DDECLLENGTH + 1, k = 0;
+  IDirect3DVertexDeclaration9* out = nullptr;
+  bool free = true;
+  if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n))) {
+    for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
+      if (el[i].Stream == kRadStream) free = false;
+      if (el[i].Usage != D3DDECLUSAGE_NORMAL) kept[k++] = el[i];
+    }
+    kept[k++] = { static_cast<WORD>(kRadStream), 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 };
+    kept[k++] = D3DDECL_END();
+    if (free) o.CreateVertexDeclaration(dev, kept, &out);
+  }
+  g_radDecl[decl] = out;
+  return out;
+}
+
 template <class Draw>
 void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   if (!g_layerOn || !g_enabled || !g_primaryRT || !g_vsUnbound || !g_curInfo || g_vin != kVinDecl ||
@@ -3659,11 +3693,26 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   const bool cut = g_alphaCut && g_dip.valid && !atOff && is_scenery_draw() &&
                    rbrrtx_alphacut_find(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, &ac);
   if (cut && (ac.alphaTestOff || g_alphaCutSolid) && SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE))) atOff = true;
+  // Radial normals on fixed-function swaying foliage (RL*Sway: trees, bushes, grass; one-card clumps stay flat).
+  IDirect3DVertexBuffer9* radPrev = nullptr;
+  UINT radPrevOff = 0, radPrevStride = 0;
+  bool radOn = false;
+  if (ff && ffClass == 2 && !cut && g_dip.valid && g_vin == kVinDecl && g_curDecl && rbrrtx_radnorm_enabled()) {
+    IDirect3DVertexDeclaration9* rd = rad_normal_decl(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
+    void* nb = rd ? rbrrtx_radnorm_find(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count) : nullptr;
+    if (nb) {
+      dev->lpVtbl->GetStreamSource(dev, kRadStream, &radPrev, &radPrevOff, &radPrevStride);
+      radOn = SUCCEEDED(dev->lpVtbl->SetStreamSource(dev, kRadStream, static_cast<IDirect3DVertexBuffer9*>(nb), 0, 12)) &&
+              SUCCEEDED(o.SetVertexDeclaration(dev, rd));
+    }
+  }
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) hr = draw();
   if (SUCCEEDED(hr)) { if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
-  if (normalsOff) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
+  if (normalsOff || radOn) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
+  if (radOn || radPrev) dev->lpVtbl->SetStreamSource(dev, kRadStream, radPrev, radPrevOff, radPrevStride);
+  if (radPrev) radPrev->lpVtbl->Release(radPrev);
   if (litOff) o.SetRenderState(dev, D3DRS_LIGHTING, g_lighting);
   if (atOff) o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
   if (hinted) after_draw(dev);
@@ -3752,6 +3801,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len,
   if (SUCCEEDED(hr) && vb && *vb) {
     ++g_vbGen[*vb];
     rbrrtx_alphacut_forget(*vb);
+    rbrrtx_radnorm_forget(*vb);
     if (*vb == g_clockVB) g_clockVB = nullptr;         // a new buffer at the clock's old address
   }
   return hr;
@@ -3760,7 +3810,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len,
 HRESULT STDMETHODCALLTYPE hk_CreateIndexBuffer(IDirect3DDevice9* dev, UINT len, DWORD usage, D3DFORMAT fmt, D3DPOOL pool,
                                                IDirect3DIndexBuffer9** ib, HANDLE* shared) {
   const HRESULT hr = o.CreateIndexBuffer(dev, len, usage, fmt, pool, ib, shared);
-  if (SUCCEEDED(hr) && ib && *ib) rbrrtx_alphacut_forget(*ib);
+  if (SUCCEEDED(hr) && ib && *ib) { rbrrtx_alphacut_forget(*ib); rbrrtx_radnorm_forget(*ib); }
   return hr;
 }
 
@@ -3851,6 +3901,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_opaqueAlpha = g_opaqueBase = rbrrtx_env_flag(L"RBRRTX_OPAQUE_ALPHA", true) ? 1 : 0;
     g_alphaCut = g_alphaCutBase = rbrrtx_env_flag(L"RBRRTX_ALPHACUT", true) ? 1 : 0;
     rbrrtx_alphacut_init();
+    rbrrtx_radnorm_load();
     if (GetEnvironmentVariableW(L"RBRRTX_FF_SWAY_NEAR", fol, 16)) g_ffSwayNear = _wtof(fol) > 0 ? static_cast<float>(_wtof(fol)) : -1.0f;
     g_ffSwayNearBase = g_ffSwayNear;
     if (GetEnvironmentVariableW(L"RBRRTX_ALPHAREF", fol, 16)) g_cutoutRef = static_cast<DWORD>(std::clamp(_wtoi(fol), 1, 255));

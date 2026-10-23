@@ -56,6 +56,17 @@ void rbrrtx_alphacut_init();
 void rbrrtx_alphacut_frame(unsigned frame);
 void rbrrtx_alphacut_summary(wchar_t* out, size_t n, unsigned frames);   // stats since the last call
 
+// radnormals.cpp: radial foliage normals (prototype). For the current fixed-function foliage DrawIndexedPrimitive
+// (TRIANGLELIST, stream 0 world-space FLOAT3 positions), a vertex buffer of FLOAT3 normals numbered like stream 0
+// (bind with stride 12, offset 0 as a NORMAL stream); nullptr = draw as is. Settings: config\foliage-normals.ini.
+void* rbrrtx_radnorm_find(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims);
+void rbrrtx_radnorm_forget(const void* buffer);               // the game created a buffer at this address
+void rbrrtx_radnorm_load();                                   // (re)reads foliage-normals.ini
+bool rbrrtx_radnorm_enabled();
+bool rbrrtx_radnorm_toggle();                                 // reloads the ini, flips on/off, returns the new state
+void rbrrtx_radnorm_frame(unsigned frame);
+void rbrrtx_radnorm_summary(wchar_t* out, size_t n, unsigned frames);
+
 // game_state.cpp: what the player picked, read from RBR's globals (NGPCarMenu RBRAPI.h offsets) and RSF's
 // rsfdata\cache\stages_data.json (name, country, surface). -1 / empty = unknown.
 struct RbrStageInfo {
@@ -115,7 +126,7 @@ void rbrrtx_particles_toggle();
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);

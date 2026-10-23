@@ -46,6 +46,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
   {L"ground_layer", kAlt | 'Y', L"ground second layer (two-texture blend decals) on/off"},
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},
+  {L"foliage_normals", kAlt | 'R', L"radial foliage normals on/off (prototype, foliage-normals.ini)"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
