@@ -2184,6 +2184,7 @@ void exp_finish(const wchar_t* why) {
   exp_apply(-1);
   atmo_reset();                                              // stage atmosphere is sent again on the next check
   if (g_sweep) sweep_end(why);
+  else MessageBeep(MB_ICONASTERISK);                         // done signal, same as the sweep's (sweep_end beeps)
   g_sweep = false;
   if (g_expMs.empty()) { clog(L"experiments: %s", why); return; }
   const double base = g_expMs[0];
