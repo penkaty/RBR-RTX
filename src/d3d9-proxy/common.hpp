@@ -121,12 +121,25 @@ extern bool rbrrtx_surface_lookup_on;
 bool rbrrtx_surface_lookup_point(float out[3]);               // wheel contact point, render space (Y up)
 void rbrrtx_surface_lookup_hit(float dh, const float rgb[3], unsigned long long textureHash);
 void rbrrtx_particles_toggle();
+// particles.cpp rain/snow probe (RBRRTX_RAIN_PROBE=1): game particle draws per texture, rain key cuts the game's rain.
+bool rbrrtx_rain_probe_on();
+void rbrrtx_rain_note_draw(unsigned long long hash, unsigned prims, bool ff);
+void rbrrtx_rain_toggle();
+bool rbrrtx_rain_cutting();                                  // Remix rain/snow replaces the game's (its emitters live)
+bool rbrrtx_rain_skip_texture(unsigned long long hash);       // a game rain/snow texture: skip the draw
+int rbrrtx_precip_state(float* intensity);                    // 1 rain, 2 snow, 0 none; intensity in percent
+// windscreen.cpp: rain drops and snow on the windscreen as Remix API meshes (particles.ini [windscreen]).
+void rbrrtx_windscreen_init(const remixapi_Interface* api);
+void rbrrtx_windscreen_emit(bool sweeping);                   // once per frame with the particles
+void rbrrtx_windscreen_destroy();
+// headlights.cpp: the car's model root in render space (rows x, y, z, position), head lamp nodes, model forward.
+bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]);
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);

@@ -1765,6 +1765,15 @@ bool before_draw(IDirect3DDevice9* dev) {
     const bool screenSpace = screen_space_input(dev);
     if (g_clockOn && !screenSpace && g_primaryRT) clock_note(dev);
     // Backfire: RBR draws the exhaust pop sprite fixed-function (usage.tsv: g_pop.dds, additive, z-write off).
+    if (!screenSpace && g_primaryRT && rbrrtx_rain_probe_on()) {   // rain probe: blended FF world draws per texture
+      DWORD blend = 0;
+      dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+      IDirect3DBaseTexture9* t = nullptr;
+      if (blend && SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &t)) && t) {
+        t->lpVtbl->Release(t);
+        rbrrtx_rain_note_draw(rbrrtx_texture_hash(t), g_pendingPrims, true);
+      }
+    }
     if (!screenSpace && g_primaryRT) {
       const unsigned long long pop = rbrrtx_headlights_pop_texture();
       IDirect3DBaseTexture9* t = nullptr;
@@ -2390,6 +2399,7 @@ void end_frame(IDirect3DDevice9* dev) {
     swprintf_s(why, L"%s: windscreen %s", rbrrtx_key_name(RBRKEY_WINDSCREEN), g_glassOn ? L"ON" : L"OFF");
     log_frame(why);
   }
+  if (rbrrtx_key_pressed(RBRKEY_RAIN)) rbrrtx_rain_toggle();          // rain/snow: Remix <-> the game's own
   if (kDust && rbrrtx_particles_active()) rbrrtx_particles_toggle();   // Remix dust on/off; game dust never spawned
   else if (kDust) {                                    // no Remix dust: game dust 100 -> 0 -> 25 -> 50
     g_dustKeep = g_dustKeep == 100 ? 0 : g_dustKeep == 0 ? 25 : g_dustKeep == 25 ? 50 : 100;
@@ -2731,7 +2741,7 @@ HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
     g_sunDrawn = true;
     update_sun();
     if (g_enabled && g_apiOk) rbrrtx_headlights_emit();   // once per frame, with the sun: from RBR's car object
-    if (g_enabled && g_apiOk) rbrrtx_particles_emit(g_sweep);   // Remix particles test (particles.cpp)
+    if (g_enabled && g_apiOk) { rbrrtx_particles_emit(g_sweep); rbrrtx_windscreen_emit(g_sweep); }   // particles.cpp, windscreen.cpp
   }
   return hr;
 }
@@ -2749,7 +2759,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
   if (g_apiOk) {
     const ULONG refs = o.AddRef(dev);
     o.Release(dev);
-    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); }
+    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); }
   }
   return o.Release(dev);
 }
@@ -3613,8 +3623,23 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (midQuad) { ++g_midQuadSkipped; return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; return D3D_OK; }   // performance experiment (key K)
   if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
+  // Rain/snow replaced by Remix particles (particles.cpp): the game's drops are not drawn (pools are 0 as well).
+  if (g_primaryRT && rbrrtx_rain_cutting() && (!g_curVS || (g_curInfo && (g_curInfo->flags & SH_PARTICLE)))) {
+    IDirect3DBaseTexture9* t = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &t)) && t) {
+      t->lpVtbl->Release(t);
+      if (rbrrtx_rain_skip_texture(rbrrtx_texture_hash(t))) return D3D_OK;
+    }
+  }
   if (cull_draw(dev)) return D3D_OK;                         // distance culling (culling.ini, key M)
   g_primCap = UINT_MAX;
+  if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
+    IDirect3DBaseTexture9* t = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &t)) && t) {
+      t->lpVtbl->Release(t);
+      rbrrtx_rain_note_draw(rbrrtx_texture_hash(t), g_pendingPrims, false);
+    }
+  }
   if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE)) {
     DWORD at = 0, blend = 0;
     dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
@@ -3866,6 +3891,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
+  rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");
   return hr;
 }

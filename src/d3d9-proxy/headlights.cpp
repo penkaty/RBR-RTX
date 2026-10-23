@@ -820,6 +820,19 @@ int rbrrtx_car_body_visible() {
   return g_bodyFrames >= 3 ? 1 : 0;
 }
 
+// The car's model root in render space as the lamps use it (rows: model x, y = up, z, row 3 = position; RBR's pose
+// + the measured model offset + drift), the head lamp nodes and the model's forward axis in that frame. For the
+// windscreen drops (windscreen.cpp). False while the model or its offset is not known.
+bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]) {
+  if (g_track < 0 || !g_car.lamps || !g_off.locked) return false;
+  V3 phys;
+  if (!physics_pose(M, &phys, true)) return false;
+  lf[0] = g_car.lf.x; lf[1] = g_car.lf.y; lf[2] = g_car.lf.z;
+  rf[0] = g_car.rf.x; rf[1] = g_car.rf.y; rf[2] = g_car.rf.z;
+  fwd[0] = g_car.forward.x; fwd[1] = g_car.forward.y; fwd[2] = g_car.forward.z;
+  return true;
+}
+
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   ++g_frameNo;
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);

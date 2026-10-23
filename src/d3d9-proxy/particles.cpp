@@ -257,6 +257,9 @@ void probe_report() {
 
 // ---------------------------------------------------------------- settings (particles.ini, live)
 
+unsigned g_precipEpoch = 0;                            // bumped on every settings read (rain/snow section)
+void load_game_textures(const wchar_t* list);          // rain/snow section below
+
 struct DustCfg {
   int wheels = 4;                                      // 4 = all wheels, 2 = the two rear wheels
   float perWheelRate = 25.0f;                          // puffs per second per wheel
@@ -278,7 +281,28 @@ struct DustCfg {
   float surfaceMix = 0.8f, surfaceBrightness = 1.15f;  // share of the surface colour; dust is lighter than the road
   bool enabled = true;                                 // [smoke] enabled
   float slideSeconds = 1.5f;                           // [smoke]: a slide this long before the tyres smoke
+  // Rain / snow ([rain], [snow]; dust leaves them at these values): particles are widthRatio x size wide.
+  float widthRatio = 1.0f, trail = 0.0f, velFromMotion = 0.0f, collisionThickness = 0.5f;
+  bool align = false, collision = false;
+  int billboard = 0;                                   // Remix: 0 face camera, 1 up axis locked, 2 camera position, 3 world up
+  float box = 30.0f, ahead = 6.0f, aheadPerKmh = 0.08f, above = 12.0f;   // spawner square above/ahead of the camera
+  int layers = 1;                                      // spawner squares stacked from `above` down to `above - depth`
+  float depth = 0.0f;
+  float holeLength = 0.0f, holeWidth = 0.0f;           // > 0: spawner on the car with a car-sized gap (nothing inside)
+  int collisionMode = 2;                               // Remix: 0 bounce (takes the hit surface's velocity), 1 stop, 2 kill
+  float restitution = 0.0f;                            // bounce: share of the speed kept
+  bool holdColour = false;                             // start colour held for half the life, then to the end colour
+  int spawner = 0;                                     // 0 squares (above), 1 car shell: roof + sides + rear (snow wake)
+  float wakeOnKmh = 25.0f;                             // [snow_wake]: drawn from this car speed, rate in speed steps
+  wchar_t tex[64] = L"dust_puff.dds";
 } g_cfg, g_smoke;
+
+// Rain/snow presets (user 2026-10-23 run 2): light rain = many small drops at the run-2 speed; heavy rain = big drops,
+// faster, shorter streaks; light snow = many fluffy flakes falling slowly; heavy snow = big flakes, faster and dense.
+enum { PRE_RAIN_LIGHT, PRE_RAIN_HEAVY, PRE_SNOW_LIGHT, PRE_SNOW_HEAVY, PRE_SNOW_WAKE, PRE_COUNT };
+const wchar_t* const kPreSection[PRE_COUNT] = { L"rain_light", L"rain_heavy", L"snow_light", L"snow_heavy", L"snow_wake" };
+DustCfg g_pre[PRE_COUNT];
+float g_heavyFrom = 75.0f;                             // weather intensity (percent) from which the heavy preset is used
 
 // Tarmac tyre smoke defaults (user 2026-10-23: puffs 50 % smaller than the gravel dust): grey-white, rising a little.
 DustCfg smoke_defaults() {
@@ -294,6 +318,88 @@ DustCfg smoke_defaults() {
   c.turbulenceForce = 1.5f; c.turbulenceFrequency = 0.4f;
   c.onKmh = 5.0f; c.offKmh = 0.0f;
   c.surfaceColour = false;
+  return c;
+}
+
+// Rain/snow preset defaults. Rain values started from xoxor4d's NFS Carbon rain (nfsc-rtx comp_settings: thin streaks
+// along their velocity with a motion trail, short life, killed where they hit). Units: m, s; RBR metres are Remix units
+// (sceneScale 1). per_wheel_rate = particles per second for the whole spawner.
+void set_colour(DustCfg& c, const float a[4], const float b[4]) {
+  std::memcpy(c.startColorA, a, 16); std::memcpy(c.startColorB, b, 16);
+  std::memcpy(c.endColorA, a, 16); std::memcpy(c.endColorB, b, 16);
+}
+
+DustCfg precip_defaults(int pre) {
+  DustCfg c;
+  c.maxParticles = 30000;
+  c.collision = true;
+  c.rotation = 0.0f;
+  if (pre == PRE_RAIN_LIGHT || pre == PRE_RAIN_HEAVY) {
+    const float a[4] = { 0.70f, 0.72f, 0.76f, 0.25f }, b[4] = { 0.85f, 0.87f, 0.90f, 0.40f };
+    set_colour(c, a, b);
+    c.cone = 3.0f; c.drag = 0.0f; c.gravity = 0.0f; c.turbulenceForce = 0.0f;   // riseSpeed = fall speed
+    c.align = true; c.billboard = 1;
+    c.box = 30.0f; c.ahead = 6.0f; c.aheadPerKmh = 0.12f; c.above = 12.0f;
+    wcscpy_s(c.tex, L"rain_drop.dds");
+    if (pre == PRE_RAIN_LIGHT) {                       // many small drops, 9 m/s (the run-2 speed)
+      c.perWheelRate = 10000.0f;
+      c.lifeMin = 1.3f; c.lifeMax = 1.8f;
+      c.startSizeMin = c.endSizeMin = 0.12f; c.startSizeMax = c.endSizeMax = 0.2f; c.widthRatio = 0.06f;
+      c.riseSpeed = 9.0f; c.trail = 1.0f;
+    } else {                                           // big drops, fast, shorter streaks
+      c.perWheelRate = 7000.0f;
+      c.lifeMin = 0.8f; c.lifeMax = 1.1f;
+      c.startSizeMin = c.endSizeMin = 0.18f; c.startSizeMax = c.endSizeMax = 0.28f; c.widthRatio = 0.12f;
+      c.riseSpeed = 16.0f; c.trail = 0.5f;
+      const float ha[4] = { 0.72f, 0.74f, 0.78f, 0.35f }, hb[4] = { 0.88f, 0.90f, 0.93f, 0.55f };
+      set_colour(c, ha, hb);
+    }
+  } else {
+    const float a[4] = { 0.92f, 0.94f, 0.97f, 0.85f }, b[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    set_colour(c, a, b);
+    c.billboard = 0; c.rotation = 0.3f;
+    c.box = 30.0f; c.ahead = 3.0f; c.aheadPerKmh = 0.1f;
+    c.layers = 5;                                      // a volume: slow flakes from a square far above would land behind
+    c.holeLength = 5.0f; c.holeWidth = 2.4f;           // run 3: layers at cabin height made flakes inside the cockpit
+    c.aheadPerKmh = 0.0f;
+    // Run 4 (user): snow should react to the car. Bounce: a flake hitting a surface takes that surface's velocity
+    // (Remix collision, sceneVel from motion vectors), so flakes touching the moving car are carried and thrown by it;
+    // with little restitution they settle on the ground and fade (colour held, then alpha to 0).
+    c.collisionMode = 0; c.restitution = 0.1f; c.holdColour = true;
+    c.endColorA[3] = 0.0f; c.endColorB[3] = 0.0f;
+    wcscpy_s(c.tex, L"snow_flake.dds");
+    if (pre == PRE_SNOW_LIGHT) {                       // lots of fluffy flakes, slow
+      c.perWheelRate = 4000.0f;
+      c.lifeMin = 6.0f; c.lifeMax = 9.0f;
+      c.startSizeMin = c.endSizeMin = 0.05f; c.startSizeMax = c.endSizeMax = 0.10f;   // run 4: 3-6 cm did not show
+      c.riseSpeed = 0.8f; c.cone = 30.0f; c.drag = 0.5f; c.gravity = -0.3f;
+      c.turbulenceForce = 1.5f; c.turbulenceFrequency = 0.3f;
+      c.above = 7.0f; c.depth = 8.0f;
+    } else {                                           // big flakes, faster, dense
+      c.perWheelRate = 6000.0f;
+      c.lifeMin = 3.0f; c.lifeMax = 4.5f;
+      c.startSizeMin = c.endSizeMin = 0.09f; c.startSizeMax = c.endSizeMax = 0.18f;
+      c.riseSpeed = 3.5f; c.cone = 15.0f; c.drag = 0.2f; c.gravity = -1.0f;
+      c.turbulenceForce = 1.0f; c.turbulenceFrequency = 0.4f;
+      c.above = 9.0f; c.depth = 9.0f;
+    }
+    if (pre == PRE_SNOW_WAKE) {                        // snow the car stirs up: leaves the car's roof, sides and rear,
+      c.layers = 1; c.depth = 0.0f;                    // takes most of the car's motion, then drag stops it and
+      c.spawner = 1;                                   // turbulence swirls it behind the car
+      c.perWheelRate = 1500.0f; c.maxParticles = 12000;
+      c.lifeMin = 1.2f; c.lifeMax = 2.5f;
+      c.startSizeMin = c.endSizeMin = 0.05f; c.startSizeMax = c.endSizeMax = 0.12f;
+      const float wa[4] = { 0.92f, 0.94f, 0.97f, 0.7f }, wb[4] = { 1.0f, 1.0f, 1.0f, 0.9f };
+      set_colour(c, wa, wb);
+      c.endColorA[3] = 0.0f; c.endColorB[3] = 0.0f;
+      c.riseSpeed = 1.0f; c.cone = 60.0f; c.drag = 2.0f; c.gravity = -0.5f;
+      c.turbulenceForce = 3.0f; c.turbulenceFrequency = 0.8f;
+      c.velFromMotion = 0.7f;
+      c.collision = true; c.collisionMode = 2; c.holdColour = true;
+      c.holeLength = 4.2f; c.holeWidth = 1.75f; c.above = 1.35f;   // car shell: length, width, roof above the car's root
+      c.wakeOnKmh = 25.0f;
+    }
+  }
   return c;
 }
 
@@ -378,6 +484,26 @@ void load_fx(DustCfg& c) {
   c.surfaceBrightness = cfg_float(L"surface_brightness", c.surfaceBrightness, 0.0f, 4.0f);
   c.enabled = cfg_float(L"enabled", c.enabled ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
   c.slideSeconds = cfg_float(L"slide_seconds", c.slideSeconds, 0.0f, 30.0f);
+  c.widthRatio = cfg_float(L"width_ratio", c.widthRatio, 0.001f, 100.0f);
+  c.trail = cfg_float(L"motion_trail", c.trail, 0.0f, 100.0f);
+  c.velFromMotion = cfg_float(L"velocity_from_motion", c.velFromMotion, -10.0f, 10.0f);
+  c.align = cfg_float(L"align_to_velocity", c.align ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+  c.collision = cfg_float(L"collision", c.collision ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+  c.collisionThickness = cfg_float(L"collision_thickness", c.collisionThickness, 0.01f, 10.0f);
+  c.billboard = static_cast<int>(cfg_float(L"billboard", static_cast<float>(c.billboard), 0.0f, 3.0f));
+  c.box = cfg_float(L"spawner_size", c.box, 1.0f, 500.0f);
+  c.ahead = cfg_float(L"spawner_ahead", c.ahead, -100.0f, 200.0f);
+  c.aheadPerKmh = cfg_float(L"spawner_ahead_per_kmh", c.aheadPerKmh, 0.0f, 5.0f);
+  c.above = cfg_float(L"spawner_above", c.above, -10.0f, 200.0f);
+  c.layers = static_cast<int>(cfg_float(L"spawner_layers", static_cast<float>(c.layers), 1.0f, 16.0f));
+  c.depth = cfg_float(L"spawner_depth", c.depth, 0.0f, 100.0f);
+  c.holeLength = cfg_float(L"car_gap_length", c.holeLength, 0.0f, 50.0f);
+  c.holeWidth = cfg_float(L"car_gap_width", c.holeWidth, 0.0f, 50.0f);
+  c.collisionMode = static_cast<int>(cfg_float(L"collision_mode", static_cast<float>(c.collisionMode), 0.0f, 2.0f));
+  c.restitution = cfg_float(L"collision_restitution", c.restitution, 0.0f, 1.0f);
+  c.holdColour = cfg_float(L"hold_colour", c.holdColour ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+  c.wakeOnKmh = cfg_float(L"on_above_kmh_wake", c.wakeOnKmh, 0.0f, 300.0f);
+  GetPrivateProfileStringW(g_sec, L"texture", c.tex, c.tex, 64, g_cfgPath);
 }
 
 void load_cfg() {
@@ -405,6 +531,18 @@ void load_cfg() {
   DustCfg sm = smoke_defaults();
   if (found) { g_sec = L"smoke"; load_fx(sm); g_sec = L"dust"; }
   g_smoke = sm;
+  for (int i = 0; i < PRE_COUNT; ++i) {
+    g_pre[i] = precip_defaults(i);
+    if (found) { g_sec = kPreSection[i]; load_fx(g_pre[i]); g_sec = L"dust"; }
+  }
+  g_sec = L"precipitation";
+  g_heavyFrom = cfg_float(L"heavy_from", 75.0f, 0.0f, 101.0f);
+  g_sec = L"dust";
+  g_precipEpoch++;                                     // new values: new Remix particle systems
+  wchar_t gt[512] = {};                                // a missing file gives the default
+  GetPrivateProfileStringW(L"precipitation", L"game_textures", L"40A8944300F54468, 869E5A5AF4FA4D7B, 254D6B130606B00C",
+                           gt, 512, g_cfgPath);
+  load_game_textures(gt);
   g_gameKind.clear();
   g_dustHoldMs = static_cast<ULONGLONG>(c.dustHoldMs);
   plog(L"particles: game emitters: dust \"%s\", smoke \"%s\", kept \"%s\"; a wheel stays dusty %.0f ms", c.dustGame,
@@ -415,6 +553,14 @@ void load_cfg() {
        c.lifeMin, c.lifeMax, c.startSizeMin, c.startSizeMax, c.endSizeMin, c.endSizeMax, c.riseSpeed, c.cone, c.drag,
        c.gravity, c.turbulenceForce, c.turbulenceFrequency, c.onKmh, c.offKmh, c.nHideCams,
        c.surfaceColour ? L"on" : L"off", c.surfaceMix, c.surfaceBrightness);
+  for (int i = 0; i < PRE_COUNT; ++i) {
+    const DustCfg& p = g_pre[i];
+    plog(L"particles: %s %.0f/s, life %.1f-%.1f s, %.3f-%.3f m (width x %.2f), fall %.1f m/s, trail %.1f, spawner %.0f m "
+         L"x %d layers (%.1f m above, %.1f deep), %.1f m ahead + %.2f per km/h", kPreSection[i], p.perWheelRate, p.lifeMin,
+         p.lifeMax, p.startSizeMin, p.startSizeMax, p.widthRatio, p.riseSpeed, p.trail, p.box, p.layers, p.above, p.depth,
+         p.ahead, p.aheadPerKmh);
+  }
+  plog(L"particles: heavy rain/snow presets from %.0f %% weather intensity", g_heavyFrom);
   plog(L"particles: tarmac smoke %s: after a %.1f s slide, %.0f/s per wheel, life %.1f-%.1f s, size %.2f-%.2f -> %.1f-%.1f m, "
        L"rise %.1f m/s, gravity %.2f, above %.0f km/h", sm.enabled ? L"on" : L"off", sm.slideSeconds, sm.perWheelRate,
        sm.lifeMin, sm.lifeMax, sm.startSizeMin, sm.startSizeMax, sm.endSizeMin, sm.endSizeMax, sm.riseSpeed, sm.gravity, sm.onKmh);
@@ -569,7 +715,7 @@ remixapi_MeshHandle g_mesh = nullptr;
 wchar_t g_tex[MAX_PATH * 2] = {};
 
 // Over life: start -> end (two keyframes); colours RGBA. Filled from particles.ini (load_cfg).
-remixapi_Float4D g_minColor[2] = {}, g_maxColor[2] = {};
+remixapi_Float4D g_minColor[3] = {}, g_maxColor[3] = {};
 remixapi_Float2D g_minSize[2] = {}, g_maxSize[2] = {};
 float g_minRot[1] = {}, g_maxRot[1] = {};
 remixapi_Float3D g_maxVel[1] = { { -1.0f, -1.0f, -1.0f } };   // negative = unlimited
@@ -601,10 +747,10 @@ remixapi_InstanceInfoParticleSystemEXT fx_desc(const DustCfg& c, const float* ti
   g_maxColor[0] = tinted(c, c.startColorB, tint, meanLum);
   g_minColor[1] = tinted(c, c.endColorA, tint, meanLum);
   g_maxColor[1] = tinted(c, c.endColorB, tint, meanLum);
-  g_minSize[0] = { c.startSizeMin, c.startSizeMin };
-  g_maxSize[0] = { c.startSizeMax, c.startSizeMax };
-  g_minSize[1] = { c.endSizeMin, c.endSizeMin };
-  g_maxSize[1] = { c.endSizeMax, c.endSizeMax };
+  g_minSize[0] = { c.startSizeMin * c.widthRatio, c.startSizeMin };
+  g_maxSize[0] = { c.startSizeMax * c.widthRatio, c.startSizeMax };
+  g_minSize[1] = { c.endSizeMin * c.widthRatio, c.endSizeMin };
+  g_maxSize[1] = { c.endSizeMax * c.widthRatio, c.endSizeMax };
   g_minRot[0] = -c.rotation;
   g_maxRot[0] = c.rotation;
   remixapi_InstanceInfoParticleSystemEXT p = {};
@@ -614,6 +760,12 @@ remixapi_InstanceInfoParticleSystemEXT fx_desc(const DustCfg& c, const float* ti
   p.hideEmitter = 1;
   p.minColor = { g_minColor, 2 };
   p.maxColor = { g_maxColor, 2 };
+  if (c.holdColour) {                                  // start, start, end: the change happens in the second half
+    g_minColor[2] = g_minColor[1]; g_maxColor[2] = g_maxColor[1];
+    g_minColor[1] = g_minColor[0]; g_maxColor[1] = g_maxColor[0];
+    p.minColor = { g_minColor, 3 };
+    p.maxColor = { g_maxColor, 3 };
+  }
   p.minRotationSpeed = { g_minRot, 1 };
   p.maxRotationSpeed = { g_maxRot, 1 };
   p.minSize = { g_minSize, 2 };
@@ -629,7 +781,15 @@ remixapi_InstanceInfoParticleSystemEXT fx_desc(const DustCfg& c, const float* ti
   p.turbulenceFrequency = c.turbulenceFrequency;
   p.turbulenceForce = c.turbulenceForce;
   p.spawnRatePerSecond = c.perWheelRate;               // per wheel instance
-  p.motionTrailMultiplier = 1.0f;
+  p.motionTrailMultiplier = c.trail > 0.0f ? c.trail : 1.0f;
+  p.enableMotionTrail = c.trail > 0.0f;
+  p.alignParticlesToVelocity = c.align;
+  p.enableCollisionDetection = c.collision;
+  p.collisionMode = static_cast<uint8_t>(c.collisionMode);
+  p.collisionRestitution = c.restitution;
+  p.collisionThickness = c.collisionThickness;
+  p.initialVelocityFromMotion = c.velFromMotion;
+  p.billboardType = static_cast<uint8_t>(c.billboard);
   return p;
 }
 
@@ -795,7 +955,470 @@ void draw_emitter() {
   }
 }
 
+// ---------------------------------------------------------------- rain and snow (RBR's CEmitterRain -> Remix API)
+// RBR's rain and snow (static RE 2026-10-23, re/kb/systems/particles.md "Rain and snow"): up to three CEmitterRain per
+// stage (rain: g_rain 1000 drops + g_rain2 20; snow: g_snow 200, g_snow2 10 above 75 %, g_snow3 100). Each is a fixed
+// pool of drops wrapped in a box around the camera: +0x30 pool size, +0x38 particle class (name at +0), +0x3C fall
+// speed, +0x44 size, +0x0C box, +0x10 box centre (camera + forward x box/2), +0x34 drops (0x40 each, +0x2C alpha).
+// Drops shown = pool x weather intensity (weather object [0x7C36A8]: +0x2C + +0x34 x +0x30, percent).
+// Run 1 (2026-10-23 20:08, 6 stages): the game still draws them with ParticleQuality = off (rain: one fixed-function
+// draw of ~2000 triangles a frame, texture 40A8944300F54468, plus 869E5A5AF4FA4D7B for g_rain2; snow: Particle.vso
+// draws with 40A8944300F54468, 254D6B130606B00C, 869E5A5AF4FA4D7B); intensity 100 heavy, 50 light; camera and drops
+// in physics space (Z up). The emitters are found through their own camera signal: CSigCamera connection at
+// emitter +0x4C, vtable 0x74D1AC slot 1 = thunk 0x5DA8B0 -> rain_cam_invoke (run 1 read them through the tire
+// signal's CParticleSystem, which gave nothing while driving, so Alt+7 cut nothing).
+// Replacement (user 2026-10-23, run 2): the game's pools set to 0 (no update; the draws of its textures skipped as
+// well while its emitters live), and one Remix particle system per weather: a square spawner facing down, spawner_above
+// over the camera and spawner_ahead (+ per km/h) in front of it, drops leaving it at rise_speed. Alt+7: Remix
+// rain/snow <-> the game's own (A/B). RBRRTX_RAIN_PROBE=1 adds the run-1 lines (emitters, draws per texture).
+// Run 2 (user): the swap works (snow fully, rain near the camera); light and heavy weather should differ in drop size
+// and speed, not only count. So four presets (particles.ini [rain_light] [rain_heavy] [snow_light] [snow_heavy]),
+// heavy from heavy_from percent intensity (light 50, heavy 100), each with its own constant rate. Snow spawns from
+// spawner_layers squares stacked spawner_depth deep (a volume around the camera): slow flakes from one square far
+// above would land behind the car at speed.
+bool g_rainProbe = false, g_rainHooked = false;
+bool g_precip = false;                                 // Remix rain/snow in this run (RBRRTX_PRECIP)
+bool g_replace = false;                                // game rain/snow cut (and Remix drawn when g_precip); Alt+7
+constexpr uintptr_t kRainVtSlot = 0x0074D1B0, kRainThunk = 0x005DA8B0, kWeather = 0x007C36A8;
+constexpr ULONGLONG kLiveMs = 250;                     // an emitter whose camera signal came this recently is alive
+float g_camPos[3] = {}, g_camFwd[3] = {};             // from the rain emitters' camera signal (physics space)
+unsigned g_camSigs = 0;
+struct GameRain { void* em = nullptr; ULONGLONG t = 0; uint32_t pool = 0; int kind = 0; char name[32] = {}; };
+GameRain g_em[4];                                      // kind: 1 rain, 2 snow, 0 unknown
+struct DrawStat { unsigned long long hash = 0; unsigned draws = 0, prims = 0; bool ff = false; };
+DrawStat g_rainDraws[12];
+unsigned g_rainDrawOther = 0, g_rainReports = 0, g_gameSkipped = 0;
+ULONGLONG g_rainLast = 0;
+unsigned long long g_gameTex[8] = {};
+int g_nGameTex = 0;
+
+void load_game_textures(const wchar_t* list) {
+  wchar_t buf[512];
+  wcscpy_s(buf, list);
+  g_nGameTex = 0;
+  wchar_t* ctx = nullptr;
+  for (wchar_t* t = wcstok_s(buf, L", ", &ctx); t && g_nGameTex < 8; t = wcstok_s(nullptr, L", ", &ctx))
+    g_gameTex[g_nGameTex++] = wcstoull(t, nullptr, 16);
+}
+
+bool rd32(uintptr_t p, uint32_t* out) {
+  __try { *out = *reinterpret_cast<volatile const uint32_t*>(p); return true; }
+  __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+float rdf(uintptr_t p) {
+  uint32_t v = 0;
+  if (!rd32(p, &v)) return -1.0f;
+  float f;
+  std::memcpy(&f, &v, 4);
+  return f;
+}
+
+void __fastcall rain_cam_invoke(void* conn, void* /*edx*/, const uint8_t* sig) {
+  std::memcpy(g_camPos, sig + 0x24, sizeof(g_camPos));
+  std::memcpy(g_camFwd, sig + 0x0C, sizeof(g_camFwd));
+  ++g_camSigs;
+  void* em = static_cast<uint8_t*>(conn) - 0x4C;
+  const ULONGLONG now = GetTickCount64();
+  GameRain* slot = nullptr;
+  for (GameRain& g : g_em) if (g.em == em) { slot = &g; break; }
+  if (!slot) {                                         // new emitter (new stage): the oldest slot
+    slot = &g_em[0];
+    for (GameRain& g : g_em) if (g.t < slot->t) slot = &g;
+    *slot = {};
+    slot->em = em;
+    uint32_t cls = 0;
+    if (!rd32(reinterpret_cast<uintptr_t>(em) + 0x38, &cls) || !cls ||
+        !readable_string(cls, slot->name, sizeof(slot->name)))
+      strcpy_s(slot->name, "?");
+    slot->kind = strstr(slot->name, "snow") ? 2 : strstr(slot->name, "rain") ? 1 : 0;
+    plog(L"rain: game emitter %S at %p (%s)", slot->name, em, slot->kind == 2 ? L"snow" : slot->kind == 1 ? L"rain" : L"?");
+  }
+  slot->t = now;
+  reinterpret_cast<InvokeFn>(kRainThunk)(conn, sig);
+}
+
+void install_rain_hook() {
+  uint32_t* slot = reinterpret_cast<uint32_t*>(kRainVtSlot);
+  if (*slot != kRainThunk) {
+    plog(L"rain: camera signal hook NOT installed: vtable slot %p holds %08X (other exe build?)", slot, *slot);
+    return;
+  }
+  DWORD old = 0;
+  if (!VirtualProtect(slot, 4, PAGE_READWRITE, &old)) return;
+  *slot = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&rain_cam_invoke));
+  VirtualProtect(slot, 4, old, &old);
+  g_rainHooked = true;
+  plog(L"rain: camera signal hook at %p (RBR's rain/snow emitters)", slot);
+}
+
+bool em_live(const GameRain& g) { return g.em && GetTickCount64() - g.t < kLiveMs; }
+
+// 1 rain, 2 snow, 0 none (no live game emitter).
+int precip_kind() {
+  int k = 0;
+  for (const GameRain& g : g_em) if (em_live(g) && g.kind > k) k = g.kind;
+  return k;
+}
+
+float weather_intensity() {
+  uint32_t w = 0;
+  if (!rd32(kWeather, &w) || !w) return 0.0f;
+  return rdf(w + 0x2C) + rdf(w + 0x34) * rdf(w + 0x30);
+}
+
+// Pools 0 while replaced, the stage's own sizes back when not. Only live emitters are written (a stage being left
+// frees them; a signal within kLiveMs means the stage still runs).
+void rain_cut_frame() {
+  for (GameRain& g : g_em) {
+    if (!em_live(g)) continue;
+    uint32_t* pool = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(g.em) + 0x30);
+    __try {
+      if (g_replace && *pool) { g.pool = *pool; *pool = 0; }
+      else if (!g_replace && g.pool && !*pool) { *pool = g.pool; g.pool = 0; }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  }
+}
+
+// ---- Remix side
+struct PrecipFx { remixapi_MaterialHandle mat = nullptr; remixapi_MeshHandle mesh = nullptr; bool failed = false; };
+PrecipFx g_fx[PRE_COUNT];
+unsigned g_fxEpoch[PRE_COUNT] = {};
+float g_camKmh = 0.0f, g_lastCam[3] = {};
+LARGE_INTEGER g_camLastT = {};
+bool g_haveCam = false;
+int g_shownKind = -1, g_shownStep = -1;
+
+// Snow wake spawner: the car's shell in metres (x across, y up from the car's root, z along the car): roof at
+// `above`, the two sides and the rear, each facing out. Remix takes the normal from the triangle's winding.
+bool make_shell(int kind, const DustCfg& c, PrecipFx& f) {
+  static remixapi_HardcodedVertex v[16] = {};
+  static uint32_t idx[24] = {};
+  const float L = c.holeLength * 0.5f, W = c.holeWidth * 0.5f, H = c.above;
+  struct Quad { float p[4][3]; float n[3]; };
+  const Quad q[4] = {
+    { { { -W * 0.8f, H, -L * 0.5f }, { W * 0.8f, H, -L * 0.5f }, { W * 0.8f, H, L * 0.3f }, { -W * 0.8f, H, L * 0.3f } }, { 0, 1, 0 } },
+    { { { -W, 0.2f, -L }, { -W, 0.2f, L }, { -W, H, L }, { -W, H, -L } }, { -1, 0, 0 } },
+    { { { W, 0.2f, -L }, { W, 0.2f, L }, { W, H, L }, { W, H, -L } }, { 1, 0, 0 } },
+    { { { -W, 0.2f, -L }, { W, 0.2f, -L }, { W, H, -L }, { -W, H, -L } }, { 0, 0, -1 } },   // rear (car forward = +z)
+  };
+  for (int k = 0; k < 4; ++k) {
+    float pt[4][3];
+    std::memcpy(pt, q[k].p, sizeof(pt));
+    const float e1[3] = { pt[1][0] - pt[0][0], pt[1][1] - pt[0][1], pt[1][2] - pt[0][2] };
+    const float e2[3] = { pt[2][0] - pt[0][0], pt[2][1] - pt[0][1], pt[2][2] - pt[0][2] };
+    const float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+    if (n[0] * q[k].n[0] + n[1] * q[k].n[1] + n[2] * q[k].n[2] < 0.0f)   // wrong winding: swap corners 1 and 3
+      for (int i = 0; i < 3; ++i) std::swap(pt[1][i], pt[3][i]);
+    for (int i = 0; i < 4; ++i) {
+      remixapi_HardcodedVertex& o = v[k * 4 + i];
+      o = {};
+      std::memcpy(o.position, pt[i], sizeof(pt[i]));
+      std::memcpy(o.normal, q[k].n, sizeof(q[k].n));
+      o.texcoord[0] = i == 1 || i == 2 ? 1.0f : 0.0f; o.texcoord[1] = i >= 2 ? 1.0f : 0.0f;
+      o.color = 0xFFFFFFFF;
+    }
+    const uint32_t b = k * 4, t[6] = { b, b + 1, b + 2, b, b + 2, b + 3 };
+    std::memcpy(&idx[k * 6], t, sizeof(t));
+  }
+  remixapi_MeshInfoSurfaceTriangles tri = {};
+  tri.vertices_values = v;
+  tri.vertices_count = 16;
+  tri.indices_values = idx;
+  tri.indices_count = 24;
+  tri.material = f.mat;
+  remixapi_MeshInfo mesh = {};
+  mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+  mesh.hash = 0x52425254585F7330ull + kind + 16ull * g_precipEpoch;
+  mesh.surfaces_values = &tri;
+  mesh.surfaces_count = 1;
+  if (g_api->CreateMesh(&mesh, &f.mesh) != REMIXAPI_ERROR_CODE_SUCCESS) {
+    plog(L"rain: CreateMesh failed (%s)", kPreSection[kind]);
+    f.failed = true;
+    return false;
+  }
+  plog(L"rain: Remix %s spawner made: car shell %.1f x %.1f m, roof %.2f m", kPreSection[kind], c.holeLength, c.holeWidth, H);
+  return true;
+}
+
+bool make_precip(int kind) {                            // kind = preset (PRE_*)
+  PrecipFx& f = g_fx[kind];
+  if (f.mesh && g_fxEpoch[kind] != g_precipEpoch && g_api) {   // particles.ini saved: layers/texture may have changed
+    g_api->DestroyMesh(f.mesh);
+    g_api->DestroyMaterial(f.mat);
+    f = {};
+  }
+  g_fxEpoch[kind] = g_precipEpoch;
+  if (f.mesh) return true;
+  if (f.failed || !g_api) return false;
+  const DustCfg& c = g_pre[kind];
+  const bool snow = kind >= PRE_SNOW_LIGHT;
+  static wchar_t tex[PRE_COUNT][MAX_PATH * 2] = {};
+  wcscpy_s(tex[kind], g_cfgPath);                      // the sprite sits next to particles.ini
+  wchar_t* slash = wcsrchr(tex[kind], L'\\');
+  if (slash) slash[1] = 0;
+  wcscat_s(tex[kind], c.tex);
+  const bool haveTex = GetFileAttributesW(tex[kind]) != INVALID_FILE_ATTRIBUTES;
+  remixapi_MaterialInfoOpaqueEXT opaque = {};
+  opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+  opaque.roughnessTexture = L"";
+  opaque.metallicTexture = L"";
+  opaque.heightTexture = L"";
+  opaque.albedoConstant = { 0.8f, 0.82f, 0.85f };
+  opaque.opacityConstant = 1.0f;
+  opaque.roughnessConstant = snow ? 0.9f : 0.1f;
+  opaque.useDrawCallAlphaState = 1;
+  remixapi_MaterialInfo mi = {};
+  mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+  mi.pNext = &opaque;
+  mi.hash = 0x52425254585F7230ull + kind;              // "RBRTX_r0".."r3"
+  mi.albedoTexture = haveTex ? tex[kind] : L"";
+  mi.normalTexture = L"";
+  mi.tangentTexture = L"";
+  mi.emissiveTexture = L"";
+  mi.filterMode = 1;
+  mi.wrapModeU = mi.wrapModeV = 2;
+  if (g_api->CreateMaterial(&mi, &f.mat) != REMIXAPI_ERROR_CODE_SUCCESS) {
+    plog(L"rain: CreateMaterial failed (%s)", kPreSection[kind]);
+    f.failed = true;
+    return false;
+  }
+  // Squares facing down (render space is Y up), `layers` of them from y = 0 down to y = -depth. Remix spawns over the
+  // triangles' area, so each layer gets an equal share. Without a car gap: unit squares, the transform scales x/z to
+  // spawner_size. With one: metres, x = across the car, z = along it, the square centred spawner_ahead in front and
+  // four rectangles around a car_gap_length x car_gap_width hole at the origin (the transform puts it on the car).
+  static remixapi_HardcodedVertex v[PRE_COUNT][16 * 16] = {};
+  static uint32_t idx[PRE_COUNT][24 * 16] = {};
+  const int layers = c.layers < 1 ? 1 : c.layers > 16 ? 16 : c.layers;
+  const bool gap = c.holeLength > 0.0f && c.holeWidth > 0.0f;
+  float rects[4][4] = { { -0.5f, -0.5f, 0.5f, 0.5f } };   // x0 z0 x1 z1
+  int nRects = 1;
+  if (c.spawner == 1) return make_shell(kind, c, f);
+  if (gap) {
+    const float h = c.box * 0.5f, z0 = c.ahead - h, z1 = c.ahead + h, gl = c.holeLength * 0.5f, gw = c.holeWidth * 0.5f;
+    const float r[4][4] = { { -h, z0, h, -gl }, { -h, gl, h, z1 }, { -h, -gl, -gw, gl }, { gw, -gl, h, gl } };
+    std::memcpy(rects, r, sizeof(r));
+    nRects = 4;
+  }
+  int nv = 0, ni = 0;
+  for (int l = 0; l < layers; ++l) {
+    const float y = layers > 1 ? -c.depth * l / (layers - 1) : 0.0f;
+    for (int r = 0; r < nRects; ++r) {
+      const float* R = rects[r];
+      if (R[2] <= R[0] || R[3] <= R[1]) continue;      // gap wider than the square
+      const float q[4][2] = { { R[0], R[1] }, { R[2], R[1] }, { R[2], R[3] }, { R[0], R[3] } };
+      for (int i = 0; i < 4; ++i) {
+        remixapi_HardcodedVertex& o = v[kind][nv + i];
+        o = {};
+        o.position[0] = q[i][0]; o.position[1] = y; o.position[2] = q[i][1];
+        o.normal[1] = -1.0f;
+        o.texcoord[0] = i == 1 || i == 2 ? 1.0f : 0.0f; o.texcoord[1] = i >= 2 ? 1.0f : 0.0f;
+        o.color = 0xFFFFFFFF;
+      }
+      const uint32_t b = static_cast<uint32_t>(nv), t[6] = { b, b + 1, b + 2, b, b + 2, b + 3 };
+      std::memcpy(&idx[kind][ni], t, sizeof(t));
+      nv += 4;
+      ni += 6;
+    }
+  }
+  remixapi_MeshInfoSurfaceTriangles tri = {};
+  tri.vertices_values = v[kind];
+  tri.vertices_count = nv;
+  tri.indices_values = idx[kind];
+  tri.indices_count = ni;
+  tri.material = f.mat;
+  remixapi_MeshInfo mesh = {};
+  mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+  mesh.hash = 0x52425254585F7330ull + kind + 16ull * g_precipEpoch;   // "RBRTX_s0".., new per settings read
+  mesh.surfaces_values = &tri;
+  mesh.surfaces_count = 1;
+  if (g_api->CreateMesh(&mesh, &f.mesh) != REMIXAPI_ERROR_CODE_SUCCESS) {
+    plog(L"rain: CreateMesh failed (%s)", kPreSection[kind]);
+    f.failed = true;
+    return false;
+  }
+  plog(L"rain: Remix %s spawner made: %d layer(s), %s, texture %s", kPreSection[kind], layers,
+       gap ? L"on the car with a gap around it" : L"in front of the camera", haveTex ? tex[kind] : L"none: plain colour");
+  return true;
+}
+
+// Camera speed (km/h) from the signal's positions between frames; jumps over 100 m/s (camera cuts) are skipped.
+void update_cam_speed() {
+  LARGE_INTEGER t, f;
+  QueryPerformanceCounter(&t);
+  QueryPerformanceFrequency(&f);
+  if (g_haveCam) {
+    const double dt = static_cast<double>(t.QuadPart - g_camLastT.QuadPart) / f.QuadPart;
+    if (dt > 0.0005) {
+      const float dx = g_camPos[0] - g_lastCam[0], dy = g_camPos[1] - g_lastCam[1], dz = g_camPos[2] - g_lastCam[2];
+      const float ms = static_cast<float>(std::sqrt(dx * dx + dy * dy + dz * dz) / dt);
+      if (ms < 100.0f) g_camKmh += (ms * 3.6f - g_camKmh) * 0.1f;
+    }
+  }
+  g_camLastT = t;
+  std::memcpy(g_lastCam, g_camPos, sizeof(g_lastCam));
+  g_haveCam = true;
+}
+
+void draw_one(int pre, float rateScale);
+
+void draw_precip() {
+  const int kind = precip_kind();
+  const float inten = kind ? weather_intensity() : 0.0f;
+  const int pre = !kind || inten < 1.0f ? -1 : (kind == 2 ? PRE_SNOW_LIGHT : PRE_RAIN_LIGHT) + (inten >= g_heavyFrom ? 1 : 0);
+  if (kind != g_shownKind || pre != g_shownStep) {
+    plog(L"rain: Remix %s, intensity %.0f %%", pre < 0 ? L"none" : kPreSection[pre], inten);
+    g_shownKind = kind;
+    g_shownStep = pre;
+  }
+  if (pre < 0) return;
+  update_cam_speed();
+  draw_one(pre, 1.0f);
+  if (kind == 2 && g_pre[PRE_SNOW_WAKE].perWheelRate > 0.0f) {   // snow the car stirs up, in speed steps
+    const DustCfg& w = g_pre[PRE_SNOW_WAKE];
+    const float k = g_camKmh;
+    const float scale = k < w.wakeOnKmh ? 0.0f : k < 50.0f ? 0.25f : k < 90.0f ? 0.5f : 1.0f;
+    static float shown = -1.0f;
+    if (scale != shown) { plog(L"rain: snow wake %.0f %% (%.0f km/h)", scale * 100.0f, k); shown = scale; }
+    if (scale > 0.0f) draw_one(PRE_SNOW_WAKE, scale);
+  }
+}
+
+// One preset's spawner. rateScale: a few fixed steps only (a new rate = a new Remix particle system).
+void draw_one(int pre, float rateScale) {
+  if (!make_precip(pre)) return;
+  DustCfg c = g_pre[pre];
+  c.perWheelRate *= rateScale;
+  remixapi_InstanceInfoParticleSystemEXT particles = fx_desc(c, nullptr);
+  remixapi_InstanceInfoBlendEXT blend = {};
+  blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+  blend.pNext = &particles;
+  blend.alphaTestCompareOp = 7;
+  blend.alphaBlendEnabled = 1;
+  blend.srcColorBlendFactor = 6;
+  blend.dstColorBlendFactor = 7;
+  blend.colorBlendOp = 0;
+  blend.textureColorArg1Source = 1;
+  blend.textureColorArg2Source = 2;
+  blend.textureColorOperation = 3;
+  blend.textureAlphaArg1Source = 1;
+  blend.textureAlphaArg2Source = 2;
+  blend.textureAlphaOperation = 3;
+  blend.srcAlphaBlendFactor = 1;
+  blend.dstAlphaBlendFactor = 0;
+  blend.writeMask = 0xF;
+  // Physics space = render space with Y and Z swapped. Ahead along the camera's level forward direction.
+  const float fx = g_camFwd[0], fz = g_camFwd[1];
+  const float fl = std::sqrt(fx * fx + fz * fz);
+  float x = 0.0f, y = g_camPos[2] + c.above, z = 0.0f;
+  remixapi_InstanceInfo inst = {};
+  const bool onCar = c.spawner == 1 || (c.holeLength > 0.0f && c.holeWidth > 0.0f);
+  if (onCar) {
+    // On the car: its length axis (r+7, physics space, Y/Z swapped to render) made level, pointing the camera's way
+    // (the model's forward sign differs per car); the gap / shell sits on the car. Car pose unreadable: not drawn
+    // (run 4: the fallback below would have scaled this metre-sized mesh by spawner_size).
+    float car[20];
+    if (!rbrrtx_player_car_raw(car)) return;
+    float ax = car[7], az = car[8];
+    const float al = std::sqrt(ax * ax + az * az);
+    if (al > 1e-3f) { ax /= al; az /= al; } else { ax = 0.0f; az = 1.0f; }
+    if (ax * fx + az * fz < 0.0f) { ax = -ax; az = -az; }
+    x = car[16];
+    z = car[17];
+    if (c.spawner == 1) y = car[18];                   // the shell is in metres above the car's root
+    inst.transform = { { { az, 0, ax, x }, { 0, 1, 0, y }, { -ax, 0, az, z } } };
+  } else {
+    const float ahead = c.ahead + c.aheadPerKmh * g_camKmh;
+    x = g_camPos[0] + (fl > 1e-3f ? fx / fl * ahead : 0.0f);
+    z = g_camPos[1] + (fl > 1e-3f ? fz / fl * ahead : 0.0f);
+    inst.transform = { { { c.box, 0, 0, x }, { 0, 1, 0, y }, { 0, 0, c.box, z } } };
+  }
+  inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+  inst.pNext = &blend;
+  inst.mesh = g_fx[pre].mesh;
+  inst.doubleSided = 1;
+  const remixapi_ErrorCode err = g_api->DrawInstance(&inst);
+  static unsigned drawn[PRE_COUNT] = {};
+  if (++drawn[pre] == 1 || (err != REMIXAPI_ERROR_CODE_SUCCESS && drawn[pre] < 5) || drawn[pre] % 3000 == 0)
+    plog(L"rain: Remix %s spawner drawn at %.1f %.1f %.1f (render space, %s), camera %.1f %.1f %.1f, %.0f/s: "
+         L"DrawInstance returned %d", kPreSection[pre], x, y, z, onCar ? L"on the car" : L"ahead of the camera",
+         g_camPos[0], g_camPos[2], g_camPos[1], c.perWheelRate, static_cast<int>(err));
+}
+
+// ---- probe lines (RBRRTX_RAIN_PROBE=1)
+void rain_report() {
+  const ULONGLONG now = GetTickCount64();
+  if (now - g_rainLast < 10000 || !precip_kind()) return;   // stages with rain/snow only
+  g_rainLast = now;
+  if (g_rainReports >= 200) return;
+  RbrStageInfo si = {};
+  const bool haveStage = rbrrtx_stage_info(&si);
+  wchar_t line[1600];
+  size_t used = swprintf_s(line, L"rain: report %u: %s sky %s mode %d; intensity %.1f; cam %.1f %.1f %.1f %.0f km/h "
+                           L"(%u signals); replaced %s, game draws skipped %u;", g_rainReports + 1,
+                           haveStage ? si.name : L"?", haveStage ? rbrrtx_sky_name(si.skyType) : L"?", si.gameMode,
+                           weather_intensity(), g_camPos[0], g_camPos[1], g_camPos[2], g_camKmh, g_camSigs,
+                           g_replace ? L"yes" : L"no", g_gameSkipped);
+  g_camSigs = 0;
+  g_gameSkipped = 0;
+  for (const GameRain& g : g_em) {
+    if (!em_live(g) || used + 200 >= 1600) continue;
+    const uintptr_t p = reinterpret_cast<uintptr_t>(g.em);
+    uint32_t pool = 0;
+    rd32(p + 0x30, &pool);
+    used += swprintf_s(line + used, 1600 - used, L" %S pool %u (kept %u) fall %.1f size %.2f box %.1f;", g.name, pool,
+                       g.pool, rdf(p + 0x3C), rdf(p + 0x44), rdf(p + 0x0C));
+  }
+  used += swprintf_s(line + used, 1600 - used, L" draws:");
+  for (DrawStat& d : g_rainDraws) {
+    if (!d.draws || used + 60 >= 1600) continue;
+    used += swprintf_s(line + used, 1600 - used, L" %016llX %s %u/%u;", d.hash, d.ff ? L"FF" : L"VS", d.draws, d.prims);
+  }
+  swprintf_s(line + used, 1600 - used, L" other %u", g_rainDrawOther);
+  for (DrawStat& d : g_rainDraws) d = {};
+  g_rainDrawOther = 0;
+  plog(L"%s", line);
+  ++g_rainReports;
+}
+
 }  // namespace
+
+bool rbrrtx_rain_probe_on() { return g_rainProbe; }
+
+void rbrrtx_rain_note_draw(unsigned long long hash, unsigned prims, bool ff) {
+  for (DrawStat& d : g_rainDraws) {
+    if (d.draws && (d.hash != hash || d.ff != ff)) continue;
+    d.hash = hash;
+    d.ff = ff;
+    ++d.draws;
+    d.prims += prims;
+    return;
+  }
+  ++g_rainDrawOther;
+}
+
+bool rbrrtx_rain_cutting() { return g_replace && g_nGameTex && precip_kind(); }
+
+int rbrrtx_precip_state(float* intensity) {
+  const int k = g_rainHooked ? precip_kind() : 0;
+  *intensity = k ? weather_intensity() : 0.0f;
+  return k;
+}
+
+bool rbrrtx_rain_skip_texture(unsigned long long hash) {
+  for (int i = 0; i < g_nGameTex; ++i)
+    if (g_gameTex[i] == hash) { ++g_gameSkipped; return true; }
+  return false;
+}
+
+void rbrrtx_rain_toggle() {
+  if (!g_rainHooked) return;
+  g_replace = !g_replace;
+  wchar_t ev[128];
+  swprintf_s(ev, L"%s: rain/snow %s", rbrrtx_key_name(RBRKEY_RAIN),
+             g_replace ? (g_precip ? L"Remix (game's cut)" : L"game's cut") : L"game's own");
+  plog(L"rain: %s", ev);
+  rbrrtx_report_event(ev);
+}
 
 void rbrrtx_particles_init(const remixapi_Interface* api) {
   g_api = api;
@@ -809,10 +1432,17 @@ void rbrrtx_particles_init(const remixapi_Interface* api) {
   g_active = g_cutGame = g_test;
   plog(L"particles: Remix dust %s (key %s)%s", g_test ? L"ON" : L"off", rbrrtx_key_name(RBRKEY_DUST),
        api ? L"" : L"; no Remix API");
+  g_rainProbe = rbrrtx_env_flag(L"RBRRTX_RAIN_PROBE", false);
+  g_precip = api && rbrrtx_env_flag(L"RBRRTX_PRECIP", false);
+  g_replace = g_precip;
+  if ((g_rainProbe || g_precip) && !g_rainHooked) install_rain_hook();
+  plog(L"rain: Remix rain/snow %s (key %s: Remix <-> game's own)%s", g_precip ? L"ON, game's cut" : L"off",
+       rbrrtx_key_name(RBRKEY_RAIN), g_rainProbe ? L"; probe lines every 10 s" : L"");
 }
 
 void rbrrtx_particles_emit(bool sweeping) {
   if (g_test && !sweeping) draw_emitter();
+  if (g_precip && g_replace && !sweeping) draw_precip();
 }
 
 bool rbrrtx_particles_active() { return g_active; }
@@ -829,12 +1459,20 @@ void rbrrtx_particles_toggle() {
 void rbrrtx_particles_frame_end() {
   if (g_active) { check_cfg(); surface_frame(); }
   if (g_probe) probe_report();
+  if (g_rainHooked) rain_cut_frame();
+  if (g_rainProbe) rain_report();
+  if (g_precip && !g_active) check_cfg();             // particles.ini read again on save (dust does it otherwise)
 }
 
 void rbrrtx_particles_destroy() {
   if (!g_api) return;
   if (g_mesh) g_api->DestroyMesh(g_mesh);
   if (g_mat) g_api->DestroyMaterial(g_mat);
+  for (PrecipFx& f : g_fx) {
+    if (f.mesh) g_api->DestroyMesh(f.mesh);
+    if (f.mat) g_api->DestroyMaterial(f.mat);
+    f = {};
+  }
   g_mesh = nullptr;
   g_mat = nullptr;
   g_made = false;

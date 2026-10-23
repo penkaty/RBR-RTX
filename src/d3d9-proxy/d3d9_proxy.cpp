@@ -24,31 +24,59 @@
 #include <cstdio>
 #include <cwchar>
 
-void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...) {
-  if (!wcscmp(file, L"rbrrtx_comp.log")) {                    // warnings also go to the player report (report.cpp)
-    wchar_t line[2048];
-    va_list args;
-    va_start(args, fmt);
-    _vsnwprintf_s(line, _TRUNCATE, fmt, args);
-    va_end(args);
-    rbrrtx_report_log_line(line);
-  }
+// Log files stay open (one handle per file name, appended with WriteFile, no CRT buffer): a line costs microseconds
+// and still reaches the OS at once (kept after a crash). Opening and closing the file per line cost ~8 ms a line
+// (virus scan on close); the 13-line periodic frame block every 600 frames was a 100-190 ms hitch every 7-9 s
+// (stage reports 2026-10-23 21:02 Chirdonhead, 21:04 Torsby).
+namespace {
+struct LogFile { wchar_t name[64]; HANDLE h; };
+LogFile g_logFiles[16] = {};
+SRWLOCK g_logLock = SRWLOCK_INIT;
+
+HANDLE log_handle(const wchar_t* file) {
+  for (LogFile& f : g_logFiles) if (f.h && !wcscmp(f.name, file)) return f.h;
   wchar_t dir[MAX_PATH];
-  DWORD n = GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", dir, MAX_PATH);
-  if (n == 0 || n >= MAX_PATH) return;
+  const DWORD n = GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", dir, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return nullptr;
   wchar_t path[MAX_PATH * 2];
   swprintf_s(path, L"%s\\%s", dir, file);
-  FILE* f = nullptr;
-  if (_wfopen_s(&f, path, L"a, ccs=UTF-8") != 0 || !f) return;
+  HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return nullptr;
+  LARGE_INTEGER size = {};
+  if (GetFileSizeEx(h, &size) && size.QuadPart == 0) {   // a new file starts with the UTF-8 BOM, as before
+    DWORD w = 0;
+    WriteFile(h, "\xEF\xBB\xBF", 3, &w, nullptr);
+  }
+  for (LogFile& f : g_logFiles)
+    if (!f.h) { wcsncpy_s(f.name, file, _TRUNCATE); f.h = h; return h; }
+  CloseHandle(h);                                      // more than 16 files: not logged
+  return nullptr;
+}
+}  // namespace
+
+void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...) {
+  wchar_t line[4096];
   SYSTEMTIME t;
   GetLocalTime(&t);
-  fwprintf(f, L"%02u:%02u:%02u.%03u [%lu] ", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, GetCurrentProcessId());
+  int used = swprintf_s(line, L"%02u:%02u:%02u.%03u [%lu] ", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+                        GetCurrentProcessId());
+  if (used < 0) used = 0;
   va_list args;
   va_start(args, fmt);
-  vfwprintf(f, fmt, args);
+  _vsnwprintf_s(line + used, 4096 - used - 2, _TRUNCATE, fmt, args);
   va_end(args);
-  fputwc(L'\n', f);
-  fclose(f);
+  if (!wcscmp(file, L"rbrrtx_comp.log")) rbrrtx_report_log_line(line + used);   // warnings also go to the report
+  wcscat_s(line, L"\n");
+  static char utf8[4096 * 3];                          // used under the lock only
+  AcquireSRWLockExclusive(&g_logLock);
+  const int bytes = WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8, sizeof(utf8), nullptr, nullptr);
+  if (bytes > 1)
+    if (HANDLE h = log_handle(file)) {
+      DWORD w = 0;
+      WriteFile(h, utf8, static_cast<DWORD>(bytes - 1), &w, nullptr);
+    }
+  ReleaseSRWLockExclusive(&g_logLock);
 }
 
 bool rbrrtx_env_flag(const wchar_t* name, bool default_value) {
