@@ -27,6 +27,9 @@ bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
 float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
 bool g_testPhysOn = false;
 bool rbrrtx_player_car_brake(float*) { return false; }
+float g_wsRoot[16] = {};                               // the model root the windscreen drops were last placed with
+int g_wsCalls = 0;
+void rbrrtx_windscreen_car_drawn(const float M[16]) { std::memcpy(g_wsRoot, M, sizeof(g_wsRoot)); ++g_wsCalls; }
 #define XXH_INLINE_ALL
 #include "../third_party/xxhash.h"
 unsigned long long rbrrtx_xxh3(const void* data, size_t size) { return XXH3_64bits(data, size); }
@@ -69,7 +72,7 @@ int wmain(int argc, wchar_t** argv) {
   const V3 rows[3] = { x, y, z };
   for (int r = 0; r < 3; ++r) { C[r * 4] = rows[r].x; C[r * 4 + 1] = rows[r].y; C[r * 4 + 2] = rows[r].z; }
   C[12] = 1234.5f; C[13] = 87.25f; C[14] = -4321.0f; C[15] = 1;
-  int cars = 0, fails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0;
+  int cars = 0, fails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0, noGlass = 0, glassFallback = 0;
   for (const auto& e : std::filesystem::recursive_directory_iterator(argv[1])) {
     if (_wcsicmp(e.path().extension().c_str(), L".sgc") != 0) continue;
     ++cars;
@@ -167,6 +170,29 @@ int wmain(int argc, wchar_t** argv) {
     float P3[16];
     place_frame(P3);
     const float driftErr = len(to_world(P3, g_car.lf) - to_world(C3, g_car.lf));
+    // Windscreen drops (user run 6: they wiggled while driving): placed on the car as drawn this frame. The wrong
+    // 3rd-person body comes first and must be passed over; the drawn body gives C3 exactly.
+    g_rootThisFrame = g_predThisFrame = false;
+    g_wsCalls = 0;
+    g_track = 1;                                       // on a stage (the game sets it when a stage loads)
+    {
+      float wrong3[16], body3[16];
+      std::memcpy(wrong3, C3, sizeof(wrong3));
+      wrong3[12] += 4.6f * C3[8]; wrong3[14] += 4.6f * C3[10];
+      float Lw[16];
+      mul(L, wrong3, Lw);
+      mul(L, C3, body3);
+      rbrrtx_headlights_car_draw(Lw, 16000, false);
+      rbrrtx_headlights_car_draw(body3, 9000, false);
+    }
+    float wsErr = g_wsCalls == 1 ? 0.0f : 1.0f;
+    for (int i = 0; i < 16; ++i) wsErr = (std::max)(wsErr, std::fabs(g_wsRoot[i] - C3[i]));
+    if (wsErr > 0.01f) {
+      ++noGlass;
+      wprintf(L"%-30s windscreen root from the drawn car off by %.3f (%d calls) BAD\n", e.path().filename().c_str(), wsErr, g_wsCalls);
+    }
+    g_track = -1;
+    g_groups.clear();
     g_drift = {};
     // Rear lamps: one each side, behind the headlights; exhaust tip behind the car's middle, unit direction.
     const float cx = (g_car.lf.x + g_car.rf.x) * 0.5f;   // some models are off-centre: sides from the centreline
@@ -176,6 +202,16 @@ int wmain(int argc, wchar_t** argv) {
     const bool exhaustOk = g_car.exhaust && dot(g_car.exhaustTip, g_car.forward) < 0.0f && std::fabs(len(g_car.exhaustDir) - 1.0f) < 1e-3f;
     if (!rearOk) ++noRear;
     if (!exhaustOk) ++noExhaust;
+    // Windscreen glass (windscreen.cpp): found, behind the head lamps, above them, facing forward and up, 0.9-2 m wide,
+    // 0.3-1.2 m long, nearly flat.
+    const V3 lampMid = (g_car.lf + g_car.rf) * 0.5f, gc = (g_car.glassBottom + g_car.glassTop) * 0.5f;
+    const float glassBack = dot(lampMid - gc, g_car.forward), glassLen = len(g_car.glassTop - g_car.glassBottom);
+    const bool glassOk = g_car.glass || g_car.glassRejected;   // a plane from the glass, or knowingly the lamp-based one
+    if (g_car.glassRejected) ++glassFallback;
+    if (!glassOk) ++noGlass;
+    wprintf(L"%-30s glass %s: %.2f m behind the lamps, %.2f up, %.2f/%.2f wide, %.2f long, normal (%.2f %.2f %.2f), flat %.3f\n",
+            e.path().filename().c_str(), g_car.glass ? L"ok" : g_car.glassRejected ? L"rejected (lamp plane)" : L"BAD", glassBack, gc.y - lampMid.y, g_car.glassWb, g_car.glassWt,
+            glassLen, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassFlat);
     const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f;
     if (!ok) ++fails;
     if (g_car.bodyName[0] == '(') ++noBody;
@@ -198,7 +234,7 @@ int wmain(int argc, wchar_t** argv) {
     wprintf(L"lit lamp textures: %zu, E30 lights_lit hash %s\n", lit, litOk ? L"ok" : L"FAIL");
     if (!litOk) ++fails;
   }
-  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d FAIL\n", cars,
-          noLamps, noBody, noRear, noExhaust, fails);
+  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d bad windscreen glass (%d lamp-plane fallbacks), %d FAIL\n",
+          cars, noLamps, noBody, noRear, noExhaust, noGlass, glassFallback, fails);
   return cars > 0 && fails == 0 ? 0 : 1;
 }

@@ -1870,6 +1870,9 @@ bool before_draw(IDirect3DDevice9* dev) {
       g_haveCam = true;
       g_frameCam = true;
       g_st.recErr = static_cast<float>(rec);
+      D3DMATRIX vi;                                    // windscreen drops in cockpit views ride on the camera
+      if (g_enabled && g_apiOk && g_primaryRT && inverse(g_V, vi) && g_P._22 > 1e-4f)
+        rbrrtx_windscreen_camera(&vi._11, 2.0f * std::atan(1.0f / g_P._22) * 57.29578f);
     }
   }
   if (!g_haveCam) { ++g_st.noCamera; return false; }

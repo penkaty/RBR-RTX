@@ -365,21 +365,21 @@ DustCfg precip_defaults(int pre) {
     // Run 4 (user): snow should react to the car. Bounce: a flake hitting a surface takes that surface's velocity
     // (Remix collision, sceneVel from motion vectors), so flakes touching the moving car are carried and thrown by it;
     // with little restitution they settle on the ground and fade (colour held, then alpha to 0).
-    c.collisionMode = 0; c.restitution = 0.1f; c.holdColour = true;
+    c.collisionMode = 0; c.restitution = 0.0f; c.holdColour = true;   // run 6 (user): less bouncy, more drag
     c.endColorA[3] = 0.0f; c.endColorB[3] = 0.0f;
     wcscpy_s(c.tex, L"snow_flake.dds");
     if (pre == PRE_SNOW_LIGHT) {                       // lots of fluffy flakes, slow
       c.perWheelRate = 4000.0f;
       c.lifeMin = 6.0f; c.lifeMax = 9.0f;
       c.startSizeMin = c.endSizeMin = 0.05f; c.startSizeMax = c.endSizeMax = 0.10f;   // run 4: 3-6 cm did not show
-      c.riseSpeed = 0.8f; c.cone = 30.0f; c.drag = 0.5f; c.gravity = -0.3f;
+      c.riseSpeed = 0.8f; c.cone = 30.0f; c.drag = 1.2f; c.gravity = -0.3f;
       c.turbulenceForce = 1.5f; c.turbulenceFrequency = 0.3f;
       c.above = 7.0f; c.depth = 8.0f;
     } else {                                           // big flakes, faster, dense
       c.perWheelRate = 6000.0f;
       c.lifeMin = 3.0f; c.lifeMax = 4.5f;
       c.startSizeMin = c.endSizeMin = 0.09f; c.startSizeMax = c.endSizeMax = 0.18f;
-      c.riseSpeed = 3.5f; c.cone = 15.0f; c.drag = 0.2f; c.gravity = -1.0f;
+      c.riseSpeed = 3.5f; c.cone = 15.0f; c.drag = 0.8f; c.gravity = -0.8f;
       c.turbulenceForce = 1.0f; c.turbulenceFrequency = 0.4f;
       c.above = 9.0f; c.depth = 9.0f;
     }
@@ -1279,7 +1279,9 @@ void draw_precip() {
     const float scale = k < w.wakeOnKmh ? 0.0f : k < 50.0f ? 0.25f : k < 90.0f ? 0.5f : 1.0f;
     static float shown = -1.0f;
     if (scale != shown) { plog(L"rain: snow wake %.0f %% (%.0f km/h)", scale * 100.0f, k); shown = scale; }
-    if (scale > 0.0f) draw_one(PRE_SNOW_WAKE, scale);
+    // Outside views only (user run 7: as the dust, rbrrtx_car_body_visible): from the cockpit the wake is snow
+    // inside and around the cabin.
+    if (scale > 0.0f && rbrrtx_car_body_visible() == 1) draw_one(PRE_SNOW_WAKE, scale);
   }
 }
 

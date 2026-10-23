@@ -39,6 +39,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <fstream>
@@ -217,6 +218,12 @@ struct CarModel {
   Placed body = { { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 0 } } };   // model root -> body node (e_body, i_body)
   std::string bodyName = "(none: root frame)";
   std::vector<Placed> parts;                           // every drawn node (e_* / i_*), identical frames merged
+  bool glass = false;                                  // windscreen plane from the e_window_f mesh (windscreen.cpp)
+  V3 glassBottom = {}, glassTop = {}, glassN = {};     // edge middles and outward normal, root frame
+  float glassWb = 0.0f, glassWt = 0.0f;                // widths at the bottom and the top edge
+  int glassPoints = 0;
+  float glassFlat = 0.0f;                              // rms distance from the plane / plane length (curved glass ~0.1)
+  bool glassRejected = false;                          // found but implausible (glass_plausible): lamp-based plane
 } g_car;
 
 // Model root -> node local (row vectors) from the node's chain to the root: p_local = R^-1 (p_root - t). A real
@@ -258,6 +265,97 @@ void total_of(const std::unordered_map<unsigned, Node>& nodes, unsigned id, bool
   }
   std::memcpy(R, acc, sizeof(acc));
   t = { tv[0], tv[1], tv[2] };
+}
+
+// Windscreen glass (user 2026-10-23: drops placed from each car's own glass; prototype tools/kb/sgc_glass.py, all 109
+// models of the install). Mesh records: tag u32 0xC, 0, k, 1 (k 1 or 3 seen), u32 size, part name\0, then at +136
+// u32 vertex count, u32 flags (7 or 23), at +144 count x (position, normal) floats in the part's frame. e_window_f has
+// one such record in every model; its chain to the root places it. Kept: vertices whose normal faces up and forward
+// (the glass, either side; not the frame edges). The plane: normal = their mean normal (outward = forward/up), across
+// = model x in the plane, up the glass = normal x across; bottom/top edge = lowest/highest quarter of the points.
+// A windscreen where one belongs: 0.4-2.5 m behind the head lamps and above them, facing up and forward, 0.6-2 m wide
+// (Stratos wraparound 0.71), 0.3-1.2 m long, nearly flat. headlights_test over the install's 109 models: 106 pass;
+// Clio_R3 (glass 1.1 m below the lamps: its vertices are not in the e_window_f frame) and Escort_mk_2 (1.65 m long)
+// use the lamp-based plane.
+bool glass_plausible() {
+  const V3 lampMid = (g_car.lf + g_car.rf) * 0.5f, c = (g_car.glassBottom + g_car.glassTop) * 0.5f;
+  const float back = dot(lampMid - c, g_car.forward), length = len(g_car.glassTop - g_car.glassBottom);
+  return g_car.lamps && back > 0.4f && back < 2.5f && c.y > lampMid.y && g_car.glassN.y > 0.3f &&
+         dot(g_car.glassN, g_car.forward) > 0.1f && g_car.glassWb > 0.6f && g_car.glassWb < 2.0f && length > 0.3f &&
+         length < 1.2f && g_car.glassFlat < 0.2f;
+}
+
+void load_windscreen(const std::vector<char>& d, const std::unordered_map<unsigned, Node>& nodes,
+                     const std::unordered_map<std::string, unsigned>& byName) {
+  const auto it = byName.find("e_window_f");
+  if (it == byName.end()) return;
+  float R[3][3];
+  V3 t;
+  total_of(nodes, it->second, false, R, t);
+  auto rot = [&](V3 a) { return V3{ R[0][0] * a.x + R[0][1] * a.y + R[0][2] * a.z, R[1][0] * a.x + R[1][1] * a.y + R[1][2] * a.z,
+                                    R[2][0] * a.x + R[2][1] * a.y + R[2][2] * a.z }; };
+  const V3 ref = norm(V3{ 0, 0.8f, 0 } + g_car.forward * 0.6f);
+  static const char kKey[] = "e_window_f";              // with its terminating 0
+  const char* p = d.data();
+  float bestFlat = 1e9f;
+  for (size_t i = 0; i + 20 + sizeof(kKey) + 144 <= d.size(); ++i) {
+    if (p[i] != 0xC) continue;
+    uint32_t tag[4];
+    std::memcpy(tag, p + i, 16);
+    if (tag[0] != 0xC || tag[1] != 0 || tag[2] > 7 || tag[3] != 1 || std::memcmp(p + i + 20, kKey, sizeof(kKey))) continue;
+    const size_t a = i + 20 + sizeof(kKey);
+    uint32_t n;
+    std::memcpy(&n, p + a + 136, 4);
+    if (n < 3 || n > 20000 || a + 144 + static_cast<size_t>(n) * 24 > d.size()) continue;
+    std::vector<V3> pts;
+    V3 nsum = {};
+    for (uint32_t k = 0; k < n; ++k) {
+      float v[6];
+      std::memcpy(v, p + a + 144 + k * 24, 24);
+      const V3 nn = rot({ v[3], v[4], v[5] });
+      const float dn = dot(nn, ref);
+      if (std::fabs(dn) <= 0.5f * len(nn)) continue;   // frame / edge faces
+      pts.push_back(rot({ v[0], v[1], v[2] }) + t);
+      nsum = nsum + (dn < 0 ? nn * -1.0f : nn);
+    }
+    if (pts.size() < 3) continue;
+    const V3 N = norm(nsum);
+    V3 c = {};
+    for (const V3& q : pts) c = c + q;
+    c = c * (1.0f / pts.size());
+    V3 X = norm(V3{ 1, 0, 0 } - N * N.x);               // across: model x in the plane
+    V3 S = norm(V3{ N.y * X.z - N.z * X.y, N.z * X.x - N.x * X.z, N.x * X.y - N.y * X.x });
+    if (S.y < 0) S = S * -1.0f;                         // up the glass
+    float smin = 1e9f, smax = -1e9f, rms = 0.0f;
+    for (const V3& q : pts) {
+      const float sv = dot(q - c, S), dv = dot(q - c, N);
+      smin = (std::min)(smin, sv); smax = (std::max)(smax, sv); rms += dv * dv;
+    }
+    const float length = smax - smin;
+    if (length < 0.1f) continue;
+    const float flat = std::sqrt(rms / pts.size()) / length;
+    if (flat >= bestFlat) continue;
+    float bx0 = 1e9f, bx1 = -1e9f, tx0 = 1e9f, tx1 = -1e9f;
+    for (const V3& q : pts) {
+      const float sv = dot(q - c, S), xv = dot(q - c, X);
+      if (sv <= smin + 0.25f * length) { bx0 = (std::min)(bx0, xv); bx1 = (std::max)(bx1, xv); }
+      if (sv >= smax - 0.25f * length) { tx0 = (std::min)(tx0, xv); tx1 = (std::max)(tx1, xv); }
+    }
+    if (bx1 <= bx0 || tx1 <= tx0) continue;
+    bestFlat = flat;
+    g_car.glass = true;
+    g_car.glassN = N;
+    g_car.glassBottom = c + S * smin + X * (0.5f * (bx0 + bx1));
+    g_car.glassTop = c + S * smax + X * (0.5f * (tx0 + tx1));
+    g_car.glassWb = bx1 - bx0;
+    g_car.glassWt = tx1 - tx0;
+    g_car.glassPoints = static_cast<int>(pts.size());
+    g_car.glassFlat = flat;
+  }
+  if (g_car.glass && !glass_plausible()) {
+    g_car.glass = false;                               // windscreen.cpp falls back to the lamp-based plane
+    g_car.glassRejected = true;
+  }
 }
 
 void load_car_model(const std::wstring& file) {
@@ -334,6 +432,7 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaust = true;
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
+  load_windscreen(d, nodes, byName);
   for (const char* name : { "e_body", "i_body" }) {   // the frame most of the car is drawn in
     auto it = byName.find(name);
     if (it == byName.end()) continue;
@@ -363,6 +462,10 @@ void load_car_model(const std::wstring& file) {
   hlog(L"headlights: car model %s: %zu nodes (%zu distinct drawn parts), body frame %S, lamps %s lf (%.3f %.3f %.3f) rf (%.3f %.3f %.3f), "
        L"forward model %+.0f z, %.1f ms", file.c_str(), nodes.size(), g_car.parts.size(), g_car.bodyName.c_str(), g_car.lamps ? L"found" : L"MISSING",
        g_car.lf.x, g_car.lf.y, g_car.lf.z, g_car.rf.x, g_car.rf.y, g_car.rf.z, g_car.forward.z, ms);
+  hlog(L"headlights: windscreen glass %s: bottom (%.2f %.2f %.2f) %.2f wide, top (%.2f %.2f %.2f) %.2f wide, normal "
+       L"(%.2f %.2f %.2f), %d points, flatness %.3f", g_car.glass ? L"found (e_window_f)" : g_car.glassRejected ? L"REJECTED (not where a windscreen goes): lamp-based plane" : L"NOT found: lamp-based plane",
+       g_car.glassBottom.x, g_car.glassBottom.y, g_car.glassBottom.z, g_car.glassWb, g_car.glassTop.x, g_car.glassTop.y,
+       g_car.glassTop.z, g_car.glassWt, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassPoints, g_car.glassFlat);
   hlog(L"headlights: rear lamps %s lb (%.3f %.3f %.3f) rb (%.3f %.3f %.3f), exhaust %s tip (%.3f %.3f %.3f) out (%.2f %.2f %.2f)",
        g_car.rear ? L"found" : L"MISSING", g_car.lb.x, g_car.lb.y, g_car.lb.z, g_car.rb.x, g_car.rb.y, g_car.rb.z,
        g_car.exhaust ? L"found" : L"MISSING", g_car.exhaustTip.x, g_car.exhaustTip.y, g_car.exhaustTip.z,
@@ -731,7 +834,32 @@ void rbrrtx_headlights_init(const remixapi_Interface* api) {
   load_settings();
 }
 
+// The windscreen drops (windscreen.cpp) go on the car as it is drawn in this frame: the model root from the first big
+// car draw that one of the model's parts places within 0.5 m of where RBR's object (+ drift) expects it, axes
+// matching (wheels spin, doors swing: not those). RBR's object alone is 0.1-0.2 m off, differently every frame.
+bool g_rootThisFrame = false, g_predThisFrame = false, g_predOk = false;
+float g_pred[16];
+
+void drawn_root(const float* world) {
+  if (!g_predThisFrame) { g_predThisFrame = true; V3 phys; g_predOk = physics_pose(g_pred, &phys, true); }
+  if (!g_predOk) return;
+  // Only the body frame (run 7: trying every part's frame let a wrong part win by a few cm, shifting the drops).
+  float best[16], C[16];
+  float bestErr = 0.35f;
+  for (const Placed& pl : { g_car.body }) {
+    compose(pl, world, C);
+    bool axes = true;
+    for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(g_pred, r))) > 0.995f;
+    const float err = len(row(C, 3) - row(g_pred, 3));
+    if (axes && err < bestErr) { bestErr = err; std::memcpy(best, C, sizeof(best)); }
+  }
+  if (bestErr >= 0.35f) return;
+  g_rootThisFrame = true;
+  rbrrtx_windscreen_car_drawn(best);
+}
+
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended) {
+  if (!g_rootThisFrame && !blended && prims >= 200 && g_track >= 0 && g_off.locked) drawn_root(world);
   // Collected while the lights are on, and on a stage until the model offset is measured, lights off too: the
   // game shows the car in a 3rd-person view whenever a stage loads, where several car parts agree (user 2026-10-23;
   // the cockpit view often shows just one, and the lamps then moved once, ~0.3 m, when the view changed).
@@ -833,8 +961,28 @@ bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3])
   return true;
 }
 
+// The model root from RBR's car object + the measured offset only (no drift: the drift is only refreshed while the
+// body is drawn, so in the cockpit it is stale). For the cockpit windscreen anchor, measured while the car stands.
+bool rbrrtx_car_object_frame(float M[16]) {
+  if (g_track < 0 || !g_off.locked) return false;
+  V3 phys;
+  return physics_pose(M, &phys, false);
+}
+
+// The windscreen glass plane in the model frame (load_windscreen); false if this model's glass was not found.
+bool rbrrtx_car_windscreen_glass(float bottom[3], float top[3], float n[3], float* widthBottom, float* widthTop) {
+  if (!g_car.glass) return false;
+  bottom[0] = g_car.glassBottom.x; bottom[1] = g_car.glassBottom.y; bottom[2] = g_car.glassBottom.z;
+  top[0] = g_car.glassTop.x; top[1] = g_car.glassTop.y; top[2] = g_car.glassTop.z;
+  n[0] = g_car.glassN.x; n[1] = g_car.glassN.y; n[2] = g_car.glassN.z;
+  *widthBottom = g_car.glassWb;
+  *widthTop = g_car.glassWt;
+  return true;
+}
+
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   ++g_frameNo;
+  g_rootThisFrame = g_predThisFrame = false;            // windscreen drops: placed from the next frame's draws
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
   g_emitted = false;                                     // emitted at the next first BeginScene
   if (layerOn && g_track >= 0) {                         // with every car draw of the frame

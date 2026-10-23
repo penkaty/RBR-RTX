@@ -132,8 +132,12 @@ int rbrrtx_precip_state(float* intensity);                    // 1 rain, 2 snow,
 void rbrrtx_windscreen_init(const remixapi_Interface* api);
 void rbrrtx_windscreen_emit(bool sweeping);                   // once per frame with the particles
 void rbrrtx_windscreen_destroy();
+void rbrrtx_windscreen_car_drawn(const float M[16]);           // headlights.cpp: this frame's drawn model root (rows x,y,z,pos)
+void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY);   // comp.cpp: this frame's camera (cockpit drops)
 // headlights.cpp: the car's model root in render space (rows x, y, z, position), head lamp nodes, model forward.
 bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]);
+bool rbrrtx_car_object_frame(float M[16]);                     // RBR's car object + model offset, no drift
+bool rbrrtx_car_windscreen_glass(float bottom[3], float top[3], float n[3], float* widthBottom, float* widthTop);   // model frame
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
 enum RbrKey {
