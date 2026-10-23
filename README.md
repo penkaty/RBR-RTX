@@ -27,9 +27,8 @@ the original game's.
   sun direction doesn't match their baked shadows; you can fix those yourself (see [Fixing the sun](#fixing-the-sun-on-a-stage)).
 - Weather and region: RBR's sky type, clouds, time of day and the stage's country set Remix haze, sky light and
   sun strength.
-- Car dirt, a working start clock, and fixes for foliage cut-outs, windscreen, dust and the in-car view.
-  Experimental: **Alt+Y** blends two-layer ground (sea, coast, cliffs) like the original; off by default.
-- **Stage reports**: every stage you drive is zipped (frame rate, stutter, car, stage, PC, settings) into
+- Experimental: **Alt+Y** blends two-layer ground (sea, coast, cliffs) like the original; off by default.
+- **Stage reports**: every stage you drive is logged and zipped (frame rate, stutter, car, stage, PC, settings) into
   `rbr-rtx\logs\reports`; **9** marks a problem. Nothing is sent anywhere.
 - **Alt+K stage sweep**: one key collects screenshots, Remix debug views, texture hashes and a scene capture for
   bug reports. **0** switches ray tracing off to compare with the original image.
@@ -53,7 +52,7 @@ and attached to the car. That's my next big step.
    (Vulkan/dgVoodoo/VR modes bring their own `d3d9.dll`).
 2. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) and unpack it **into your RBR
    folder** (next to `RichardBurnsRally_SSE.exe`). `.7z` opens with [7-Zip](https://www.7-zip.org/).
-3. RSF launcher: **Cubic env maps off**, **Render car shadows off**, **Particles high**. Windowed or borderless
+3. RSF launcher: **Cubic env maps off**, **Render car shadows off**, **Particles off or high**. Windowed or borderless
    mode is recommended.
 4. Optional: [RBR-RTX-base-mod](https://github.com/penkaty/RBR-RTX-base-mod) adds PBR materials (surface
    detail, roughness, depth) for the original Warthog stages. Install it after RBR-RTX, the same way.
