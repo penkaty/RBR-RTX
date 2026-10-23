@@ -23,7 +23,7 @@ constexpr int kAlt = 0x1000;                                 // in Action::vk: t
 Action g_actions[RBRKEY_COUNT] = {
   {L"frame_dump", '8', L"frame dump"},
   {L"layer", 'O', L"RBR-RTX layer"},
-  {L"sun", 'L', L"Remix sun"},
+  {L"sun", kAlt | 'L', L"Remix sun"},                       // was L; L = headlights (user 2026-10-22)
   {L"foliage", 'J', L"foliage mode"},
   {L"dust", '7', L"dust"},
   {L"windscreen", 'I', L"windscreen"},
@@ -45,6 +45,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"report_mark", '9', L"stage report: mark a problem now"},
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
   {L"ground_layer", kAlt | 'Y', L"ground second layer (two-texture blend decals) on/off"},
+  {L"headlights", 'L', L"headlights: one centre light -> two lamps -> off"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
@@ -146,6 +147,10 @@ void rbrrtx_keys_load() {
     wcscat_s(summary, part);
   }
   rbrrtx_log_to(L"rbrrtx_comp.log", L"keys (%s): %s", found ? path : L"defaults, no keys.ini", summary);
+  for (int i = 0; i < RBRKEY_COUNT; ++i)                       // an old keys.ini (sun = L) next to the new default L
+    for (int j = i + 1; j < RBRKEY_COUNT; ++j)
+      if (g_actions[i].vk && g_actions[i].vk == g_actions[j].vk)
+        rbrrtx_log_to(L"rbrrtx_comp.log", L"keys.ini: WARNING %s and %s share the key %s", g_actions[i].ini, g_actions[j].ini, g_names[i]);
 }
 
 // Ctrl never held; Alt held exactly when the key asks for it.

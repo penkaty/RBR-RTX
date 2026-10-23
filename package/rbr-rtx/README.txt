@@ -41,8 +41,8 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   Is it RBR-RTX or Remix? Switch one part off and back (press again):
   0        ray tracing on/off: the original raster image of the same scene
   O        RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on)
-  L        Remix sun on/off
-  6        sky: Remix sky (default) <-> no sky
+  Alt+L    Remix sun on/off
+  6       sky: Remix sky (default) <-> no sky
   J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
   I        cockpit windscreen on (default) / off
   K        faster scenery: default (static scenery, trees/grass/flags do not sway) -> off (old, slower) -> static
@@ -52,8 +52,15 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
            road markings) get the second one too. Turn it on before loading a stage. Known issue: road markings
            and damp patches can show as black, mirror-like holes, and it uses a lot of memory on big stages.
 
+  Driving:
+  L        headlights: ON 1 (one light from the middle of the car, cheapest) -> ON 2 (two lights at the car's own
+           headlights) -> OFF. They switch on by themselves when the sun is lower than 10 degrees (and off again
+           above it) until you press L on that stage. Brightness, beam width, automatic switch:
+           rbr-rtx\config\headlights.ini. Night weathers (the stage's weather says "night") get a sun between
+           -5 and +5 degrees (atmosphere.ini night_sun), so the headlights come on there by themselves.
+
   Tuning:
-  7        gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
+  7       gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
   Alt+N / Alt+M  sun brighter / dimmer (10 % per press; the log shows the value to keep)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).

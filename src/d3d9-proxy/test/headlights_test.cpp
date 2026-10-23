@@ -1,0 +1,134 @@
+// Test of headlights.cpp outside the game: reads car models (.sgc) and checks the lamp placement maths.
+//   x86 cl test\headlights_test.cpp -> headlights_test.exe <game folder>\Cars   (every Cars\*\*.sgc)
+// Per car: the body is drawn with W = body-to-root * C (C = a rotated, moved car), as the game does (USD capture
+// 2026-10-23: most of the car shares the body node's matrix), plus doors / spinning wheels as smaller groups with
+// other matrices and a bigger, wrongly placed 3rd-person body 4.6 m ahead; RBR's car object (+0x100 block as the
+// game lays it out) is given. The model offset must lock after 20 still frames, and a car that drove on and turned,
+// with no car draws at all, must be placed from RBR's car object alone: lamps within 1 cm of lamp * C, forward axis right, upright.
+// Prints each car's lamps (model frame) and body frame.
+#include "../headlights.cpp"
+#include <cstdarg>
+#include <cstdio>
+#include <filesystem>
+
+void rbrrtx_log_to(const wchar_t*, const wchar_t* fmt, ...) {
+  if (!GetEnvironmentVariableW(L"HL_VERBOSE", nullptr, 0)) return;
+  va_list a;
+  va_start(a, fmt);
+  vwprintf(fmt, a);
+  va_end(a);
+  wprintf(L"\n");
+}
+void rbrrtx_config_path(const wchar_t*, const wchar_t* file, wchar_t* out, size_t size) { swprintf_s(out, size, L"none\\%s", file); }
+bool rbrrtx_key_pressed(int) { return false; }
+const wchar_t* rbrrtx_key_name(int) { return L"L"; }
+void rbrrtx_report_event(const wchar_t*) {}
+bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
+float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
+bool g_testPhysOn = false;
+bool rbrrtx_player_car_raw(float out[20]) {
+  if (!g_testPhysOn) return false;
+  std::memcpy(out, g_testRaw, sizeof(g_testRaw));
+  return true;
+}
+
+namespace {
+void mul(const float* a, const float* b, float* out) {   // row-vector 4x4: out = a * b
+  for (int r = 0; r < 4; ++r)
+    for (int c = 0; c < 4; ++c) out[r * 4 + c] = a[r * 4] * b[c] + a[r * 4 + 1] * b[4 + c] + a[r * 4 + 2] * b[8 + c] + a[r * 4 + 3] * b[12 + c];
+}
+// Node local -> model root (inverse of Placed::A, general 3x3 inverse: some bodies are scaled).
+void local_to_root(const Placed& p, float out[16]) {
+  float A[16] = {};
+  for (int r = 0; r < 4; ++r) for (int c = 0; c < 3; ++c) A[r * 4 + c] = p.A[r][c];
+  A[15] = 1;
+  const float* m = A;
+  const float det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]);
+  std::memset(out, 0, sizeof(float) * 16);
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c) {
+      const int r1 = (c + 1) % 3, r2 = (c + 2) % 3, c1 = (r + 1) % 3, c2 = (r + 2) % 3;
+      out[r * 4 + c] = (m[r1 * 4 + c1] * m[r2 * 4 + c2] - m[r1 * 4 + c2] * m[r2 * 4 + c1]) / det;
+    }
+  for (int c = 0; c < 3; ++c) out[12 + c] = -(A[12] * out[c] + A[13] * out[4 + c] + A[14] * out[8 + c]);
+  out[15] = 1;
+}
+}
+
+int wmain(int argc, wchar_t** argv) {
+  if (argc < 2) { wprintf(L"usage: headlights_test <game>\\Cars\n"); return 2; }
+  // Car turned 37 deg around up, pitched 4 deg, somewhere on a stage.
+  const float a = 37.0f * 0.0174533f, b = 4.0f * 0.0174533f;
+  float C[16] = {};
+  const V3 x = { std::cos(a), 0, -std::sin(a) }, y0 = { 0, 1, 0 }, z0 = { std::sin(a), 0, std::cos(a) };
+  const V3 y = y0 * std::cos(b) + z0 * std::sin(b), z = z0 * std::cos(b) - y0 * std::sin(b);
+  const V3 rows[3] = { x, y, z };
+  for (int r = 0; r < 3; ++r) { C[r * 4] = rows[r].x; C[r * 4 + 1] = rows[r].y; C[r * 4 + 2] = rows[r].z; }
+  C[12] = 1234.5f; C[13] = 87.25f; C[14] = -4321.0f; C[15] = 1;
+  int cars = 0, fails = 0, noLamps = 0, noBody = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(argv[1])) {
+    if (_wcsicmp(e.path().extension().c_str(), L".sgc") != 0) continue;
+    ++cars;
+    load_car_model(e.path().wstring());
+    if (!g_car.lamps) { ++noLamps; wprintf(L"%-30s no Point_light_lf/rf\n", e.path().filename().c_str()); continue; }
+    // RBR's car object as the game lays it out (+0x100 block): +0x110 3x3 rows = swap(axis0), swap(axis2),
+    // swap(axis1); +0x140 position (Y/Z swapped); the physics origin sits at d = (0.1, -0.2, 0.25) from the model root.
+    const V3 dTrue = { 0.1f, -0.2f, 0.25f };
+    auto physics_at = [&](const float* Cc) {
+      const V3 ax[3] = { row(Cc, 0), row(Cc, 1), row(Cc, 2) };
+      const V3 o = row(Cc, 3) - (ax[0] * dTrue.x + ax[1] * dTrue.y + ax[2] * dTrue.z);
+      const V3 rows3[3] = { ax[0], ax[2], ax[1] };
+      for (int r = 0; r < 3; ++r) { g_testRaw[4 + r * 3] = rows3[r].x; g_testRaw[5 + r * 3] = rows3[r].z; g_testRaw[6 + r * 3] = rows3[r].y; }
+      g_testRaw[16] = o.x; g_testRaw[17] = o.z; g_testRaw[18] = o.y;
+    };
+    g_off = Offset();
+    g_haveLastPhys = false;
+    g_testPhysOn = true;
+    float L[16];
+    local_to_root(g_car.body, L);
+    // 21 still frames: the body drawn right and the 3rd-person body drawn wrong (bigger, 4.6 m ahead), plus wheels.
+    for (int f = 0; f < 21; ++f) {
+      g_groups.clear();
+      physics_at(C);
+      Group body;
+      mul(L, C, body.m);
+      body.prims = 9000;
+      g_groups.push_back(body);
+      float wrongC[16];
+      std::memcpy(wrongC, C, sizeof(wrongC));
+      wrongC[12] += 4.6f * C[8]; wrongC[13] += 1.0f; wrongC[14] += 4.6f * C[10];
+      Group wrong;
+      mul(L, wrongC, wrong.m);
+      wrong.prims = 16000;
+      g_groups.push_back(wrong);
+      for (int w = 0; w < 4; ++w) {
+        Group gr;
+        const float s = 0.7f * w + 0.3f + 0.1f * f;
+        const float spin[16] = { 1, 0, 0, 0, 0, std::cos(s), std::sin(s), 0, 0, -std::sin(s), std::cos(s), 0, 0.8f, 0.3f, 1.3f - w, 1 };
+        mul(spin, C, gr.m);
+        gr.prims = 1200 + w;
+        g_groups.push_back(gr);
+      }
+      measure_frame();
+    }
+    // The car drives on (20 m, turned 50 deg), nothing of it drawn: the lamps from RBR's car object alone.
+    float C2[16];
+    const float t = 0.8727f;
+    const float turn[16] = { std::cos(t), 0, -std::sin(t), 0, 0, 1, 0, 0, std::sin(t), 0, std::cos(t), 0, 20, 0.5f, -7, 1 };
+    mul(turn, C, C2);
+    physics_at(C2);
+    g_groups.clear();
+    float P[16];
+    const bool placed = place_frame(P);
+    const V3 want = to_world(C2, g_car.lf);
+    const float err = len(to_world(P, g_car.lf) - want), dirErr = len(norm(row(P, 2)) - norm(row(C2, 2)));
+    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f;
+    if (!ok) ++fails;
+    if (g_car.bodyName[0] == '(') ++noBody;
+    wprintf(L"%-30s lf (%5.2f %5.2f %5.2f) rf (%5.2f %5.2f %5.2f) fwd %+.0fz | body %-18S err %.4f %s\n",
+            e.path().filename().c_str(), g_car.lf.x, g_car.lf.y, g_car.lf.z, g_car.rf.x, g_car.rf.y, g_car.rf.z,
+            g_car.forward.z, g_car.bodyName.c_str(), err, ok ? L"ok" : L"FAIL");
+  }
+  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d FAIL\n", cars, noLamps, noBody, fails);
+  return cars > 0 && fails == 0 ? 0 : 1;
+}

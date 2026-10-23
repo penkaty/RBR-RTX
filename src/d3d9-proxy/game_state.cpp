@@ -7,6 +7,7 @@
 // +0x3C sky type), game mode at [0x7EAC48]+0x728. Stage name, country and surface come from RSF's
 // rsfdata\cache\stages_data.json next to the exe (read once; missing without RSF).
 #include "common.hpp"
+#include <cmath>
 #include <objbase.h>
 #include <wincodec.h>
 #include <cstdio>
@@ -20,6 +21,20 @@ namespace {
 
 int read_int(uintptr_t addr) {
   __try { return *reinterpret_cast<volatile int*>(addr); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
+// Player car block: g_CarMovement (0x8EF660, valid in pre-stage/stage/replay; NGPCarMenu RBRAPI.h:214) +0x100,
+// 20 floats: +0x100 (quaternion?), +0x110 4x4 "matrix" whose 3x3 is NOT the car's rotation (2026-10-23 01:32),
+// translation at +0x140 (out[16..18]). Physics space = render world with Y and Z swapped (car (2439.09, 570.89,
+// 13.16) beside the cockpit camera (2439.50, 13.78, 571.03)).
+bool read_car_raw(float out[20]) {
+  __try {
+    const uintptr_t car = *reinterpret_cast<volatile uintptr_t*>(0x008EF660);
+    if (!car) return false;
+    for (int i = 0; i < 20; ++i) out[i] = *reinterpret_cast<volatile float*>(car + 0x100 + 4 * i);
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+  for (int i = 16; i < 19; ++i) if (!(out[i] == out[i]) || std::fabs(out[i]) > 1e6f) return false;
+  return true;
 }
 
 int read_game_mode() {
@@ -92,6 +107,8 @@ void load_rsf() {
 }
 
 }  // namespace
+
+bool rbrrtx_player_car_raw(float out[20]) { return read_car_raw(out); }
 
 bool rbrrtx_stage_info(RbrStageInfo* out) {
   if (!out) return false;

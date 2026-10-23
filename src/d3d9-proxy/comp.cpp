@@ -10,7 +10,8 @@
 //     (Remix: rtx.useWorldMatricesForShaders, rtx.useVertexCapture, both default on);
 //  4. adds a Remix distant light along the game's sun direction c41 through the Remix API (RBRRTX_SUN, default on;
 //     needs exposeRemixApi = True in .trex\bridge.conf). Radiance: RBRRTX_SUN_RADIANCE="r,g,b".
-// Hotkeys (keys.cpp / keys.ini, defaults): O toggles 3 and 4 at runtime, L only 4, P dumps the next frame's draws;
+//  5. car headlights as Remix spot lights (headlights.cpp; key L, automatic below a 10 degree sun).
+// Hotkeys (keys.cpp / keys.ini, defaults): O toggles 3 and 4 at runtime, Alt+L only 4, P dumps the next frame's draws;
 // N cycles the sky mode, I the windscreen. Diagnostics go to <RBRRTX_LOG_DIR>\rbrrtx_comp.log.
 
 #define CINTERFACE
@@ -22,7 +23,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cctype>
 #include <cwchar>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -357,6 +360,7 @@ unsigned g_sunCreates = 0;
 // sun light fades out between +2 and -4 degrees and Remix's sky light (rtx.skyBrightness) dims to 1 % at -12.
 bool g_sunManual = false, g_sunMoving = false;
 float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon
+float g_sunShownEl = 90.0f;                            // elevation of the sun shown (game sun after the rules, or debug sun)
 float g_sunFade = 1.0f;                                // sun radiance factor of the light currently created
 float g_sunScale = 1.0f;                               // live brightness (sun_brighter / sun_dimmer keys), times g_sunRadiance
 float g_sunWeather = 1.0f;                             // stage atmosphere: cloud cover / rain / fog (atmosphere.ini)
@@ -599,6 +603,12 @@ float g_sunOverrideAz = 0.0f, g_sunOverrideEl = 0.0f;
 wchar_t g_sunSavedPath[MAX_PATH * 2] = {};
 RbrStageInfo g_atmoStage = {};                         // stage of the look applied last (atmo_frame)
 int g_sunRuleLogged = -1;                              // last rule logged (0 none, 1 capped, 2 fallback)
+// Night weather (user 2026-10-23): RSF night presets are day sections with a night comment (Maps\<id>\TrackSettings
+// <id>.ini, "Comment = NIGHT", "NIGHT/DARK", "Starry Night" in ~150 sections, or "; Night" after the section name),
+// and their SunDir is often a normal day sun (Kaihuavaara 2021 O_E_nosnow_clear: 17 degrees). On such a stage the
+// Remix sun's elevation is held inside atmosphere.ini [atmosphere] night_sun = min, max (default -5, 5; none = off).
+bool g_night = false, g_nightOn = true;
+float g_nightMin = -5.0f, g_nightMax = 5.0f;
 
 void sun_rule(float d[3]) {
   const float horiz = std::sqrt(d[0] * d[0] + d[2] * d[2]);
@@ -609,6 +619,10 @@ void sun_rule(float d[3]) {
   else if (g_sunOverride) { rule = 3; az = g_sunOverrideAz; el = g_sunOverrideEl; }
   else if (elev > g_sunValidMax) { rule = 2; az = g_sunFallbackAz; el = g_sunFallbackEl; }
   else if (elev > g_sunMaxElev) { rule = 1; el = g_sunMaxElev; }
+  if (!g_inMenu && g_night && g_nightOn && (el > g_nightMax || el < g_nightMin)) {
+    rule = 5;
+    el = std::clamp(el, g_nightMin, g_nightMax);
+  }
   if (rule) {
     const float e = el * 0.0174533f, a = az * 0.0174533f;
     d[0] = std::cos(e) * std::cos(a);
@@ -618,12 +632,12 @@ void sun_rule(float d[3]) {
   if (rule != g_sunRuleLogged) {
     g_sunRuleLogged = rule;
     clog(L"sun rule: game sun elevation %.1f deg -> %s (azimuth %.1f, elevation %.1f)", elev,
-         rule == 4 ? L"menu azimuth (atmosphere.ini)" : rule == 3 ? L"stage override (atmosphere.ini)" : rule == 2 ? L"missing or overhead, fallback" : rule == 1 ? L"capped" : L"kept 1:1", az, el);
+         rule == 5 ? L"night weather, held in night_sun (atmosphere.ini)" : rule == 4 ? L"menu azimuth (atmosphere.ini)" : rule == 3 ? L"stage override (atmosphere.ini)" : rule == 2 ? L"missing or overhead, fallback" : rule == 1 ? L"capped" : L"kept 1:1", az, el);
   }
 }
 
 void update_sun() {
-  if (!g_apiOk || !g_enabled || !g_sunOn || (!g_cset[41] && !g_sunManual)) return;
+  if (!g_cset[41] && !g_sunManual) return;
   float d[3] = { g_c[41][0], g_c[41][1], g_c[41][2] };  // direction the light travels: y < 0 = sun above the horizon
   if (g_sunManual) {
     const float el = g_sunEl * 0.0174533f, az = g_sunAz * 0.0174533f;
@@ -637,6 +651,8 @@ void update_sun() {
   if (len < 1e-4f) return;
   for (float& v : d) v /= len;
   const float elev = std::asin(std::clamp(-d[1], -1.0f, 1.0f)) * 57.2958f;
+  g_sunShownEl = elev;                                 // also with the sun key off: the headlights' automatic switch
+  if (!g_apiOk || !g_enabled || !g_sunOn) return;
   const float fade = std::clamp((elev + 4.0f) / 6.0f, 0.0f, 1.0f);   // twilight: full at +2, gone at -4 degrees
   if (fade <= 0.0f) {                                  // night: no sun light at all
     if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
@@ -791,6 +807,10 @@ void atmo_load() {
     wchar_t v[32] = {};
     GetPrivateProfileStringW(L"atmosphere", L"menu_sun_azimuth", L"28.0", v, 32, path);
     g_menuSunOn = swscanf_s(v, L"%f", &g_menuSunAz) == 1;
+    GetPrivateProfileStringW(L"atmosphere", L"night_sun", L"-5, 5", v, 32, path);
+    float lo, hi;
+    g_nightOn = swscanf_s(v, L"%f , %f", &lo, &hi) == 2;
+    if (g_nightOn) { g_nightMin = (std::min)(lo, hi); g_nightMax = (std::max)(lo, hi); }
   }
   wchar_t names[8192];
   if (!GetPrivateProfileSectionNamesW(names, 8192, path)) { g_atmoEnabled = false; clog(L"atmosphere: no %s, off", path); return; }
@@ -849,6 +869,50 @@ std::wstring car_desc(int carId) {
          (shaders[0] ? shaders : L"none") + L")";
 }
 
+// The stage's TrackSettings section for this time of day and weather says night ("night" in its Comment or in the
+// text after the section name). Both section forms are tried: <id><T>_<sky>_<clouds> and <id>O_<T>_<sky>_<clouds>.
+bool stage_is_night(const RbrStageInfo& si, std::wstring* found) {
+  wchar_t exe[MAX_PATH] = {};
+  DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH || si.timeOfDay < 0 || si.timeOfDay > 2) return false;
+  const fs::path maps = fs::path(exe).parent_path() / L"Maps";
+  const std::wstring id = std::to_wstring(si.trackId);
+  fs::path file;
+  std::error_code ec;
+  for (auto it = fs::directory_iterator(maps, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    const std::wstring dir = it->path().filename().wstring();
+    if (dir.compare(0, id.size(), id) || (dir.size() > id.size() && iswdigit(dir[id.size()]))) continue;
+    const fs::path f = it->path() / (L"TrackSettings" + id + L".ini");
+    if (fs::exists(f, ec)) { file = f; break; }
+  }
+  if (file.empty()) return false;
+  const wchar_t tod = L"MNE"[si.timeOfDay];
+  std::wstring sky = rbrrtx_sky_name(si.skyType), clouds = rbrrtx_cloud_name(si.clouds);
+  for (auto& c : sky) c = towlower(c);
+  for (auto& c : clouds) c = towlower(c);
+  const std::wstring want[2] = { id + tod + L"_" + sky + L"_" + clouds, id + L"O_" + tod + L"_" + sky + L"_" + clouds };
+  std::ifstream in(file);
+  bool inWanted = false;
+  for (std::string l; std::getline(in, l);) {
+    std::string low = l;
+    for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const size_t b = low.find_first_not_of(" \t");
+    if (b == std::string::npos) continue;
+    if (low[b] == '[') {
+      const size_t e = low.find(']', b);
+      const std::wstring name(l.begin() + b + 1, l.begin() + (e == std::string::npos ? l.size() : e));
+      inWanted = !_wcsicmp(name.c_str(), want[0].c_str()) || !_wcsicmp(name.c_str(), want[1].c_str());
+      if (inWanted && e != std::string::npos && low.find("night", e) != std::string::npos) { *found = name; return true; }
+      continue;
+    }
+    if (inWanted && low.compare(b, 7, "comment") == 0 && low.find("night", b) != std::string::npos) {
+      *found = want[0];
+      return true;
+    }
+  }
+  return false;
+}
+
 void atmo_frame() {
   if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
   if (!g_atmoLoaded) atmo_load();
@@ -859,6 +923,22 @@ void atmo_frame() {
     g_inMenu = !inStage;
     g_sunRuleLogged = -1;
     if (g_inMenu) g_atmoKey.clear();                   // the next stage applies its look again
+  }
+  static std::wstring nightKey;
+  if (inStage) {                                       // night weather: also with the atmosphere off
+    wchar_t k[64];
+    swprintf_s(k, L"%d|%d|%d|%d", si.trackId, si.skyType, si.clouds, si.timeOfDay);
+    if (nightKey != k) {
+      nightKey = k;
+      std::wstring sec;
+      g_night = stage_is_night(si, &sec);
+      g_sunRuleLogged = -1;
+      if (g_night) clog(L"night weather: section [%s] says night; sun elevation held in %.1f..%.1f deg%s", sec.c_str(),
+                        g_nightMin, g_nightMax, g_nightOn ? L"" : L" (OFF: atmosphere.ini night_sun = none)");
+    }
+  } else {
+    nightKey.clear();
+    g_night = false;
   }
   if (!g_atmoEnabled || !inStage) return;
   wchar_t key[96];
@@ -1794,6 +1874,9 @@ bool before_draw(IDirect3DDevice9* dev) {
   if (g_curInfo && (g_curInfo->flags & SH_CAR)) {      // the car's position: centre of the culling keep radius
     g_carPos[0] = world._41; g_carPos[1] = world._42; g_carPos[2] = world._43;
     g_haveCar = true;
+    DWORD blend = FALSE;                               // the ghost car is drawn blended (opacity 0.4)
+    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+    rbrrtx_headlights_car_draw(&world._11, g_pendingPrims, blend != FALSE);
   }
   ++g_st.xformed;
   return apply_material_hint(dev);
@@ -2328,6 +2411,40 @@ void end_frame(IDirect3DDevice9* dev) {
     g_sunMoving = moving;
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
+  rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
+  {
+    // Remix's fallback light (rtx.fallbackLightMode 1 = only while no light exists) went out whenever the
+    // headlights came on at night (user 2026-10-23: it is their moonlight). Lights on and no sun: Always (2).
+    // Only when the user's own setting is 1: it is read again (rtx.conf, then the Alt+X save <game>\user.conf) at
+    // every headlights switch, so a Never (0) saved in Alt+X is left alone (user 2026-10-23: L kept turning it on).
+    static int baseMode = -1, sentMode = -1;
+    static bool keepWas = false;
+    const bool keep = g_apiOk && rbrrtx_headlights_keep_fallback() && !g_sun;
+    if (baseMode < 0 || keep != keepWas) {
+      keepWas = keep;
+      int mode = static_cast<int>(conf_float("rtx.fallbackLightMode", 1.0f));
+      wchar_t user[MAX_PATH] = {};
+      const DWORD n = GetModuleFileNameW(nullptr, user, MAX_PATH);
+      if (n > 0 && n < MAX_PATH) {
+        std::ifstream in(fs::path(user).parent_path() / L"user.conf");
+        for (std::string l; std::getline(in, l);) {
+          const size_t k = l.find("rtx.fallbackLightMode");
+          if (k != std::string::npos && l.find_first_not_of(" \t") == k && l.find('=', k) != std::string::npos)
+            mode = std::atoi(l.c_str() + l.find('=', k) + 1);
+        }
+      }
+      if (baseMode < 0) sentMode = mode;               // what Remix starts with
+      baseMode = mode;
+    }
+    const int want = keep && baseMode == 1 ? 2 : baseMode;
+    if (want != sentMode && (want == 2 || sentMode == 2)) {   // only undo what we did, never set the user's value
+      sentMode = want;
+      remix_set("rtx.fallbackLightMode", want == 2 ? "2" : want == 0 ? "0" : "1");
+      clog(L"fallback light: rtx.fallbackLightMode %d (%s)", want, want == 2 ? L"headlights on at night: kept" : L"back to your setting");
+    } else if (want != sentMode) {
+      sentMode = want;                                 // the user's own change: follow it silently
+    }
+  }
   if (rbrrtx_key_pressed(RBRKEY_GROUND_LAYER)) {
     g_layerOn = !g_layerOn;
     rbrrtx_layer_enable(g_layerOn);
@@ -2584,7 +2701,11 @@ HRESULT STDMETHODCALLTYPE hk_SetRenderTarget(IDirect3DDevice9* dev, DWORD index,
 HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
   const HRESULT hr = o.BeginScene(dev);
   ++g_st.scenes;
-  if (SUCCEEDED(hr) && !g_sunDrawn) { g_sunDrawn = true; update_sun(); }
+  if (SUCCEEDED(hr) && !g_sunDrawn) {
+    g_sunDrawn = true;
+    update_sun();
+    if (g_enabled && g_apiOk) rbrrtx_headlights_emit();   // once per frame, with the sun: from RBR's car object
+  }
   return hr;
 }
 
@@ -2598,10 +2719,10 @@ void destroy_sun(const wchar_t* why) {
 // The final Release destroys the device; drop our Remix API light first. A light still alive when the bridge
 // shuts down made exits take ~30 s with Remix's Reflex mode on (found 2026-10-15).
 ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
-  if (g_sun) {
+  if (g_apiOk) {
     const ULONG refs = o.AddRef(dev);
     o.Release(dev);
-    if (refs == 2) destroy_sun(L"device released");
+    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); }
   }
   return o.Release(dev);
 }
@@ -3002,6 +3123,9 @@ void sweep_begin() {
              g_sunOn ? L"on" : L"OFF", g_sunManual ? L"debug sun" : L"game sun", az, el, g_c[41][0], g_c[41][1], g_c[41][2],
              g_sunScale, g_sunWeather);
   r += s;
+  rbrrtx_headlights_status(s, 1024);
+  r += s;
+  r += L"\n";
   swprintf_s(s, L"proxy: comp %s, FF scenery mode %d (sway near %.0f m), foliage mode %d (ALPHAREF %lu), dust %u %%, sky mode %d, "
                 L"windscreen %s, culling %s, transform mode %d\n",
              g_enabled ? L"ON" : L"off", g_ffMode, g_ffSwayNear, g_foliageMode, g_cutoutRef, g_dustKeep, g_skyMode,
@@ -3582,6 +3706,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   remember_backbuffer(dev);
   rbrrtx_harvest_install(dev);
   init_remix_api();
+  rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");
   return hr;
 }

@@ -50,6 +50,13 @@ int wmain(int argc, wchar_t** argv) {
           wprintf(L"FAIL default %s = 0x%X, shipped keys.ini = 0x%X\n", g_actions[k].ini, defaults[k], g_actions[k].vk);
           ++fails;
         }
+    if (shipped)                             // no two actions on one key (sun moved to Alt+L for the headlights' L)
+      for (int a = 0; a < RBRKEY_COUNT; ++a)
+        for (int b = a + 1; b < RBRKEY_COUNT; ++b)
+          if (g_actions[a].vk && g_actions[a].vk == g_actions[b].vk) {
+            wprintf(L"FAIL %s and %s share a key\n", g_actions[a].ini, g_actions[b].ini);
+            ++fails;
+          }
   }
   wprintf(fails ? L"%d FAILED\n" : L"parse checks passed\n", fails);
   return fails;

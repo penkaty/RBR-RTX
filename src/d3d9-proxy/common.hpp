@@ -64,6 +64,9 @@ struct RbrStageInfo {
   int tarmac, gravel, snow;                                   // surface percent from RSF
 };
 bool rbrrtx_stage_info(RbrStageInfo* out);
+// RBR's car movement object (0x8EF660) +0x100, 20 floats; car position = out[16..18] in physics space (= render world
+// with Y and Z swapped). Pre-stage/stage/replay only; false if not readable.
+bool rbrrtx_player_car_raw(float out[20]);
 const wchar_t* rbrrtx_sky_name(int skyType);                  // Crisp, Hazy, NoRain, LightRain, ...
 const wchar_t* rbrrtx_cloud_name(int clouds);
 const wchar_t* rbrrtx_time_name(int timeOfDay);
@@ -75,11 +78,22 @@ bool rbrrtx_screenshot(HWND wnd, const wchar_t* png_path, double* mean_luma);
 // exception_trace.cpp
 void rbrrtx_exception_trace_install();
 
+// headlights.cpp: car headlights as Remix API spot lights (headlights key: one centre light -> two lamps -> off;
+// on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
+struct remixapi_Interface;
+void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Remix API: headlights off
+void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended);   // each car draw on the primary target (row-major W)
+void rbrrtx_headlights_emit();                                 // once per frame at the first BeginScene (with the sun)
+void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
+void rbrrtx_headlights_destroy();
+bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
+void rbrrtx_headlights_status(wchar_t* out, size_t n);
+
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);
