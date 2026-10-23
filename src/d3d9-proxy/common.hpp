@@ -67,6 +67,7 @@ bool rbrrtx_stage_info(RbrStageInfo* out);
 // RBR's car movement object (0x8EF660) +0x100, 20 floats; car position = out[16..18] in physics space (= render world
 // with Y and Z swapped). Pre-stage/stage/replay only; false if not readable.
 bool rbrrtx_player_car_raw(float out[20]);
+bool rbrrtx_player_car_brake(float* brake);                    // brake input 0..1 (car object +0x860)
 const wchar_t* rbrrtx_sky_name(int skyType);                  // Crisp, Hazy, NoRain, LightRain, ...
 const wchar_t* rbrrtx_cloud_name(int clouds);
 const wchar_t* rbrrtx_time_name(int timeOfDay);
@@ -87,6 +88,8 @@ void rbrrtx_headlights_emit();                                 // once per frame
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
 void rbrrtx_headlights_destroy();
 bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
+unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of the backfire sprite to watch for (0 = none now)
+void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.

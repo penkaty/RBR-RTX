@@ -21,6 +21,15 @@
 // Lights: Remix 1.5.2 keys API lights by hash; re-creating one overwrites it (its RTXDI index resets either way,
 // rtx_lights.cpp copyFrom), and through the bridge every CreateLight takes a new handle, so a moved lamp is
 // destroyed and created again (as the sun) and drawn every frame (DrawLightInstance is per frame).
+//
+// Rear (user 2026-10-23): two red spots at Point_light_brake_lb / _rb (on all 109 models; Point_light_lb is broken on
+// some, Fabia R5 evo x = 0), aimed backwards. Tail lights while the headlights are on; brake lights, brighter, whenever
+// RBR's brake input (car object +0x860, 0..1) is pressed, headlights on or off. Values after xoxor4d's gta4-rtx
+// (game_lights.cpp veh_center_rearlight, comp_settings.hpp): rear intensity scalar 0.6 against 1.2 for the
+// headlights (= half), cone 0.6 x the headlight's + 5 degrees, aimed back and 0.2 down (11.3 degrees).
+// Backfire (exhaust pop): RBR draws the g_pop particle (Maps\PS_*.ini g_pop_particleclass, sprite g_pop.dds in
+// Textures\particles.dat, Remix hash 0x93E4994710A5380B with ParticleMod by Kahoo v5); a draw with that texture
+// flashes a short orange point light at the pipe tip (Point_exhaust1, pushed out along Point_exhaust2 -> 1).
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
@@ -74,6 +83,20 @@ struct Settings {
   float volumetric = 1.0f;                             // volumetricRadianceScale (beams in fog / dust)
   bool fallbackOn = true;                              // keep Remix's fallback light while the lights are on at night
   V3 fallback = { 0.6f, 0.5f, -1.8f };                 // model offset of the left lamp when the model has none
+  // Rear lamps (gta4-rtx: rear intensity 0.6 vs 1.2 headlights = half; cone 0.6 x + 5; aimed back, 0.2 down). RBR's
+  // own lamp sprites are pure red (Cars\*\*_settings.ini Red 255 Green 0 Blue 0). Tail = a quarter of the brake light.
+  bool rear = true, brakeLights = true;
+  float brakeRadiance[3] = { 6480.0f, 130.0f, 65.0f }; // per lamp while braking: half a headlight, red
+  float tailRadiance[3] = { 1620.0f, 32.0f, 16.0f };   // per lamp with the headlights on
+  float rearCone = 36.0f * 0.6f + 5.0f, rearSoftness = 0.15f;
+  float rearPitch = 11.3f;                             // degrees below straight back (atan 0.2)
+  float rearBack = 0.05f;                              // metres behind the lamp node (outside the lens)
+  float brakeOn = 0.05f;                               // brake input (0..1) that lights them; off again below half of it
+  // Backfire flash
+  bool pop = true;
+  float popRadiance[3] = { 8000.0f, 3600.0f, 960.0f }; // orange (flame), point light
+  float popRadius = 0.08f, popHold = 0.06f, popOut = 0.12f;   // m, s after the last pop draw, m beyond the pipe tip
+  unsigned long long popTexture = 0x93E4994710A5380BULL;
 } g_cfg;
 
 float ini_float(const wchar_t* path, const wchar_t* key, float dflt) {
@@ -116,6 +139,23 @@ void load_settings() {
     s.forward = std::clamp(ini_float(path, L"forward", s.forward), -1.0f, 1.0f);
     s.volumetric = std::clamp(ini_float(path, L"volumetric", s.volumetric), 0.0f, 100.0f);
     s.fallbackOn = ini_float(path, L"keep_fallback_light", 1.0f) != 0.0f;
+    s.rear = ini_float(path, L"tail_lights", 1.0f) != 0.0f;
+    s.brakeLights = ini_float(path, L"brake_lights", 1.0f) != 0.0f;
+    ini_rgb(path, L"brake_radiance", s.brakeRadiance);
+    ini_rgb(path, L"tail_radiance", s.tailRadiance);
+    s.rearCone = std::clamp(ini_float(path, L"rear_cone", s.rearCone), 1.0f, 89.0f);
+    s.rearSoftness = std::clamp(ini_float(path, L"rear_softness", s.rearSoftness), 0.0f, 1.0f);
+    s.rearPitch = std::clamp(ini_float(path, L"rear_pitch", s.rearPitch), -30.0f, 60.0f);
+    s.rearBack = std::clamp(ini_float(path, L"rear_back", s.rearBack), -1.0f, 1.0f);
+    s.brakeOn = std::clamp(ini_float(path, L"brake_on", s.brakeOn), 0.001f, 1.0f);
+    s.pop = ini_float(path, L"backfire_light", 1.0f) != 0.0f;
+    ini_rgb(path, L"backfire_radiance", s.popRadiance);
+    s.popRadius = std::clamp(ini_float(path, L"backfire_radius", s.popRadius), 0.005f, 1.0f);
+    s.popHold = std::clamp(ini_float(path, L"backfire_hold", s.popHold), 0.0f, 2.0f);
+    s.popOut = std::clamp(ini_float(path, L"backfire_out", s.popOut), -1.0f, 1.0f);
+    wchar_t tex[32] = {};
+    GetPrivateProfileStringW(L"headlights", L"backfire_texture", L"", tex, 32, path);
+    if (tex[0]) s.popTexture = wcstoull(tex, nullptr, 16);
   }
   g_cfg = s;
   hlog(L"headlights (%s): %s, auto below sun %.1f deg in mode %d, radiance %.0f/%.0f/%.0f, "
@@ -124,6 +164,13 @@ void load_settings() {
        found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", s.autoBelow,
        s.autoMode, s.radiance[0], s.radiance[1], s.radiance[2], s.radius, s.cone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
        s.fallbackOn ? L"yes" : L"no", s.brightsRadiance[0], s.brightsCone, s.brightsSoftness, s.brightsPitch, s.brightsInset, s.brightsForward);
+  hlog(L"headlights: tail lights %s (radiance %.0f/%.0f/%.0f), brake lights %s (radiance %.0f/%.0f/%.0f, on at brake %.2f), "
+       L"rear cone %.1f softness %.2f pitch %.1f back %.2f; backfire light %s (texture %016llX, radiance %.0f/%.0f/%.0f, "
+       L"radius %.2f, hold %.2f s, out %.2f)",
+       s.rear ? L"on" : L"off", s.tailRadiance[0], s.tailRadiance[1], s.tailRadiance[2], s.brakeLights ? L"on" : L"off",
+       s.brakeRadiance[0], s.brakeRadiance[1], s.brakeRadiance[2], s.brakeOn, s.rearCone, s.rearSoftness, s.rearPitch,
+       s.rearBack, s.pop ? L"on" : L"off", s.popTexture, s.popRadiance[0], s.popRadiance[1], s.popRadiance[2], s.popRadius,
+       s.popHold, s.popOut);
 }
 
 // ---------------------------------------------------------------- car model (.sgc node tree)
@@ -136,6 +183,10 @@ struct CarModel {
   std::wstring file;                                   // what was read ("" = nothing)
   bool lamps = false;                                  // Point_light_lf / _rf found
   V3 lf = {}, rf = {};                                 // lamp positions in the root frame
+  bool rear = false;                                   // rear lamps found (Point_light_brake_lb/rb, else _lb/_rb)
+  V3 lb = {}, rb = {};
+  bool exhaust = false;                                // Point_exhaust1 (pipe tip) found
+  V3 exhaustTip = {}, exhaustDir = {};                 // tip and its outward direction (from Point_exhaust2)
   V3 forward = { 0, 0, -1 };                           // model forward axis (up = +y)
   Placed body = { { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 0 } } };   // model root -> body node (e_body, i_body)
   std::string bodyName = "(none: root frame)";
@@ -230,6 +281,33 @@ void load_car_model(const std::wstring& file) {
     const float front = (g_car.lf.z + g_car.rf.z) * 0.5f, back = (lb.z + rb.z) * 0.5f;
     if (std::fabs(front - back) > 0.5f) g_car.forward = { 0, 0, front < back ? -1.0f : 1.0f };
   }
+  // Rear lamps, one per side; tail and brake light share it. Per side the brake light node, else the tail node, if it
+  // lies at the back and on that side of the headlights' centreline: on ds3_r5 and yaris_rally2 Point_light_brake_lb is
+  // the high centre brake light (x 0, y 1.3), on Fabia R5 evo Point_light_lb sits at x 0. Some models are off-centre
+  // (208 T16, Fabia S2000, Fiesta R5: both headlights at x < 0), so the side is taken from the centreline, not x = 0.
+  // A side with no usable node mirrors the other one.
+  if (g_car.lamps) {
+    const float c = (g_car.lf.x + g_car.rf.x) * 0.5f, front = (g_car.lf.z + g_car.rf.z) * 0.5f;
+    auto usable = [&](const char* name, float side, V3& out) {
+      V3 p;
+      return lamp(name, p) && (p.z - front) * -g_car.forward.z > 2.0f && (p.x - c) * side > 0.2f && (out = p, true);
+    };
+    const float sl = g_car.lf.x > c ? 1.0f : -1.0f;    // the side Point_light_lf (and so _lb) is on
+    const bool hl = usable("Point_light_brake_lb", sl, g_car.lb) || usable("Point_light_lb", sl, g_car.lb);
+    const bool hr = usable("Point_light_brake_rb", -sl, g_car.rb) || usable("Point_light_rb", -sl, g_car.rb);
+    if (hl && !hr) g_car.rb = { 2.0f * c - g_car.lb.x, g_car.lb.y, g_car.lb.z };
+    if (hr && !hl) g_car.lb = { 2.0f * c - g_car.rb.x, g_car.rb.y, g_car.rb.z };
+    g_car.rear = hl || hr;
+  }
+  V3 ex2 = {};
+  if (lamp("Point_exhaust1", g_car.exhaustTip)) {      // the tip; Point_exhaust2 lies further in along the pipe
+    g_car.exhaust = true;
+    const V3 out = lamp("Point_exhaust2", ex2) ? norm(g_car.exhaustTip - ex2) : V3{ 0, 0, 0 };
+    g_car.exhaustDir = len(out) > 0.5f ? out : g_car.forward * -1.0f;
+  } else if (lamp("Point_exhaust2", g_car.exhaustTip)) {
+    g_car.exhaust = true;
+    g_car.exhaustDir = g_car.forward * -1.0f;
+  }
   for (const char* name : { "e_body", "i_body" }) {   // the frame most of the car is drawn in
     auto it = byName.find(name);
     if (it == byName.end()) continue;
@@ -259,6 +337,10 @@ void load_car_model(const std::wstring& file) {
   hlog(L"headlights: car model %s: %zu nodes (%zu distinct drawn parts), body frame %S, lamps %s lf (%.3f %.3f %.3f) rf (%.3f %.3f %.3f), "
        L"forward model %+.0f z, %.1f ms", file.c_str(), nodes.size(), g_car.parts.size(), g_car.bodyName.c_str(), g_car.lamps ? L"found" : L"MISSING",
        g_car.lf.x, g_car.lf.y, g_car.lf.z, g_car.rf.x, g_car.rf.y, g_car.rf.z, g_car.forward.z, ms);
+  hlog(L"headlights: rear lamps %s lb (%.3f %.3f %.3f) rb (%.3f %.3f %.3f), exhaust %s tip (%.3f %.3f %.3f) out (%.2f %.2f %.2f)",
+       g_car.rear ? L"found" : L"MISSING", g_car.lb.x, g_car.lb.y, g_car.lb.z, g_car.rb.x, g_car.rb.y, g_car.rb.z,
+       g_car.exhaust ? L"found" : L"MISSING", g_car.exhaustTip.x, g_car.exhaustTip.y, g_car.exhaustTip.z,
+       g_car.exhaustDir.x, g_car.exhaustDir.y, g_car.exhaustDir.z);
 }
 
 // Cars\Cars.ini [CarNN] FileName for the car slot (0..7), next to the game exe.
@@ -422,10 +504,18 @@ bool g_manual = false;                                 // the key was used on th
 bool g_dark = false;                                   // sun below auto_below_sun (last frame)
 int g_track = -1, g_carSlot = -1;
 bool g_emitted = false;
-struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; bool drawn = false; };
-Lamp g_lamps[5] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
-                    { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL } };   // RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF
+struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; float rad[3] = {}; };
+// RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire)
+Lamp g_lamps[8] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
+                    { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
+                    { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL } };
 unsigned g_creates = 0;
+bool g_braking = false;                                // brake lights lit (hysteresis on the brake input)
+unsigned g_brakeSwitches = 0;
+std::chrono::steady_clock::time_point g_lastPop;       // last frame with a backfire draw
+bool g_popSeen = false;
+unsigned g_popDraws = 0, g_popFlashes = 0;
+bool g_popActive = false;
 
 void destroy_lamp(Lamp& l) {
   if (l.h && g_api && g_api->DestroyLight) g_api->DestroyLight(l.h);
@@ -449,15 +539,17 @@ void set_mode(int m, const wchar_t* why) {
   rbrrtx_report_event(ev);
 }
 
-void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float softness) {
-  const bool moved = !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone;
+// cone >= 180 = a plain point light (no shaping; dir unused). radius 0 = the headlights' radius.
+void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float softness, float radius = 0.0f) {
+  const bool moved = !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone ||
+                     rad[0] != l.rad[0] || rad[1] != l.rad[1] || rad[2] != l.rad[2];
   if (moved) {
     destroy_lamp(l);
     remixapi_LightInfoSphereEXT sphere = {};
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
     sphere.position = { pos.x, pos.y, pos.z };
-    sphere.radius = g_cfg.radius;
-    sphere.shaping_hasvalue = TRUE;
+    sphere.radius = radius > 0.0f ? radius : g_cfg.radius;
+    sphere.shaping_hasvalue = cone < 180.0f;
     sphere.shaping_value.direction = { dir.x, dir.y, dir.z };
     sphere.shaping_value.coneAngleDegrees = cone;
     sphere.shaping_value.coneSoftness = softness;
@@ -474,10 +566,11 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
       if (++g_creates <= 20) hlog(L"headlights: CreateLight failed, error %d", static_cast<int>(err));
       return;
     }
-    if (++g_creates <= 4)
+    if (++g_creates <= 6)
       hlog(L"headlights: lamp %016llX at (%.2f %.2f %.2f) aimed (%.3f %.3f %.3f), cone %.1f, radiance %.0f",
            l.hash, pos.x, pos.y, pos.z, dir.x, dir.y, dir.z, cone, rad[0]);
     l.pos = pos; l.dir = dir; l.cone = cone;
+    std::memcpy(l.rad, rad, sizeof(l.rad));
   }
   g_api->DrawLightInstance(l.h);
 }
@@ -508,7 +601,20 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
 }
 
 void rbrrtx_headlights_emit() {
-  if (g_emitted || !g_api || g_mode == kOff) return;
+  if (g_emitted || !g_api || !g_cfg.enabled || g_track < 0) return;
+  // Brake lights: on above brake_on, off below half of it (no flicker from a pedal resting at the threshold).
+  float brake = 0.0f;
+  const bool brakeRead = rbrrtx_player_car_brake(&brake);
+  const bool braking = g_cfg.brakeLights && brakeRead && brake > (g_braking ? g_cfg.brakeOn * 0.5f : g_cfg.brakeOn);
+  if (braking != g_braking && ++g_brakeSwitches <= 3)
+    hlog(L"headlights: brake lights %s (brake input %.2f)", braking ? L"ON" : L"off", brake);
+  g_braking = braking;
+  const bool pop = g_cfg.pop && g_popSeen &&
+                   std::chrono::duration<float>(std::chrono::steady_clock::now() - g_lastPop).count() <= g_cfg.popHold;
+  if (pop && !g_popActive && ++g_popFlashes <= 3) hlog(L"headlights: backfire flash (%u pop draws so far)", g_popDraws);
+  g_popActive = pop;
+  const bool tail = g_cfg.rear && g_mode != kOff;
+  if (g_mode == kOff && !braking && !pop) return;
   g_emitted = true;
   float C[16];
   if (!place_frame(C)) {
@@ -526,6 +632,18 @@ void rbrrtx_headlights_emit() {
   const V3 fwd = norm(row(C, 2) * g_car.forward.z);
   const V3 up = norm(row(C, 1));
   auto aim = [&](float pitchDeg) { const float pr = pitchDeg * 0.0174533f; return norm(fwd * std::cos(pr) - up * std::sin(pr)); };
+  if ((tail || braking) && g_car.rear) {               // rear: aimed straight back and rearPitch down
+    const V3 back = g_car.forward * -g_cfg.rearBack;
+    const float pr = g_cfg.rearPitch * 0.0174533f;
+    const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
+    const float* rad = braking ? g_cfg.brakeRadiance : g_cfg.tailRadiance;
+    draw_lamp(g_lamps[5], to_world(C, g_car.lb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+    draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+  }
+  if (pop && g_car.exhaust)                            // backfire: a point light just beyond the pipe tip
+    draw_lamp(g_lamps[7], to_world(C, g_car.exhaustTip + g_car.exhaustDir * g_cfg.popOut), up, 180.0f, g_cfg.popRadiance,
+              0.0f, g_cfg.popRadius);
+  if (g_mode == kOff) return;
   const V3 dir = aim(g_cfg.pitch);
   draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
   draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
@@ -563,6 +681,7 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     g_solved = g_failed = 0;
     g_off = Offset();
     g_haveLastPhys = false;
+    g_braking = g_popSeen = g_popActive = false;
     load_settings();
     const std::wstring model = car_model_path(si.carId);
     if (model != g_car.file) load_car_model(model);
@@ -582,12 +701,24 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   g_dark = dark;
 }
 
+unsigned long long rbrrtx_headlights_pop_texture() {
+  return g_cfg.enabled && g_cfg.pop && g_track >= 0 && g_api ? g_cfg.popTexture : 0;
+}
+
+void rbrrtx_headlights_pop_drawn() {
+  ++g_popDraws;
+  g_popSeen = true;
+  g_lastPop = std::chrono::steady_clock::now();
+}
+
 bool rbrrtx_headlights_keep_fallback() { return g_mode != kOff && g_cfg.enabled && g_cfg.fallbackOn; }
 
 void rbrrtx_headlights_destroy() { destroy_all(); }
 
 void rbrrtx_headlights_status(wchar_t* out, size_t n) {
-  swprintf_s(out, n, L"headlights: %s%s, model %s (lamps %s), auto below sun %.1f deg, placed %u / not placed %u frames",
+  swprintf_s(out, n, L"headlights: %s%s, model %s (lamps %s, rear %s, exhaust %s), auto below sun %.1f deg, placed %u / not placed %u frames; "
+             L"brake lights %s; backfire draws %u, flashes %u",
              mode_name(g_mode), g_manual ? L" (set by key)" : L" (automatic)", g_car.file.empty() ? L"none" : g_car.file.c_str(),
-             g_car.lamps ? L"from model" : L"fallback", g_cfg.autoBelow, g_solved, g_failed);
+             g_car.lamps ? L"from model" : L"fallback", g_car.rear ? L"yes" : L"no", g_car.exhaust ? L"yes" : L"no",
+             g_cfg.autoBelow, g_solved, g_failed, g_braking ? L"ON" : L"off", g_popDraws, g_popFlashes);
 }

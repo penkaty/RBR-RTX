@@ -26,6 +26,7 @@ void rbrrtx_report_event(const wchar_t*) {}
 bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
 float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
 bool g_testPhysOn = false;
+bool rbrrtx_player_car_brake(float*) { return false; }
 bool rbrrtx_player_car_raw(float out[20]) {
   if (!g_testPhysOn) return false;
   std::memcpy(out, g_testRaw, sizeof(g_testRaw));
@@ -65,7 +66,7 @@ int wmain(int argc, wchar_t** argv) {
   const V3 rows[3] = { x, y, z };
   for (int r = 0; r < 3; ++r) { C[r * 4] = rows[r].x; C[r * 4 + 1] = rows[r].y; C[r * 4 + 2] = rows[r].z; }
   C[12] = 1234.5f; C[13] = 87.25f; C[14] = -4321.0f; C[15] = 1;
-  int cars = 0, fails = 0, noLamps = 0, noBody = 0;
+  int cars = 0, fails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0;
   for (const auto& e : std::filesystem::recursive_directory_iterator(argv[1])) {
     if (_wcsicmp(e.path().extension().c_str(), L".sgc") != 0) continue;
     ++cars;
@@ -139,13 +140,25 @@ int wmain(int argc, wchar_t** argv) {
     const bool placed = place_frame(P);
     const V3 want = to_world(C2, g_car.lf);
     const float err = len(to_world(P, g_car.lf) - want), dirErr = len(norm(row(P, 2)) - norm(row(C2, 2)));
-    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f;
+    // Rear lamps: one each side, behind the headlights; exhaust tip behind the car's middle, unit direction.
+    const float cx = (g_car.lf.x + g_car.rf.x) * 0.5f;   // some models are off-centre: sides from the centreline
+    const bool rearOk = g_car.rear && (g_car.lb.x - cx) * (g_car.rb.x - cx) < 0.0f && (g_car.lb.x - cx) * (g_car.lf.x - cx) > 0.0f &&
+                        std::fabs(g_car.lb.y - g_car.rb.y) < 0.3f && dot(g_car.lb - g_car.lf, g_car.forward) < -2.0f &&
+                        dot(g_car.rb - g_car.rf, g_car.forward) < -2.0f;
+    const bool exhaustOk = g_car.exhaust && dot(g_car.exhaustTip, g_car.forward) < 0.0f && std::fabs(len(g_car.exhaustDir) - 1.0f) < 1e-3f;
+    if (!rearOk) ++noRear;
+    if (!exhaustOk) ++noExhaust;
+    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk;
     if (!ok) ++fails;
     if (g_car.bodyName[0] == '(') ++noBody;
-    wprintf(L"%-30s lf (%5.2f %5.2f %5.2f) rf (%5.2f %5.2f %5.2f) fwd %+.0fz | body %-18S err %.4f %s\n",
+    wprintf(L"%-30s lf (%5.2f %5.2f %5.2f) rf (%5.2f %5.2f %5.2f) fwd %+.0fz | body %-18S err %.4f | rear (%5.2f %5.2f %5.2f) "
+            L"(%5.2f %5.2f %5.2f)%s | exhaust (%5.2f %5.2f %5.2f) out (%5.2f %5.2f %5.2f)%s %s\n",
             e.path().filename().c_str(), g_car.lf.x, g_car.lf.y, g_car.lf.z, g_car.rf.x, g_car.rf.y, g_car.rf.z,
-            g_car.forward.z, g_car.bodyName.c_str(), err, ok ? L"ok" : L"FAIL");
+            g_car.forward.z, g_car.bodyName.c_str(), err, g_car.lb.x, g_car.lb.y, g_car.lb.z, g_car.rb.x, g_car.rb.y, g_car.rb.z,
+            rearOk ? L"" : L" BAD", g_car.exhaustTip.x, g_car.exhaustTip.y, g_car.exhaustTip.z, g_car.exhaustDir.x,
+            g_car.exhaustDir.y, g_car.exhaustDir.z, exhaustOk ? L"" : L" BAD", ok ? L"ok" : L"FAIL");
   }
-  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d FAIL\n", cars, noLamps, noBody, fails);
+  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d FAIL\n", cars,
+          noLamps, noBody, noRear, noExhaust, fails);
   return cars > 0 && fails == 0 ? 0 : 1;
 }

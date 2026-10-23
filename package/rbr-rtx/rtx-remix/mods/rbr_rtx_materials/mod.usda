@@ -24,5 +24,22 @@ def Xform "RootNode"
                 token outputs:out
             }
         }
+        # exhaust pop (backfire) sprite g_pop.dds
+        def Material "mat_93E4994710A5380B"
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                bool inputs:use_legacy_alpha_state = 0
+                bool inputs:blend_enabled = 1
+                int inputs:blend_type = 1
+                bool inputs:enable_emission = 1
+                color3f inputs:emissive_color_constant = (1, 0.55, 0.2)
+                float inputs:emissive_intensity = 4
+                token outputs:out
+            }
+        }
     }
 }

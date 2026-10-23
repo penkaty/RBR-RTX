@@ -5,7 +5,7 @@ What it adds to the game folder (nothing else is changed):
   rbr-rtx\        Remix runtime, configs, logs, these scripts; Remix mods in rbr-rtx\rtx-remix\mods, Alt+X
                   captures in rbr-rtx\rtx-remix\captures (the folder name the RTX Remix Toolkit expects)
                   rtx-remix\mods\rbr_rtx_materials = RBR-RTX's own hand-tuned materials (so far: the mirrors
-                  of the BMW M3 E30 GrpA reflect for real)
+                  of the BMW M3 E30 GrpA reflect for real, the exhaust backfire flame glows)
 
 Install
   1. RSF launcher: Graphics mode = Normal (Vulkan/dgVoodoo/VR modes use their own d3d9.dll).
@@ -59,6 +59,9 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
            press L on that stage. Brightness, beam width, automatic switch:
            rbr-rtx\config\headlights.ini. Night weathers (the stage's weather says "night") get a sun between
            -5 and +5 degrees (atmosphere.ini night_sun), so the headlights come on there by themselves.
+           Tail lights (red, at the car's own rear lamps) are on with the headlights; brake lights light up
+           whenever you brake, headlights on or off. A backfire flashes a short orange light at the exhaust.
+           All in headlights.ini (tail_lights, brake_lights, backfire_light).
 
   Tuning:
   7       gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
@@ -83,8 +86,8 @@ Reporting a problem (please do!)
   https://github.com/penkaty/RBR-RTX/issues or the RBR-RTX Discord (link coming soon).
   Unusual weather (snow, fog, rain, night) and rarely driven stages can show wrong surfaces because Remix knows
   textures by hash and not all are sorted yet: a sweep from exactly there gives us the hashes to fix it.
-  No dynamic lights yet (headlights, night): RBR draws its lights as textures, so each has to be built through
-  the Remix API; that is the next big step.
+  Dynamic lights so far: headlights, high beams, tail and brake lights, the backfire flash (all built through
+  the Remix API: RBR draws its own lights as textures). Other cars' lights and reversing lights are not done yet.
 
 Fixing the sun on a stage
   Some stages need their sun position fixed: the Remix sun comes from another direction than the stage's baked

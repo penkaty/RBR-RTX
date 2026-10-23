@@ -37,6 +37,19 @@ bool read_car_raw(float out[20]) {
   return true;
 }
 
+// Brake input on the same object: +0x85C throttle, +0x860 brake, +0x864 handbrake, 0..1 (NGPCarMenu RBRAPI.h:226).
+bool read_car_brake(float* brake) {
+  float b;
+  __try {
+    const uintptr_t car = *reinterpret_cast<volatile uintptr_t*>(0x008EF660);
+    if (!car) return false;
+    b = *reinterpret_cast<volatile float*>(car + 0x860);
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+  if (!(b >= -0.01f && b <= 1.01f)) return false;
+  *brake = b;
+  return true;
+}
+
 int read_game_mode() {
   __try {
     const uintptr_t cfg = *reinterpret_cast<volatile uintptr_t*>(0x007EAC48);
@@ -109,6 +122,8 @@ void load_rsf() {
 }  // namespace
 
 bool rbrrtx_player_car_raw(float out[20]) { return read_car_raw(out); }
+
+bool rbrrtx_player_car_brake(float* brake) { return read_car_brake(brake); }
 
 bool rbrrtx_stage_info(RbrStageInfo* out) {
   if (!out) return false;

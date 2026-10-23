@@ -1764,6 +1764,15 @@ bool before_draw(IDirect3DDevice9* dev) {
     // hidden even with forced identity (23:37); see g_uiTriggerOn for what is tried next.
     const bool screenSpace = screen_space_input(dev);
     if (g_clockOn && !screenSpace && g_primaryRT) clock_note(dev);
+    // Backfire: RBR draws the exhaust pop sprite fixed-function (usage.tsv: g_pop.dds, additive, z-write off).
+    if (!screenSpace && g_primaryRT) {
+      const unsigned long long pop = rbrrtx_headlights_pop_texture();
+      IDirect3DBaseTexture9* t = nullptr;
+      if (pop && SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &t)) && t) {
+        t->lpVtbl->Release(t);
+        if (rbrrtx_texture_hash(t) == pop) rbrrtx_headlights_pop_drawn();
+      }
+    }
     for (int i = 0; i < 3; ++i)
       if (screenSpace) { g_devValid[i] = false; set_xf(dev, i, identity()); }   // uncached: suspect b)
       else if (g_gameSet[i]) set_xf(dev, i, g_game[i]);
