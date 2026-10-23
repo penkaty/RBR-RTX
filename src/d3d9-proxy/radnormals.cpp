@@ -33,6 +33,7 @@ struct Cfg {
   float mix = 1.0f;                                    // 1 = fully radial, 0 = card normals (as without this)
   float upBias = 0.0f;                                 // added along +Y before normalising (brighter tops)
   float centreDrop = 0.0f;                             // clump centre moved down by this x clump height (tilts up)
+  bool debug = false;                                  // every normal +X: shows whether Remix uses the stream at all
 } g_cfg;
 wchar_t g_cfgPath[MAX_PATH * 2] = {};
 
@@ -244,7 +245,7 @@ bool build(IDirect3DVertexBuffer9* vb, IDirect3DIndexBuffer9* ib, IDirect3DVerte
       const V3 radial = norm(pos[i] - ctr, norm(cardOut, fn));
       n = norm(radial * g_cfg.mix + fn * (1.0f - g_cfg.mix), fn);
     }
-    out[i] = norm(n + up * g_cfg.upBias, n);
+    out[i] = g_cfg.debug ? V3{ 1.0f, 0.0f, 0.0f } : norm(n + up * g_cfg.upBias, n);
   }
   if (FAILED(nb->lpVtbl->Lock(nb, first * 12, numV * 12, &p, 0)) || !p) { nlog(L"normal buffer not writable"); return false; }
   std::memcpy(p, out.data(), static_cast<size_t>(numV) * 12);
@@ -276,12 +277,14 @@ void rbrrtx_radnorm_load() {
   c.mix = cfg_float(L"mix", c.mix, 0.0f, 1.0f);
   c.upBias = cfg_float(L"up_bias", c.upBias, 0.0f, 5.0f);
   c.centreDrop = cfg_float(L"centre_drop", c.centreDrop, 0.0f, 2.0f);
+  c.debug = cfg_float(L"debug_normals", 0.0f, 0.0f, 1.0f) != 0.0f;
   const bool changed = c.clumpRadius != g_cfg.clumpRadius || c.mix != g_cfg.mix || c.upBias != g_cfg.upBias ||
-                       c.centreDrop != g_cfg.centreDrop;
+                       c.centreDrop != g_cfg.centreDrop || c.debug != g_cfg.debug;
   g_cfg = c;
   if (changed) release_all();                          // rebuilt with the new values on next sight
-  nlog(L"radial foliage normals %s (%s): clump_radius %.2f m, mix %.2f, up_bias %.2f, centre_drop %.2f",
-       g_cfg.enabled ? L"ON" : L"off", g_cfgPath, g_cfg.clumpRadius, g_cfg.mix, g_cfg.upBias, g_cfg.centreDrop);
+  nlog(L"radial foliage normals %s (%s): clump_radius %.2f m, mix %.2f, up_bias %.2f, centre_drop %.2f%s",
+       g_cfg.enabled ? L"ON" : L"off", g_cfgPath, g_cfg.clumpRadius, g_cfg.mix, g_cfg.upBias, g_cfg.centreDrop,
+       g_cfg.debug ? L"; DEBUG: every normal +X" : L"");
 }
 
 bool rbrrtx_radnorm_enabled() { return g_cfg.enabled; }
