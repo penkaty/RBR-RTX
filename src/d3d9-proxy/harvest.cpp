@@ -44,6 +44,36 @@ std::unordered_map<void*, Lock> g_texLocks, g_surfLocks;   // texture (level 0) 
 std::unordered_set<unsigned long long> g_seen;
 std::unordered_map<void*, unsigned long long> g_texHash;   // texture object -> hash of its mip 0 (this run)
 std::unordered_map<void*, int> g_texMinAlpha;              // texture object -> smallest alpha of its mip 0 (-1 unknown)
+std::unordered_map<void*, uint32_t> g_texAvg;              // texture object -> average colour of mip 0, 0x00RRGGBB
+
+// Average colour of mip-0 data, at most ~1024 samples: DXT blocks by the mean of their two endpoint colours,
+// 32-bit (A/X)8R8G8B8 by pixels. Other formats: false. Dust colour from the ground (particles.cpp).
+bool avg_rgb(D3DFORMAT f, const unsigned char* d, size_t size, uint32_t& out) {
+  double r = 0, g = 0, b = 0;
+  size_t n = 0;
+  if (f == D3DFMT_DXT1 || f == D3DFMT_DXT3 || f == D3DFMT_DXT5) {
+    const size_t blk = f == D3DFMT_DXT1 ? 8 : 16, colour = f == D3DFMT_DXT1 ? 0 : 8, blocks = size / blk;
+    const size_t step = blocks > 1024 ? blocks / 1024 : 1;
+    for (size_t i = 0; i < blocks; i += step) {
+      const unsigned char* c = d + i * blk + colour;
+      for (int e = 0; e < 2; ++e) {
+        const unsigned v = c[e * 2] | (c[e * 2 + 1] << 8);
+        r += ((v >> 11) & 31) / 31.0; g += ((v >> 5) & 63) / 63.0; b += (v & 31) / 31.0;
+        ++n;
+      }
+    }
+  } else if (f == D3DFMT_A8R8G8B8 || f == D3DFMT_X8R8G8B8) {
+    const size_t px = size / 4, step = px > 1024 ? px / 1024 : 1;
+    for (size_t i = 0; i < px; i += step) {
+      b += d[i * 4] / 255.0; g += d[i * 4 + 1] / 255.0; r += d[i * 4 + 2] / 255.0;
+      ++n;
+    }
+  }
+  if (!n) return false;
+  auto to8 = [&](double v) { return static_cast<uint32_t>(v / n * 255.0 + 0.5) & 0xFF; };
+  out = (to8(r) << 16) | (to8(g) << 8) | to8(b);
+  return true;
+}
 std::unordered_set<std::wstring> g_usage;                  // "shader|hash" pairs already in usage.tsv
 FILE* g_usageTsv = nullptr;
 std::wstring g_dir;
@@ -162,6 +192,9 @@ void record(IDirect3DTexture9* tex, const D3DSURFACE_DESC& d, const Lock& lk) {
   if (tex) {
     g_texHash[tex] = hx;
     g_texMinAlpha[tex] = rbrrtx_min_alpha(d.Format, reinterpret_cast<const unsigned char*>(data.data()), data.size());
+    uint32_t avg = 0;
+    if (avg_rgb(d.Format, reinterpret_cast<const unsigned char*>(data.data()), data.size(), avg)) g_texAvg[tex] = avg;
+    else g_texAvg.erase(tex);
   }
   if (g_dir.empty()) return;                         // hash only (stage sweep), no harvest folder
   ++g_seq;
@@ -252,6 +285,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
       std::lock_guard<std::mutex> g(g_mx);
       g_texHash.erase(t);
       g_texMinAlpha.erase(t);
+      g_texAvg.erase(t);
       auto h = g_held.find(t);
       if (h != g_held.end()) { held_release(h->second); g_held.erase(h); }
     }
@@ -278,6 +312,8 @@ HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseT
     auto a = g_texMinAlpha.find(src);
     if (h != g_texHash.end()) { g_texHash[dst] = h->second; ++g_updatesKnown; } else g_texHash.erase(dst);
     if (a != g_texMinAlpha.end()) g_texMinAlpha[dst] = a->second; else g_texMinAlpha.erase(dst);
+    auto av = g_texAvg.find(src);
+    if (av != g_texAvg.end()) g_texAvg[dst] = av->second; else g_texAvg.erase(dst);
     if (g_updates == 1 || g_updates % 500 == 0)
       hlog(L"UpdateTexture: %u copies, %u with a known source hash, %zu sources held (%.0f MB) for second layers",
            g_updates, g_updatesKnown, g_held.size(), g_heldBytes / 1048576.0);
@@ -366,6 +402,17 @@ int rbrrtx_texture_min_alpha(void* base_texture) {
   std::lock_guard<std::mutex> g(g_mx);
   auto it = g_texMinAlpha.find(base_texture);
   return it != g_texMinAlpha.end() ? it->second : -1;
+}
+
+bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]) {
+  if (!base_texture) return false;
+  std::lock_guard<std::mutex> g(g_mx);
+  auto it = g_texAvg.find(base_texture);
+  if (it == g_texAvg.end()) return false;
+  rgb[0] = ((it->second >> 16) & 0xFF) / 255.0f;
+  rgb[1] = ((it->second >> 8) & 0xFF) / 255.0f;
+  rgb[2] = (it->second & 0xFF) / 255.0f;
+  return true;
 }
 
 void* rbrrtx_layer_twin(void* texture) {

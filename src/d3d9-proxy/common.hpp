@@ -39,6 +39,8 @@ void rbrrtx_layer_enable(bool on);                            // off: release ev
 void rbrrtx_layer_stats(unsigned* held, unsigned* twins, double* mb);
 // harvest.cpp: smallest alpha (0..255) of that texture's mip 0, -1 if unknown (same hooks, alpha_min.hpp).
 int rbrrtx_texture_min_alpha(void* base_texture);
+// Average colour of a texture's mip 0 (sampled when the game uploaded it), 0..1; false = unknown.
+bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]);
 // harvest.cpp: writes mip 0 of a 2D texture to a .dds through a READONLY lock (frame dump; through the Remix bridge
 // that is the client's copy, the bytes it sent). False if the type or format is not handled or the lock fails.
 bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path);
@@ -93,6 +95,7 @@ unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of 
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
 void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir);  // before Remix starts: lit lamp textures made emissive
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
+int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
 
 // particles.cpp: Remix particles test build (docs/research/particles-remix.md): RBRRTX_EMIT_PROBE logs RBR's
 // CEmitter_Emit calls, RBRRTX_PARTICLE_TEST = Remix dust at the wheels (key dust = 7) and the game's dust never spawned.
@@ -101,6 +104,11 @@ void rbrrtx_particles_emit(bool sweeping);                     // once per frame
 void rbrrtx_particles_frame_end();                            // per Present: key, probe report
 void rbrrtx_particles_destroy();
 bool rbrrtx_particles_active();                               // Remix dust in this run: the dust key toggles it
+// Ground lookup for a wheel's new surface (particles.cpp asks, comp.cpp answers during the next draws). The flag is
+// false almost always: then the draw hooks do nothing for it.
+extern bool rbrrtx_surface_lookup_on;
+bool rbrrtx_surface_lookup_point(float out[3]);               // wheel contact point, render space (Y up)
+void rbrrtx_surface_lookup_hit(float dh, const float rgb[3], unsigned long long textureHash);
 void rbrrtx_particles_toggle();
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.

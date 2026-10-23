@@ -32,11 +32,38 @@
 //    RBR's camera type ([[[0x165FC68]+0x758]+0x10]+0, NGPCarMenu RBRAPI.h; 5 internal, 6 backseat) listed in
 //    hide_in_cameras = no dust drawn.
 //    User run 4 (2026-10-23): key 7 = Remix dust on/off; the game's own dust always off, and not just hidden: the
-//    hook passes amount 0 to CEmitter_Emit for emitters named in hide_game_emitters (particles.ini) and not in
+//    hook passes amount 0 to CEmitter_Emit for emitters named in dust_emitters (particles.ini; run 7) and not in
 //    keep_game_emitters, so those particles are never created (no simulation, no draws). With amount 0 the original
 //    still runs its bookkeeping (adds 0, stays below one particle, updates the emitter position) and spawns nothing.
 //    Other particles (rain, splash, exhaust pop = backfire light, fire) are not CEmitter_Emit calls from the tire
 //    handlers and stay as they are.
+//    User run 5 (2026-10-23): dust coloured like the surface under each wheel, only on a surface change, never as a
+//    task every frame. Wheels now come from RBR's own tire signal: CParticleSystem_OnTireParticles is reached through
+//    CConnection<CParticleSystem, CSigTireParticles>::Invoke (vtable 0x74DC54 slot 1 = thunk 0x5E3C70); that slot
+//    points at tire_invoke, which notes wheel (sig+0), contact point (midpoint of sig+0x10 / +0x20, physics space)
+//    and surface material (sig+0xA0 A, +0xA4 B, +0xA8 blend: A while blend < 0.5, getter 0x4F3EC0), then calls the
+//    thunk. Cost: a compare per tire signal. A material that stays 0.25 s is the wheel's new surface; a material
+//    not seen yet on this stage starts one ground lookup (comp.cpp surface_lookup, at most 40 frames): opaque
+//    scenery draws whose cached bounding sphere covers the wheel point are read once, the triangle under the point
+//    gives the draw's texture, and harvest.cpp's average colour of that texture (taken when the game uploaded it)
+//    is the surface colour. Colours are kept per material until the stage changes (a miss is retried later). Each wheel's puffs mix their
+//    colours with it (surface_mix, surface_brightness); a different colour is a different Remix particle system.
+//    User run 6 (2026-10-23): dust shown exactly when the headlights see the car body drawn (outside views) and hidden
+//    when it is not (cockpit views): rbrrtx_car_body_visible (headlights.cpp). hide_in_cameras is only the fallback
+//    while that is not known yet (car model offset not measured).
+//    User run 7 (2026-10-23, Harju 2019 and Rallysprint Hondarribia): dust on tarmac. The Remix dust only knew speed.
+//    Now it follows the game's own spawns per wheel: a dust emitter (dust_emitters: tirespray, dust, sand) asking for
+//    particles (amount > 0) marks the nearest wheel dusty for dust_hold_ms and is cut; a smoke emitter
+//    (smoke_emitters: tiresmoke) is cut only on a dusty wheel (on gravel its "smoke" is dust; on tarmac the game's
+//    tyre smoke stays). Only dusty wheels throw Remix dust; guessed wheel positions never do. Tarmac stages (mb_*
+//    emitters: tiresmoke, pebbles only) get none.
+//    User run 8 (2026-10-23): game particles OFF in the launcher from now on (ParticleQuality = off; a game particle
+//    called once on a surface change gave glitches and fps drops), and tarmac tyre smoke through the API too: one of
+//    the first steps of moving everything to the Remix API. With particles off the game still runs its signal
+//    handlers and CEmitter_Emit (run 14:12, Harju: mb_tiresmoke asked for particles), it only makes nothing. So: a
+//    smoke emitter asking at a wheel that throws no dust starts that wheel's slide timer; after slide_seconds (1.5 s)
+//    of requests without a gap longer than dust_hold_ms the wheel smokes with the [smoke] values (puffs half the dust's
+//    size). Dust wins on a wheel asking for both. Both are cut from the game (amount 0).
 //    Units: rtx.sceneScale stays 1, so Remix's centimetre values are RBR metres (sizes, speeds, gravity).
 //    The descriptor never changes while drawn: Remix keys a particle system on material hash ^ descriptor hash.
 #define CINTERFACE
@@ -51,6 +78,8 @@
 #include <unordered_map>
 #include <string>
 
+bool rbrrtx_surface_lookup_on = false;
+
 namespace {
 
 #define plog(...) rbrrtx_log_to(L"rbrrtx_comp.log", __VA_ARGS__)
@@ -62,8 +91,6 @@ using EmitFn = void(__thiscall*)(void* self, void* arg1, const float* pos, const
 
 struct Stat { void* arg1 = nullptr; unsigned calls = 0; double amount = 0; float pos[3] = {}, vel[3] = {}; };
 bool g_probe = false, g_hooked = false;
-struct Contact { float p[3]; ULONGLONG t; };
-std::unordered_map<void*, Contact> g_contacts;         // per wheel+emitter object: last contact point (physics space)
 std::unordered_map<void*, Stat> g_stats;
 ULONGLONG g_lastReport = 0;
 unsigned g_reports = 0, g_totalCalls = 0;
@@ -83,14 +110,16 @@ bool readable_string(uintptr_t p, char* out, size_t n) {
   } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-bool hide_game_emitter(void* arg1);                   // settings section below
+int game_emitter_kind(void* arg1);                    // 0 kept, 1 dust, 2 smoke (settings section below)
+void note_dust(const float* pos);                      // nearest wheel throws dust now (wheels section below)
+bool wheel_dusty(const float* pos);                    // nearest wheel threw dust recently
+void note_smoke(const float* pos);                     // nearest wheel slides (game smoke request)
 
 void __fastcall emit_hook(void* self, void* /*edx*/, void* arg1, const float* pos, const float* vel, float amount) {
-  if (amount != 0.0f && hide_game_emitter(arg1)) amount = 0.0f;   // never created: no simulation, no draws
-  if (pos) {
-    Contact& c = g_contacts[self];
-    std::memcpy(c.p, pos, sizeof(c.p));
-    c.t = GetTickCount64();
+  if (amount != 0.0f && pos) {                         // cut = never created: no simulation, no draws
+    const int kind = game_emitter_kind(arg1);
+    if (kind == 1) { note_dust(pos); amount = 0.0f; }
+    else if (kind == 2) { if (!wheel_dusty(pos)) note_smoke(pos); amount = 0.0f; }
   }
   if (!g_probe) { reinterpret_cast<EmitFn>(kEmit)(self, arg1, pos, vel, amount); return; }
   ++g_totalCalls;
@@ -101,6 +130,84 @@ void __fastcall emit_hook(void* self, void* /*edx*/, void* arg1, const float* po
   if (pos) std::memcpy(s.pos, pos, sizeof(s.pos));
   if (vel) std::memcpy(s.vel, vel, sizeof(s.vel));
   reinterpret_cast<EmitFn>(kEmit)(self, arg1, pos, vel, amount);
+}
+
+// ---------------------------------------------------------------- wheels (RBR's tire signal)
+
+struct Wheel {
+  float p[3] = {};                                     // contact point, physics space
+  ULONGLONG t = 0;                                     // last signal
+  uint32_t mat = UINT32_MAX, cand = UINT32_MAX;        // surface in use / candidate (settles after kSettleMs)
+  ULONGLONG candT = 0;
+  ULONGLONG dustT = 0;                                 // last time the game asked for dust at this wheel
+  ULONGLONG smokeStart = 0, smokeLast = 0;             // this slide's first and last smoke request (no dust)
+};
+Wheel g_wheels[4];
+constexpr ULONGLONG kSettleMs = 250;
+constexpr uintptr_t kTireVtSlot = 0x0074DC58, kTireThunk = 0x005E3C70;
+using InvokeFn = void(__thiscall*)(void* conn, const void* sig);
+bool g_tireHooked = false;
+
+void __fastcall tire_invoke(void* conn, void* /*edx*/, const uint8_t* sig) {
+  const uint32_t w = *reinterpret_cast<const uint32_t*>(sig);
+  if (w < 4) {
+    Wheel& wh = g_wheels[w];
+    const float* a = reinterpret_cast<const float*>(sig + 0x10);
+    const float* b = reinterpret_cast<const float*>(sig + 0x20);
+    for (int i = 0; i < 3; ++i) wh.p[i] = 0.5f * (a[i] + b[i]);
+    wh.t = GetTickCount64();
+    const float blend = *reinterpret_cast<const float*>(sig + 0xA8);
+    const uint32_t m = *reinterpret_cast<const uint32_t*>(sig + (blend < 0.5f ? 0xA0 : 0xA4));
+    if (m != wh.cand) { wh.cand = m; wh.candT = wh.t; }
+  }
+  reinterpret_cast<InvokeFn>(kTireThunk)(conn, sig);
+}
+
+// The wheel nearest a spawn point (physics space, same midpoint as the tire signal's), -1 if none within 1 m.
+int nearest_wheel(const float* pos) {
+  int best = -1;
+  float bd = 1.0f;
+  for (int w = 0; w < 4; ++w) {
+    const float* p = g_wheels[w].p;
+    const float d = (p[0] - pos[0]) * (p[0] - pos[0]) + (p[1] - pos[1]) * (p[1] - pos[1]) + (p[2] - pos[2]) * (p[2] - pos[2]);
+    if (d < bd) { bd = d; best = w; }
+  }
+  return best;
+}
+
+ULONGLONG g_dustHoldMs = 300;
+
+void note_dust(const float* pos) {
+  const int w = nearest_wheel(pos);
+  if (w >= 0) g_wheels[w].dustT = GetTickCount64();
+}
+
+void note_smoke(const float* pos) {
+  const int w = nearest_wheel(pos);
+  if (w < 0) return;
+  Wheel& wh = g_wheels[w];
+  const ULONGLONG now = GetTickCount64();
+  if (now - wh.smokeLast > g_dustHoldMs) wh.smokeStart = now;   // a new slide
+  wh.smokeLast = now;
+}
+
+bool wheel_dusty(const float* pos) {
+  const int w = nearest_wheel(pos);
+  return w >= 0 && GetTickCount64() - g_wheels[w].dustT < g_dustHoldMs;
+}
+
+void install_tire_hook() {
+  uint32_t* slot = reinterpret_cast<uint32_t*>(kTireVtSlot);
+  if (*slot != kTireThunk) {
+    plog(L"particles: tire signal hook NOT installed: vtable slot %p holds %08X (other exe build?)", slot, *slot);
+    return;
+  }
+  DWORD old = 0;
+  if (!VirtualProtect(slot, 4, PAGE_READWRITE, &old)) return;
+  *slot = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&tire_invoke));
+  VirtualProtect(slot, 4, old, &old);
+  g_tireHooked = true;
+  plog(L"particles: tire signal hook at %p (wheel points and surfaces)", slot);
 }
 
 void install_probe() {
@@ -118,7 +225,7 @@ void install_probe() {
   VirtualProtect(call, 5, old, &old);
   FlushInstructionCache(GetCurrentProcess(), call, 5);
   g_hooked = true;
-  plog(L"particles: CEmitter_Emit hook at %p (wheel contact points%s)", call, g_probe ? L"; probe: a line every 10 s, at most 30" : L"");
+  plog(L"particles: CEmitter_Emit hook at %p (game dust cut%s)", call, g_probe ? L"; probe: a line every 10 s, at most 30" : L"");
 }
 
 // arg1 starts with the emitter's name (run 2026-10-23); read it without faulting on anything else.
@@ -163,12 +270,35 @@ struct DustCfg {
   float onKmh = 25.0f, offKmh = 20.0f, height = 0.1f;
   int hideCams[8] = { 5, 6 };
   int nHideCams = 2;
-  wchar_t hideGame[256] = L"tirespray, tiresmoke, dust, sand";   // game emitters never spawned (name contains one)
-  wchar_t keepGame[256] = L"wet, water, splash";                 // ...unless the name contains one of these
-} g_cfg;
+  wchar_t dustGame[256] = L"tirespray, dust, sand";    // game dust emitters: drive the Remix dust, always cut
+  wchar_t smokeGame[256] = L"tiresmoke";               // cut only on a wheel throwing dust (gravel), kept on tarmac
+  wchar_t keepGame[256] = L"wet, water, splash";       // never cut (name contains one of these)
+  float dustHoldMs = 300.0f;
+  bool surfaceColour = true;                           // puffs take the colour of the surface under the wheel
+  float surfaceMix = 0.8f, surfaceBrightness = 1.15f;  // share of the surface colour; dust is lighter than the road
+  bool enabled = true;                                 // [smoke] enabled
+  float slideSeconds = 1.5f;                           // [smoke]: a slide this long before the tyres smoke
+} g_cfg, g_smoke;
+
+// Tarmac tyre smoke defaults (user 2026-10-23: puffs 50 % smaller than the gravel dust): grey-white, rising a little.
+DustCfg smoke_defaults() {
+  DustCfg c;
+  c.perWheelRate = 20.0f;
+  c.lifeMin = 2.0f; c.lifeMax = 4.0f;
+  c.startSizeMin = 0.45f; c.startSizeMax = 0.65f; c.endSizeMin = 3.5f; c.endSizeMax = 4.5f;
+  const float sa[4] = { 0.72f, 0.72f, 0.72f, 0.35f }, sb[4] = { 0.82f, 0.82f, 0.82f, 0.45f };
+  const float ea[4] = { 0.80f, 0.80f, 0.80f, 0.0f }, eb[4] = { 0.90f, 0.90f, 0.90f, 0.0f };
+  std::memcpy(c.startColorA, sa, sizeof(sa)); std::memcpy(c.startColorB, sb, sizeof(sb));
+  std::memcpy(c.endColorA, ea, sizeof(ea)); std::memcpy(c.endColorB, eb, sizeof(eb));
+  c.riseSpeed = 1.0f; c.cone = 45.0f; c.drag = 1.0f; c.gravity = 0.15f;
+  c.turbulenceForce = 1.5f; c.turbulenceFrequency = 0.4f;
+  c.onKmh = 5.0f; c.offKmh = 0.0f;
+  c.surfaceColour = false;
+  return c;
+}
 
 // Per game emitter (arg1, starts with its name): hidden or kept. Cleared when the settings change.
-std::unordered_map<void*, bool> g_gameHide;
+std::unordered_map<void*, int> g_gameKind;
 bool g_cutGame = false;                                // Remix dust runs: the game's dust is cut
 
 bool name_has_any(const char* name, const wchar_t* list) {
@@ -184,25 +314,29 @@ bool name_has_any(const char* name, const wchar_t* list) {
   return false;
 }
 
-bool hide_game_emitter(void* arg1) {
-  if (!g_cutGame) return false;
-  const auto it = g_gameHide.find(arg1);
-  if (it != g_gameHide.end()) return it->second;
+int game_emitter_kind(void* arg1) {
+  if (!g_cutGame) return 0;
+  const auto it = g_gameKind.find(arg1);
+  if (it != g_gameKind.end()) return it->second;
   char name[64];
   emitter_name(arg1, name, sizeof(name));
-  const bool hide = name_has_any(name, g_cfg.hideGame) && !name_has_any(name, g_cfg.keepGame);
-  g_gameHide[arg1] = hide;
-  plog(L"particles: game emitter %S: %s", name, hide ? L"never spawned (Remix dust instead)" : L"kept");
-  return hide;
+  const int kind = name_has_any(name, g_cfg.keepGame) ? 0 : name_has_any(name, g_cfg.dustGame) ? 1 :
+                   name_has_any(name, g_cfg.smokeGame) ? 2 : 0;
+  g_gameKind[arg1] = kind;
+  plog(L"particles: game emitter %S: %s", name, kind == 1 ? L"dust: never spawned, drives the Remix dust" :
+       kind == 2 ? L"smoke: never spawned, drives the Remix tyre smoke (no dust at the wheel, slide long enough)" : L"kept");
+  return kind;
 }
 
 wchar_t g_cfgPath[MAX_PATH * 2] = {};
 FILETIME g_cfgTime = {};
 ULONGLONG g_cfgChecked = 0;
 
+const wchar_t* g_sec = L"dust";                        // ini section the readers below use
+
 float cfg_float(const wchar_t* key, float dflt, float lo, float hi) {
   wchar_t v[64] = {};
-  GetPrivateProfileStringW(L"dust", key, L"", v, 64, g_cfgPath);
+  GetPrivateProfileStringW(g_sec, key, L"", v, 64, g_cfgPath);
   if (!v[0]) return dflt;
   const float f = static_cast<float>(_wtof(v));
   return f < lo ? lo : f > hi ? hi : f;
@@ -210,9 +344,40 @@ float cfg_float(const wchar_t* key, float dflt, float lo, float hi) {
 
 void cfg_rgba(const wchar_t* key, float out[4]) {
   wchar_t v[128] = {};
-  GetPrivateProfileStringW(L"dust", key, L"", v, 128, g_cfgPath);
+  GetPrivateProfileStringW(g_sec, key, L"", v, 128, g_cfgPath);
   float c[4];
   if (v[0] && swscanf_s(v, L"%f , %f , %f , %f", &c[0], &c[1], &c[2], &c[3]) == 4) std::memcpy(out, c, sizeof(c));
+}
+
+// The per-effect keys of the current section (g_sec) over c's own defaults.
+void load_fx(DustCfg& c) {
+  c.perWheelRate = cfg_float(L"per_wheel_rate", c.perWheelRate, 0.0f, 10000.0f);
+  c.maxParticles = static_cast<unsigned>(cfg_float(L"max_particles", static_cast<float>(c.maxParticles), 100.0f, 1000000.0f));
+  c.lifeMin = cfg_float(L"life_min", c.lifeMin, 0.1f, 60.0f);
+  c.lifeMax = cfg_float(L"life_max", c.lifeMax, c.lifeMin, 60.0f);
+  c.startSizeMin = cfg_float(L"start_size_min", c.startSizeMin, 0.01f, 50.0f);
+  c.startSizeMax = cfg_float(L"start_size_max", c.startSizeMax, c.startSizeMin, 50.0f);
+  c.endSizeMin = cfg_float(L"end_size_min", c.endSizeMin, 0.01f, 100.0f);
+  c.endSizeMax = cfg_float(L"end_size_max", c.endSizeMax, c.endSizeMin, 100.0f);
+  cfg_rgba(L"start_color_min", c.startColorA);
+  cfg_rgba(L"start_color_max", c.startColorB);
+  cfg_rgba(L"end_color_min", c.endColorA);
+  cfg_rgba(L"end_color_max", c.endColorB);
+  c.riseSpeed = cfg_float(L"rise_speed", c.riseSpeed, 0.0f, 100.0f);
+  c.cone = cfg_float(L"spread_degrees", c.cone, 0.0f, 180.0f);
+  c.drag = cfg_float(L"drag", c.drag, 0.0f, 100.0f);
+  c.gravity = cfg_float(L"gravity", c.gravity, -100.0f, 100.0f);
+  c.turbulenceForce = cfg_float(L"turbulence", c.turbulenceForce, 0.0f, 100.0f);
+  c.turbulenceFrequency = cfg_float(L"turbulence_frequency", c.turbulenceFrequency, 0.0f, 100.0f);
+  c.rotation = cfg_float(L"spin", c.rotation, 0.0f, 10.0f);
+  c.onKmh = cfg_float(L"on_above_kmh", c.onKmh, 0.0f, 300.0f);
+  c.offKmh = cfg_float(L"off_below_kmh", c.offKmh, 0.0f, c.onKmh);
+  c.height = cfg_float(L"height", c.height, -2.0f, 5.0f);
+  c.surfaceColour = cfg_float(L"surface_colour", 1.0f, 0.0f, 1.0f) >= 0.5f;
+  c.surfaceMix = cfg_float(L"surface_mix", c.surfaceMix, 0.0f, 1.0f);
+  c.surfaceBrightness = cfg_float(L"surface_brightness", c.surfaceBrightness, 0.0f, 4.0f);
+  c.enabled = cfg_float(L"enabled", c.enabled ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+  c.slideSeconds = cfg_float(L"slide_seconds", c.slideSeconds, 0.0f, 30.0f);
 }
 
 void load_cfg() {
@@ -220,32 +385,14 @@ void load_cfg() {
   const bool found = GetFileAttributesW(g_cfgPath) != INVALID_FILE_ATTRIBUTES;
   if (found) {
     c.wheels = cfg_float(L"wheels", 4.0f, 2.0f, 4.0f) < 3.0f ? 2 : 4;
-    c.perWheelRate = cfg_float(L"per_wheel_rate", c.perWheelRate, 0.0f, 10000.0f);
-    c.maxParticles = static_cast<unsigned>(cfg_float(L"max_particles", static_cast<float>(c.maxParticles), 100.0f, 1000000.0f));
-    c.lifeMin = cfg_float(L"life_min", c.lifeMin, 0.1f, 60.0f);
-    c.lifeMax = cfg_float(L"life_max", c.lifeMax, c.lifeMin, 60.0f);
-    c.startSizeMin = cfg_float(L"start_size_min", c.startSizeMin, 0.01f, 50.0f);
-    c.startSizeMax = cfg_float(L"start_size_max", c.startSizeMax, c.startSizeMin, 50.0f);
-    c.endSizeMin = cfg_float(L"end_size_min", c.endSizeMin, 0.01f, 100.0f);
-    c.endSizeMax = cfg_float(L"end_size_max", c.endSizeMax, c.endSizeMin, 100.0f);
-    cfg_rgba(L"start_color_min", c.startColorA);
-    cfg_rgba(L"start_color_max", c.startColorB);
-    cfg_rgba(L"end_color_min", c.endColorA);
-    cfg_rgba(L"end_color_max", c.endColorB);
-    c.riseSpeed = cfg_float(L"rise_speed", c.riseSpeed, 0.0f, 100.0f);
-    c.cone = cfg_float(L"spread_degrees", c.cone, 0.0f, 180.0f);
-    c.drag = cfg_float(L"drag", c.drag, 0.0f, 100.0f);
-    c.gravity = cfg_float(L"gravity", c.gravity, -100.0f, 100.0f);
-    c.turbulenceForce = cfg_float(L"turbulence", c.turbulenceForce, 0.0f, 100.0f);
-    c.turbulenceFrequency = cfg_float(L"turbulence_frequency", c.turbulenceFrequency, 0.0f, 100.0f);
-    c.rotation = cfg_float(L"spin", c.rotation, 0.0f, 10.0f);
-    c.onKmh = cfg_float(L"on_above_kmh", c.onKmh, 0.0f, 300.0f);
-    c.offKmh = cfg_float(L"off_below_kmh", c.offKmh, 0.0f, c.onKmh);
-    c.height = cfg_float(L"height", c.height, -2.0f, 5.0f);
+    load_fx(c);
     wchar_t v[128] = {};
     wchar_t list[256];
-    GetPrivateProfileStringW(L"dust", L"hide_game_emitters", c.hideGame, list, 256, g_cfgPath);
-    wcscpy_s(c.hideGame, list);
+    GetPrivateProfileStringW(L"dust", L"dust_emitters", c.dustGame, list, 256, g_cfgPath);
+    wcscpy_s(c.dustGame, list);
+    GetPrivateProfileStringW(L"dust", L"smoke_emitters", c.smokeGame, list, 256, g_cfgPath);
+    wcscpy_s(c.smokeGame, list);
+    c.dustHoldMs = cfg_float(L"dust_hold_ms", c.dustHoldMs, 50.0f, 5000.0f);
     GetPrivateProfileStringW(L"dust", L"keep_game_emitters", c.keepGame, list, 256, g_cfgPath);
     wcscpy_s(c.keepGame, list);
     GetPrivateProfileStringW(L"dust", L"hide_in_cameras", L"5, 6", v, 128, g_cfgPath);
@@ -255,13 +402,22 @@ void load_cfg() {
       c.hideCams[c.nHideCams++] = _wtoi(t);
   }
   g_cfg = c;
-  g_gameHide.clear();
-  plog(L"particles: game dust never spawned for emitters containing \"%s\" (except \"%s\")", c.hideGame, c.keepGame);
+  DustCfg sm = smoke_defaults();
+  if (found) { g_sec = L"smoke"; load_fx(sm); g_sec = L"dust"; }
+  g_smoke = sm;
+  g_gameKind.clear();
+  g_dustHoldMs = static_cast<ULONGLONG>(c.dustHoldMs);
+  plog(L"particles: game emitters: dust \"%s\", smoke \"%s\", kept \"%s\"; a wheel stays dusty %.0f ms", c.dustGame,
+       c.smokeGame, c.keepGame, c.dustHoldMs);
   plog(L"particles: dust settings %s%s: %d wheels x %.0f/s, cap %u, life %.1f-%.1f s, size %.2f-%.2f -> %.1f-%.1f m, "
        L"rise %.1f m/s, spread %.0f, drag %.2f, gravity %.2f, turbulence %.2f/%.2f, on above %.0f km/h, off below %.0f, "
-       L"%d hidden cameras", found ? L"from " : L"built in, no file ", g_cfgPath, c.wheels, c.perWheelRate, c.maxParticles,
+       L"%d hidden cameras; surface colour %s (mix %.2f, brightness %.2f)", found ? L"from " : L"built in, no file ", g_cfgPath, c.wheels, c.perWheelRate, c.maxParticles,
        c.lifeMin, c.lifeMax, c.startSizeMin, c.startSizeMax, c.endSizeMin, c.endSizeMax, c.riseSpeed, c.cone, c.drag,
-       c.gravity, c.turbulenceForce, c.turbulenceFrequency, c.onKmh, c.offKmh, c.nHideCams);
+       c.gravity, c.turbulenceForce, c.turbulenceFrequency, c.onKmh, c.offKmh, c.nHideCams,
+       c.surfaceColour ? L"on" : L"off", c.surfaceMix, c.surfaceBrightness);
+  plog(L"particles: tarmac smoke %s: after a %.1f s slide, %.0f/s per wheel, life %.1f-%.1f s, size %.2f-%.2f -> %.1f-%.1f m, "
+       L"rise %.1f m/s, gravity %.2f, above %.0f km/h", sm.enabled ? L"on" : L"off", sm.slideSeconds, sm.perWheelRate,
+       sm.lifeMin, sm.lifeMax, sm.startSizeMin, sm.startSizeMax, sm.endSizeMin, sm.endSizeMax, sm.riseSpeed, sm.gravity, sm.onKmh);
 }
 
 // Once a second: the file saved again (Notepad++) -> read it again.
@@ -289,13 +445,83 @@ int camera_type() {
   } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
 
+// Car body drawn (outside view) = dust; not drawn (cockpit) = no dust; the headlights' own test. Until that is known:
+// RBR's camera type against hide_in_cameras.
 bool camera_hidden() {
   static int was = -2;
-  const int cam = camera_type();
-  bool hide = false;
-  for (int i = 0; i < g_cfg.nHideCams; ++i) hide |= cam == g_cfg.hideCams[i];
-  if (cam != was) { was = cam; plog(L"particles: camera type %d: dust %s", cam, hide ? L"hidden" : L"shown"); }
+  const int body = rbrrtx_car_body_visible();
+  bool hide = body == 0;
+  int state = body;
+  if (body < 0) {
+    const int cam = camera_type();
+    for (int i = 0; i < g_cfg.nHideCams; ++i) hide |= cam == g_cfg.hideCams[i];
+    state = 100 + cam;
+  }
+  if (state != was) {
+    was = state;
+    if (body >= 0) plog(L"particles: car body %s: dust %s", body ? L"drawn (outside view)" : L"not drawn (cockpit view)", hide ? L"hidden" : L"shown");
+    else plog(L"particles: car body not known yet, camera type %d: dust %s", state - 100, hide ? L"hidden" : L"shown");
+  }
   return hide;
+}
+
+// ---------------------------------------------------------------- surface colours (one lookup per new surface)
+
+struct SurfaceColour { float rgb[3] = {}; bool found = false; };
+std::unordered_map<uint32_t, SurfaceColour> g_surface;     // material -> colour, this stage
+struct Lookup {
+  bool on = false;
+  int wheel = 0;
+  uint32_t mat = 0;
+  float pt[3] = {};                                    // render space (Y up)
+  unsigned frames = 0;
+  bool hit = false;
+  float dh = 0, rgb[3] = {};
+  unsigned long long tex = 0;
+} g_lookup;
+int g_stageTrack = -1;
+ULONGLONG g_stageChecked = 0;
+
+void surface_frame() {
+  const ULONGLONG now = GetTickCount64();
+  if (now - g_stageChecked > 2000) {                   // a new stage: its materials have other textures
+    g_stageChecked = now;
+    RbrStageInfo si = {};
+    if (rbrrtx_stage_info(&si) && si.trackId != g_stageTrack) {
+      g_stageTrack = si.trackId;
+      g_surface.clear();
+      g_lookup.on = false;
+      rbrrtx_surface_lookup_on = false;
+      for (Wheel& w : g_wheels) w.mat = w.cand = UINT32_MAX;
+    }
+  }
+  if (g_lookup.on) {
+    if (!g_lookup.hit && ++g_lookup.frames < 40) return;
+    if (g_lookup.hit) {                                // a miss is not kept: tried again when a wheel next meets it
+      SurfaceColour& sc = g_surface[g_lookup.mat];
+      sc.found = true;
+      std::memcpy(sc.rgb, g_lookup.rgb, sizeof(sc.rgb));
+      plog(L"particles: surface %u (wheel %d): texture %016llX under the wheel (%.2f m), colour %.2f %.2f %.2f", g_lookup.mat,
+           g_lookup.wheel, g_lookup.tex, g_lookup.dh, sc.rgb[0], sc.rgb[1], sc.rgb[2]);
+    } else {
+      plog(L"particles: surface %u (wheel %d): no ground texture found under the wheel yet; ini colours for now",
+           g_lookup.mat, g_lookup.wheel);
+    }
+    g_lookup.on = false;
+    rbrrtx_surface_lookup_on = false;
+  }
+  for (int w = 0; w < 4; ++w) {                        // settled surface changes; at most one new lookup at a time
+    Wheel& wh = g_wheels[w];
+    if (wh.cand == wh.mat || now - wh.candT < kSettleMs || now - wh.t > 250) continue;
+    wh.mat = wh.cand;
+    if (!g_cfg.surfaceColour || g_lookup.on || g_surface.count(wh.mat)) continue;
+    g_lookup = {};
+    g_lookup.on = true;
+    g_lookup.wheel = w;
+    g_lookup.mat = wh.mat;
+    g_lookup.pt[0] = wh.p[0]; g_lookup.pt[1] = wh.p[2]; g_lookup.pt[2] = wh.p[1];   // physics -> render (Y up)
+    rbrrtx_surface_lookup_on = true;
+  }
 }
 
 // ---------------------------------------------------------------- API emitter test
@@ -348,12 +574,33 @@ remixapi_Float2D g_minSize[2] = {}, g_maxSize[2] = {};
 float g_minRot[1] = {}, g_maxRot[1] = {};
 remixapi_Float3D g_maxVel[1] = { { -1.0f, -1.0f, -1.0f } };   // negative = unlimited
 
-remixapi_InstanceInfoParticleSystemEXT dust_desc() {
-  const DustCfg& c = g_cfg;
-  g_minColor[0] = { c.startColorA[0], c.startColorA[1], c.startColorA[2], c.startColorA[3] };
-  g_maxColor[0] = { c.startColorB[0], c.startColorB[1], c.startColorB[2], c.startColorB[3] };
-  g_minColor[1] = { c.endColorA[0], c.endColorA[1], c.endColorA[2], c.endColorA[3] };
-  g_maxColor[1] = { c.endColorB[0], c.endColorB[1], c.endColorB[2], c.endColorB[3] };
+// One ini colour moved toward the surface colour: the surface's hue at this colour's own brightness (relative to the
+// four ini colours), times surface_brightness, mixed in by surface_mix. Quantised to 1/32 so near-equal surfaces
+// share one Remix particle system.
+remixapi_Float4D tinted(const DustCfg& c, const float* k, const float* tint, float meanLum) {
+  remixapi_Float4D out = { k[0], k[1], k[2], k[3] };
+  if (!tint) return out;
+  const float tl = (tint[0] + tint[1] + tint[2]) / 3.0f;
+  if (tl <= 1e-3f || meanLum <= 1e-3f) return out;
+  const float scale = (k[0] + k[1] + k[2]) / 3.0f / meanLum * c.surfaceBrightness;
+  float* o[3] = { &out.x, &out.y, &out.z };
+  for (int i = 0; i < 3; ++i) {
+    const float target = tint[i] * scale;
+    float v = k[i] + (target - k[i]) * c.surfaceMix;
+    v = std::round((v < 0 ? 0 : v > 1 ? 1 : v) * 32.0f) / 32.0f;
+    *o[i] = v;
+  }
+  return out;
+}
+
+remixapi_InstanceInfoParticleSystemEXT fx_desc(const DustCfg& c, const float* tint) {
+  const float meanLum = (c.startColorA[0] + c.startColorA[1] + c.startColorA[2] + c.startColorB[0] + c.startColorB[1] +
+                         c.startColorB[2] + c.endColorA[0] + c.endColorA[1] + c.endColorA[2] + c.endColorB[0] +
+                         c.endColorB[1] + c.endColorB[2]) / 12.0f;
+  g_minColor[0] = tinted(c, c.startColorA, tint, meanLum);
+  g_maxColor[0] = tinted(c, c.startColorB, tint, meanLum);
+  g_minColor[1] = tinted(c, c.endColorA, tint, meanLum);
+  g_maxColor[1] = tinted(c, c.endColorB, tint, meanLum);
   g_minSize[0] = { c.startSizeMin, c.startSizeMin };
   g_maxSize[0] = { c.startSizeMax, c.startSizeMax };
   g_minSize[1] = { c.endSizeMin, c.endSizeMin };
@@ -450,41 +697,33 @@ bool make_emitter() {
   return true;
 }
 
-// The wheels' ground points (physics space): RBR's recent tire contact points merged per wheel (all four, or the two
-// furthest back along the travel direction); else a guess around the car position.
+// The wheels' ground points (physics space) from RBR's tire signal (all four, or the two furthest back along the
+// travel direction), with the wheel number for its surface colour; else a guess around the car (wheel -1).
 bool g_rearFromGame = false;
-int wheel_points(const float* car, float out[4][3]) {
+int wheel_points(const float* car, float out[4][3], int wheelOf[4]) {
   const ULONGLONG now = GetTickCount64();
-  float pts[8][3];
   int n = 0;
-  for (auto it = g_contacts.begin(); it != g_contacts.end();) {
-    if (now - it->second.t > 250) { it = g_contacts.erase(it); continue; }
-    const float* p = it->second.p;
-    int k = 0;
-    for (; k < n; ++k) {
-      const float dx = pts[k][0] - p[0], dy = pts[k][1] - p[1], dz = pts[k][2] - p[2];
-      if (dx * dx + dy * dy + dz * dz < 0.16f) break;
-    }
-    if (k == n && n < 8) { std::memcpy(pts[n], p, sizeof(pts[n])); ++n; }
-    ++it;
-  }
+  for (const Wheel& w : g_wheels) if (w.t && now - w.t < 250) ++n;
   auto back = [&](const float* p) {                    // distance ahead of the car along the travel direction
     return (p[0] - car[0]) * g_dir[0] + (p[1] - car[1]) * g_dir[1] + (p[2] - car[2]) * g_dir[2];
   };
-  const bool fromGame = n >= 4;
+  const bool fromGame = n == 4;
   const int count = g_cfg.wheels;
   if (fromGame && count == 4) {
-    for (int i = 0; i < 4; ++i) std::memcpy(out[i], pts[i], sizeof(out[i]));   // n can be 5+ for a moment: 4 is enough
+    for (int i = 0; i < 4; ++i) { std::memcpy(out[i], g_wheels[i].p, sizeof(out[i])); wheelOf[i] = i; }
   } else if (fromGame) {
     int a = 0, b = 1;
-    if (back(pts[b]) < back(pts[a])) std::swap(a, b);
-    for (int i = 2; i < n; ++i) {
-      if (back(pts[i]) < back(pts[a])) { b = a; a = i; }
-      else if (back(pts[i]) < back(pts[b])) b = i;
+    if (back(g_wheels[b].p) < back(g_wheels[a].p)) std::swap(a, b);
+    for (int i = 2; i < 4; ++i) {
+      if (back(g_wheels[i].p) < back(g_wheels[a].p)) { b = a; a = i; }
+      else if (back(g_wheels[i].p) < back(g_wheels[b].p)) b = i;
     }
-    std::memcpy(out[0], pts[a], sizeof(out[0]));
-    std::memcpy(out[1], pts[b], sizeof(out[1]));
+    std::memcpy(out[0], g_wheels[a].p, sizeof(out[0]));
+    std::memcpy(out[1], g_wheels[b].p, sizeof(out[1]));
+    wheelOf[0] = a;
+    wheelOf[1] = b;
   } else {
+    for (int w = 0; w < 4; ++w) wheelOf[w] = -1;
     const float side[3] = { g_dir[1], -g_dir[0], 0.0f };   // physics space is Z up
     const float sl = std::sqrt(side[0] * side[0] + side[1] * side[1]) + 1e-6f;
     for (int w = 0; w < count; ++w)
@@ -492,8 +731,10 @@ int wheel_points(const float* car, float out[4][3]) {
         out[w][i] = car[i] + g_dir[i] * (w < 2 ? -1.3f : 1.3f) + side[i] / sl * (w % 2 ? -0.75f : 0.75f) -
                     (i == 2 ? 0.5f : 0.0f);
   }
-  if (fromGame != g_rearFromGame || !g_drawn)
-    plog(L"particles: wheel dust from %s", fromGame ? L"RBR's tire contact points" : L"a guess around the car (no tire contacts)");
+  static bool logged = false;
+  if (fromGame != g_rearFromGame || !logged)
+    plog(L"particles: wheel dust from %s", fromGame ? L"RBR's tire signals" : L"a guess around the car (no tire signals)");
+  logged = true;
   g_rearFromGame = fromGame;
   return count;
 }
@@ -502,13 +743,28 @@ void draw_emitter() {
   float r[20];
   if (!rbrrtx_player_car_raw(r)) return;
   update_speed(r + 16);
-  if (!g_moving || camera_hidden() || !make_emitter()) return;
+  if (camera_hidden() || !make_emitter()) return;
+  const ULONGLONG now = GetTickCount64();
   float wheel[4][3];
-  const int n = wheel_points(r + 16, wheel);
+  int wheelOf[4];
+  const int n = wheel_points(r + 16, wheel, wheelOf);
   for (int w = 0; w < n; ++w) {
     // Physics space = render space with Y and Z swapped (game_state.cpp). Emitter `height` above the ground point.
-    const float x = wheel[w][0], y = wheel[w][2] + g_cfg.height, z = wheel[w][1];
-    remixapi_InstanceInfoParticleSystemEXT particles = dust_desc();
+    if (wheelOf[w] < 0) continue;                      // guessed position: the game said nothing about this wheel
+    const Wheel& wh = g_wheels[wheelOf[w]];
+    const DustCfg* fx = nullptr;
+    if (g_moving && now - wh.dustT < g_dustHoldMs) fx = &g_cfg;          // the game asks for dust here
+    else if (g_smoke.enabled && g_kmh >= g_smoke.onKmh && now - wh.smokeLast < g_dustHoldMs &&
+             wh.smokeLast - wh.smokeStart >= static_cast<ULONGLONG>(g_smoke.slideSeconds * 1000.0f))
+      fx = &g_smoke;                                   // tarmac: a slide long enough
+    if (!fx) continue;
+    const float x = wheel[w][0], y = wheel[w][2] + fx->height, z = wheel[w][1];
+    const float* tint = nullptr;
+    if (fx->surfaceColour) {
+      const auto it = g_surface.find(g_wheels[wheelOf[w]].mat);
+      if (it != g_surface.end() && it->second.found) tint = it->second.rgb;
+    }
+    remixapi_InstanceInfoParticleSystemEXT particles = fx_desc(*fx, tint);
     remixapi_InstanceInfoBlendEXT blend = {};
     blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
     blend.pNext = &particles;
@@ -548,7 +804,8 @@ void rbrrtx_particles_init(const remixapi_Interface* api) {
   rbrrtx_config_path(L"RBRRTX_PARTICLES", L"particles.ini", g_cfgPath, MAX_PATH * 2);
   load_cfg();
   if (!api) g_test = false;
-  if ((g_probe || g_test) && !g_hooked) install_probe();   // wheel contact points, game dust cut
+  if ((g_probe || g_test) && !g_hooked) install_probe();   // game dust cut, spawn log
+  if (g_test && !g_tireHooked) install_tire_hook();          // wheel points and surfaces
   g_active = g_cutGame = g_test;
   plog(L"particles: Remix dust %s (key %s)%s", g_test ? L"ON" : L"off", rbrrtx_key_name(RBRKEY_DUST),
        api ? L"" : L"; no Remix API");
@@ -570,7 +827,7 @@ void rbrrtx_particles_toggle() {
 }
 
 void rbrrtx_particles_frame_end() {
-  if (g_active) check_cfg();
+  if (g_active) { check_cfg(); surface_frame(); }
   if (g_probe) probe_report();
 }
 
@@ -581,4 +838,18 @@ void rbrrtx_particles_destroy() {
   g_mesh = nullptr;
   g_mat = nullptr;
   g_made = false;
+}
+
+bool rbrrtx_surface_lookup_point(float out[3]) {
+  if (!g_lookup.on) return false;
+  std::memcpy(out, g_lookup.pt, sizeof(g_lookup.pt));
+  return true;
+}
+
+void rbrrtx_surface_lookup_hit(float dh, const float rgb[3], unsigned long long textureHash) {
+  if (!g_lookup.on || (g_lookup.hit && dh >= g_lookup.dh)) return;   // the ground nearest the wheel wins
+  g_lookup.hit = true;
+  g_lookup.dh = dh;
+  std::memcpy(g_lookup.rgb, rgb, sizeof(g_lookup.rgb));
+  g_lookup.tex = textureHash;
 }

@@ -813,6 +813,13 @@ void rbrrtx_headlights_emit() {
   }
 }
 
+// The car body drawn in recent frames (outside views: chase, TV, 3rd person) = 1, not drawn (cockpit views) = 0,
+// -1 = not known yet (car model offset not measured). The dust uses it too (particles.cpp, user 2026-10-23).
+int rbrrtx_car_body_visible() {
+  if (g_track < 0 || !g_off.locked) return -1;
+  return g_bodyFrames >= 3 ? 1 : 0;
+}
+
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   ++g_frameNo;
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);

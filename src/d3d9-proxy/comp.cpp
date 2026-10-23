@@ -2919,6 +2919,8 @@ bool cull_class() {
   return hit;
 }
 
+int g_cullBuildBudget = -1;                                  // new spheres cull_entry may still read now (-1 = any)
+
 // Object-space bounding sphere of the current draw's vertex range, read once and cached; nullptr if unreadable.
 CullEntry* cull_entry(IDirect3DDevice9* dev) {
   IDirect3DVertexBuffer9* vb = nullptr;
@@ -2930,6 +2932,8 @@ CullEntry* cull_entry(IDirect3DDevice9* dev) {
                        (static_cast<uint64_t>(stride) << 32) ^ (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert;
   CullEntry& e = g_cullCache[key];
   if (e.valid || e.lastFrame == UINT_MAX) { vb->lpVtbl->Release(vb); return e.valid ? &e : nullptr; }
+  if (g_cullBuildBudget == 0) { vb->lpVtbl->Release(vb); return nullptr; }   // later frame
+  if (g_cullBuildBudget > 0) --g_cullBuildBudget;
   ++g_cs.misses;
   e.lastFrame = UINT_MAX;                                     // "tried": an unreadable range is not retried
   // Position element of stream 0 (FLOAT3/FLOAT4) from the vertex declaration.
@@ -2967,6 +2971,91 @@ CullEntry* cull_entry(IDirect3DDevice9* dev) {
   e.r = std::sqrt(r2);
   e.valid = std::isfinite(e.r) && e.r < 1e6f;
   return e.valid ? &e : nullptr;
+}
+
+// Ground under a wheel (particles.cpp asks when a wheel meets a new surface; rbrrtx_surface_lookup_on is false
+// otherwise, so this costs nothing then). Opaque scenery triangle-list draws only: the draw's cached bounding sphere
+// (cull_entry, at most 30 new spheres read per frame) must cover the wheel point; then the draw's triangles are read
+// once (READONLY locks), moved to world space with the draw's own world matrix, and the triangle straight below or
+// above the point within 1 m reports its height difference and the stage-0 texture's average colour.
+void surface_lookup(IDirect3DDevice9* dev) {
+  static unsigned frame = UINT_MAX, built = 0;
+  if (frame != g_frame) { frame = g_frame; built = 0; }
+  float pt[3];
+  if (!g_dip.valid || !g_curInfo || (g_curInfo->flags & (SH_CAR | SH_SKY | SH_GLASS | SH_PARTICLE | SH_SWAY)) ||
+      !rbrrtx_surface_lookup_point(pt))
+    return;
+  DWORD blend = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  if (blend) return;
+  const int before = 30 - static_cast<int>(built);
+  g_cullBuildBudget = before < 0 ? 0 : before;
+  CullEntry* e = cull_entry(dev);
+  built += static_cast<unsigned>(before - g_cullBuildBudget);
+  g_cullBuildBudget = -1;
+  if (!e) return;
+  const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
+  D3DMATRIX w = {};
+  if (!world) w = to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+  auto xf = [&](const float* v, float* out) {
+    if (world) { out[0] = v[0]; out[1] = v[1]; out[2] = v[2]; return; }
+    for (int k = 0; k < 3; ++k) out[k] = v[0] * w.m[0][k] + v[1] * w.m[1][k] + v[2] * w.m[2][k] + w.m[3][k];
+  };
+  float c[3], r = e->r;
+  xf(e->c, c);
+  if (!world) {
+    float s = 0;
+    for (int i = 0; i < 3; ++i) s = (std::max)(s, std::sqrt(w.m[i][0] * w.m[i][0] + w.m[i][1] * w.m[i][1] + w.m[i][2] * w.m[i][2]));
+    r *= s;
+  }
+  const float dx = pt[0] - c[0], dz = pt[2] - c[2];
+  if (dx * dx + dz * dz > r * r || std::fabs(pt[1] - c[1]) > r + 1.0f) return;
+  IDirect3DVertexBuffer9* vb = nullptr;
+  IDirect3DIndexBuffer9* ib = nullptr;
+  UINT off = 0, stride = 0;
+  int posOff = -1, nrmOff = -1;
+  btb_decl_offsets(dev, posOff, nrmOff);
+  if (posOff < 0 || FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &off, &stride)) || !vb) return;
+  if (FAILED(dev->lpVtbl->GetIndices(dev, &ib)) || !ib) { vb->lpVtbl->Release(vb); return; }
+  D3DINDEXBUFFER_DESC id = {};
+  std::vector<unsigned> idx;
+  std::vector<float> pos;
+  void* p = nullptr;
+  const UINT isz = SUCCEEDED(ib->lpVtbl->GetDesc(ib, &id)) && id.Format == D3DFMT_INDEX32 ? 4 : 2, nIdx = g_dip.count * 3;
+  if (SUCCEEDED(ib->lpVtbl->Lock(ib, g_dip.startIdx * isz, nIdx * isz, &p, D3DLOCK_READONLY)) && p) {
+    idx.resize(nIdx);
+    for (UINT i = 0; i < nIdx; ++i) idx[i] = isz == 4 ? static_cast<const unsigned*>(p)[i] : static_cast<const WORD*>(p)[i];
+    ib->lpVtbl->Unlock(ib);
+  }
+  const UINT first = off + (static_cast<UINT>(g_dip.base) + g_dip.minIdx) * stride;
+  if (!idx.empty() && SUCCEEDED(vb->lpVtbl->Lock(vb, first, g_dip.numV * stride, &p, D3DLOCK_READONLY)) && p) {
+    pos.resize(static_cast<size_t>(g_dip.numV) * 3);
+    for (UINT i = 0; i < g_dip.numV; ++i) xf(reinterpret_cast<const float*>(static_cast<const uint8_t*>(p) + i * stride + posOff), &pos[i * 3]);
+    vb->lpVtbl->Unlock(vb);
+  }
+  vb->lpVtbl->Release(vb);
+  ib->lpVtbl->Release(ib);
+  float best = 1.0f;
+  for (size_t t = 0; t + 2 < idx.size() && !pos.empty(); t += 3) {
+    const unsigned a = idx[t] - g_dip.minIdx, b = idx[t + 1] - g_dip.minIdx, cc = idx[t + 2] - g_dip.minIdx;
+    if (a >= g_dip.numV || b >= g_dip.numV || cc >= g_dip.numV) continue;
+    const float *A = &pos[a * 3], *B = &pos[b * 3], *C = &pos[cc * 3];
+    const float d = (B[2] - C[2]) * (A[0] - C[0]) + (C[0] - B[0]) * (A[2] - C[2]);   // barycentric in XZ
+    if (std::fabs(d) < 1e-8f) continue;
+    const float l0 = ((B[2] - C[2]) * (pt[0] - C[0]) + (C[0] - B[0]) * (pt[2] - C[2])) / d;
+    const float l1 = ((C[2] - A[2]) * (pt[0] - C[0]) + (A[0] - C[0]) * (pt[2] - C[2])) / d;
+    const float l2 = 1.0f - l0 - l1;
+    if (l0 < 0 || l1 < 0 || l2 < 0) continue;
+    const float dh = std::fabs(pt[1] - (l0 * A[1] + l1 * B[1] + l2 * C[1]));
+    if (dh < best) best = dh;
+  }
+  if (best >= 1.0f) return;
+  IDirect3DBaseTexture9* tex = nullptr;
+  float rgb[3];
+  if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &tex)) && tex) {
+    if (rbrrtx_texture_avg_rgb(tex, rgb)) rbrrtx_surface_lookup_hit(best, rgb, rbrrtx_texture_hash(tex));
+    tex->lpVtbl->Release(tex);
+  }
 }
 
 // Sphere fully outside the view frustum of the current camera (row-vector D3D matrices, clip z 0..w)?
@@ -3488,6 +3577,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   if (midQuad) { ++g_midQuadSkipped; return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; return D3D_OK; }   // performance experiment (key K)
+  if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
   if (cull_draw(dev)) return D3D_OK;                         // distance culling (culling.ini, key M)
   g_primCap = UINT_MAX;
   if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE)) {
