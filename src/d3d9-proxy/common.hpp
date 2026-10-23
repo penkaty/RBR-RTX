@@ -94,6 +94,15 @@ void rbrrtx_headlights_pop_drawn();                            // a draw with th
 void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir);  // before Remix starts: lit lamp textures made emissive
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 
+// particles.cpp: Remix particles test build (docs/research/particles-remix.md): RBRRTX_EMIT_PROBE logs RBR's
+// CEmitter_Emit calls, RBRRTX_PARTICLE_TEST = Remix dust at the wheels (key dust = 7) and the game's dust never spawned.
+void rbrrtx_particles_init(const remixapi_Interface* api);    // nullptr = no Remix API: probe only
+void rbrrtx_particles_emit(bool sweeping);                     // once per frame at the first BeginScene; none during a sweep
+void rbrrtx_particles_frame_end();                            // per Present: key, probe report
+void rbrrtx_particles_destroy();
+bool rbrrtx_particles_active();                               // Remix dust in this run: the dust key toggles it
+void rbrrtx_particles_toggle();
+
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,

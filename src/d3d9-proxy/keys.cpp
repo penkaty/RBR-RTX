@@ -25,7 +25,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"layer", 'O', L"RBR-RTX layer"},
   {L"sun", kAlt | 'L', L"Remix sun"},                       // was L; L = headlights (user 2026-10-22)
   {L"foliage", 'J', L"foliage mode"},
-  {L"dust", '7', L"dust"},
+  {L"dust", '7', L"dust"},                                  // Remix dust on/off when it runs (user 2026-10-23)
   {L"windscreen", 'I', L"windscreen"},
   {L"sky", '6', L"sky mode"},
   {L"debug_sun", 'H', L"debug sun"},

@@ -2381,7 +2381,8 @@ void end_frame(IDirect3DDevice9* dev) {
     swprintf_s(why, L"%s: windscreen %s", rbrrtx_key_name(RBRKEY_WINDSCREEN), g_glassOn ? L"ON" : L"OFF");
     log_frame(why);
   }
-  if (kDust) {                                         // dust 100 -> 0 -> 25 -> 50
+  if (kDust && rbrrtx_particles_active()) rbrrtx_particles_toggle();   // Remix dust on/off; game dust never spawned
+  else if (kDust) {                                    // no Remix dust: game dust 100 -> 0 -> 25 -> 50
     g_dustKeep = g_dustKeep == 100 ? 0 : g_dustKeep == 0 ? 25 : g_dustKeep == 25 ? 50 : 100;
     swprintf_s(why, L"%s: dust %u%%", rbrrtx_key_name(RBRKEY_DUST), g_dustKeep);
     log_frame(why);
@@ -2426,6 +2427,7 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
+  rbrrtx_particles_frame_end();                       // particle test key, emit probe report
   {
     // Remix's fallback light (rtx.fallbackLightMode 1 = only while no light exists) went out whenever the
     // headlights came on at night (user 2026-10-23: it is their moonlight). Lights on and no sun: Always (2).
@@ -2719,6 +2721,7 @@ HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
     g_sunDrawn = true;
     update_sun();
     if (g_enabled && g_apiOk) rbrrtx_headlights_emit();   // once per frame, with the sun: from RBR's car object
+    if (g_enabled && g_apiOk) rbrrtx_particles_emit(g_sweep);   // Remix particles test (particles.cpp)
   }
   return hr;
 }
@@ -2736,7 +2739,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
   if (g_apiOk) {
     const ULONG refs = o.AddRef(dev);
     o.Release(dev);
-    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); }
+    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); }
   }
   return o.Release(dev);
 }
@@ -3721,6 +3724,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   rbrrtx_harvest_install(dev);
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
+  rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");
   return hr;
 }
