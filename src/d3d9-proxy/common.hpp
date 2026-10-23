@@ -78,7 +78,7 @@ bool rbrrtx_screenshot(HWND wnd, const wchar_t* png_path, double* mean_luma);
 // exception_trace.cpp
 void rbrrtx_exception_trace_install();
 
-// headlights.cpp: car headlights as Remix API spot lights (headlights key: one centre light -> two lamps -> off;
+// headlights.cpp: car headlights as Remix API spot lights (headlights key: two lamps -> brights -> off;
 // on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
 struct remixapi_Interface;
 void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Remix API: headlights off

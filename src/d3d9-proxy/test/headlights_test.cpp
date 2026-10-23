@@ -2,7 +2,7 @@
 //   x86 cl test\headlights_test.cpp -> headlights_test.exe <game folder>\Cars   (every Cars\*\*.sgc)
 // Per car: the body is drawn with W = body-to-root * C (C = a rotated, moved car), as the game does (USD capture
 // 2026-10-23: most of the car shares the body node's matrix), plus doors / spinning wheels as smaller groups with
-// other matrices and a bigger, wrongly placed 3rd-person body 4.6 m ahead; RBR's car object (+0x100 block as the
+// other matrices, three more model parts in their own frames, a bigger, wrongly placed 3rd-person body 4.6 m ahead and an off-centre bonnet bigger than the body; RBR's car object (+0x100 block as the
 // game lays it out) is given. The model offset must lock after 20 still frames, and a car that drove on and turned,
 // with no car draws at all, must be placed from RBR's car object alone: lamps within 1 cm of lamp * C, forward axis right, upright.
 // Prints each car's lamps (model frame) and body frame.
@@ -73,7 +73,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!g_car.lamps) { ++noLamps; wprintf(L"%-30s no Point_light_lf/rf\n", e.path().filename().c_str()); continue; }
     // RBR's car object as the game lays it out (+0x100 block): +0x110 3x3 rows = swap(axis0), swap(axis2),
     // swap(axis1); +0x140 position (Y/Z swapped); the physics origin sits at d = (0.1, -0.2, 0.25) from the model root.
-    const V3 dTrue = { 0.1f, -0.2f, 0.25f };
+    const V3 dTrue = { -(g_car.lf.x + g_car.rf.x) * 0.5f - 0.05f, -0.2f, 0.25f };   // RBR's centre near the centreline
     auto physics_at = [&](const float* Cc) {
       const V3 ax[3] = { row(Cc, 0), row(Cc, 1), row(Cc, 2) };
       const V3 o = row(Cc, 3) - (ax[0] * dTrue.x + ax[1] * dTrue.y + ax[2] * dTrue.z);
@@ -101,6 +101,23 @@ int wmain(int argc, wchar_t** argv) {
       mul(L, wrongC, wrong.m);
       wrong.prims = 16000;
       g_groups.push_back(wrong);
+      // Three more parts of the model drawn with their own node frames (bumpers, bonnet, ...), as the game does.
+      for (size_t k = 0, added = 0; k < g_car.parts.size() && added < 3; ++k) {
+        float Lp[16];
+        local_to_root(g_car.parts[k], Lp);
+        Group part;
+        mul(Lp, C, part.m);
+        if (same_matrix(part.m, body.m)) continue;
+        part.prims = 400 + static_cast<unsigned>(k);
+        g_groups.push_back(part);
+        ++added;
+      }
+      // Evo IX style: the bonnet drawn on its own, 0.725 m off-centre at its hinge, bigger than the body draw.
+      Group bonnet = body;
+      const V3 off = norm(row(C, 0)) * 0.725f;
+      bonnet.m[12] += off.x; bonnet.m[13] += off.y; bonnet.m[14] += off.z;
+      bonnet.prims = 12000;
+      g_groups.push_back(bonnet);
       for (int w = 0; w < 4; ++w) {
         Group gr;
         const float s = 0.7f * w + 0.3f + 0.1f * f;

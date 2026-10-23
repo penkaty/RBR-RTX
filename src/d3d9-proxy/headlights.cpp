@@ -2,10 +2,10 @@
 //
 // RBR's headlights are glow sprites (Cars\<car>\<car>_settings.ini [LightN]), not light sources
 // (re/kb/systems/lights-atmosphere.md section 3). Here they become Remix sphere lights with light shaping (spots):
-//   mode 1 = one spot from the middle of the car's front (cheap: one more light for RTXDI to sample)
 //   mode 2 = two spots at the model's own lamp nodes Point_light_lf / Point_light_rf
-// The headlights key (L) steps 1 -> 2 -> off -> 1. Automatic: when the sun shown drops below auto_below_sun
-// (10 degrees) the lights come on in auto_mode, above it they go off again; once the key is used on a stage the
+//   mode 3 = brights (user 2026-10-23): mode 2 plus a tight high beam next to each lamp, toward the car's middle
+// The headlights key (L) steps off -> 2 -> 3 -> off (mode 1, one centre light, was dropped, user 2026-10-23).
+// Automatic: when the sun shown drops below auto_below_sun (10 degrees) the lights come on in auto_mode, above it they go off again; once the key is used on a stage the
 // lights stay as set until the next stage. Settings: rbr-rtx\config\headlights.ini (env RBRRTX_HEADLIGHTS).
 //
 // Where the lamps are. The car model (Cars\Cars.ini [CarNN] FileName, a .sgc) holds a node tree; each node record
@@ -55,12 +55,20 @@ struct Settings {
   bool enabled = true;
   float autoBelow = 10.0f;                             // sun elevation (degrees) below which the lights come on; -90 = never
   int autoMode = 2;                                    // mode the automatic switch uses
-  // x27 of the first build (user 2026-10-23, three times "+200 %")
-  float radiance[3] = { 10800.0f, 10260.0f, 9180.0f }; // per lamp, mode 2
-  float centreRadiance[3] = { 18900.0f, 17955.0f, 16065.0f };
-  float radius = 0.02f;                                // sphere light radius (m)
-  float cone = 36.0f, centreCone = 45.0f;              // half angle (degrees; Remix takes cos of it)
+  // user 2026-10-23: x27 of the first build, +50 %, then -20 %
+  float radiance[3] = { 12960.0f, 12312.0f, 11016.0f }; // per lamp
+  float radius = 0.05f;                                // sphere light radius (m)
+  float cone = 36.0f;                                  // half angle (degrees; Remix takes cos of it)
   float softness = 0.15f, focus = 1.0f;
+  // Brights (mode 3). Remix's cone only masks the light (shaping factor <= 1, light_shaping.slangh), so a tighter
+  // cone does not make the beam brighter: the reach comes from the extra radiance on the axis, the tight cone keeps
+  // it off the near road and the verges. Softness is in cosine units: 0.15 would darken a 12 degree cone (1 - cos =
+  // 0.022) almost completely, so the brights have their own.
+  float brightsRadiance[3] = { 53460.0f, 50787.0f, 45441.0f };   // per high beam (user tuning 2026-10-23, then +10 %)
+  float brightsCone = 15.0f, brightsSoftness = 0.01f, brightsPitch = -0.5f;
+  float brightsInset = 0.25f;                          // metres toward the car's middle from each lamp node
+  float brightsForward = 0.15f;                        // extra metres ahead (user 2026-10-23: the Quattro's big front
+                                                       // lamps hid the high beams inside the car model)
   float pitch = 0.0f;                                  // beam aimed this many degrees below the car's forward axis (+ = down)
   float forward = 0.08f;                               // lamp moved this far ahead of its node (in front of the lens glass)
   float volumetric = 1.0f;                             // volumetricRadianceScale (beams in fog / dust)
@@ -92,12 +100,16 @@ void load_settings() {
     GetPrivateProfileStringW(L"headlights", L"auto_below_sun", L"", v, 32, path);
     if (!_wcsicmp(v, L"none")) s.autoBelow = -90.0f;
     else if (v[0]) s.autoBelow = static_cast<float>(_wtof(v));
-    s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 1, 2);
+    s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 2, 3);   // 1 (centre light) is gone
     ini_rgb(path, L"radiance", s.radiance);
-    ini_rgb(path, L"centre_radiance", s.centreRadiance);
+    ini_rgb(path, L"brights_radiance", s.brightsRadiance);
+    s.brightsCone = std::clamp(ini_float(path, L"brights_cone", s.brightsCone), 1.0f, 89.0f);
+    s.brightsSoftness = std::clamp(ini_float(path, L"brights_softness", s.brightsSoftness), 0.0f, 1.0f);
+    s.brightsPitch = std::clamp(ini_float(path, L"brights_pitch", s.brightsPitch), -30.0f, 30.0f);
+    s.brightsInset = std::clamp(ini_float(path, L"brights_inset", s.brightsInset), -1.0f, 1.0f);
+    s.brightsForward = std::clamp(ini_float(path, L"brights_forward", s.brightsForward), -1.0f, 1.0f);
     s.radius = std::clamp(ini_float(path, L"radius", s.radius), 0.005f, 1.0f);
     s.cone = std::clamp(ini_float(path, L"cone", s.cone), 1.0f, 89.0f);
-    s.centreCone = std::clamp(ini_float(path, L"centre_cone", s.centreCone), 1.0f, 89.0f);
     s.softness = std::clamp(ini_float(path, L"softness", s.softness), 0.0f, 1.0f);
     s.focus = std::clamp(ini_float(path, L"focus", s.focus), 0.0f, 100.0f);
     s.pitch = std::clamp(ini_float(path, L"pitch", s.pitch), -30.0f, 30.0f);
@@ -106,12 +118,12 @@ void load_settings() {
     s.fallbackOn = ini_float(path, L"keep_fallback_light", 1.0f) != 0.0f;
   }
   g_cfg = s;
-  hlog(L"headlights (%s): %s, auto below sun %.1f deg in mode %d, radiance %.0f/%.0f/%.0f (centre %.0f/%.0f/%.0f), "
-       L"radius %.3f, cone %.1f (centre %.1f), softness %.2f, focus %.2f, pitch %.1f, forward %.2f, volumetric %.2f, "
-       L"keep fallback light %s", found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", s.autoBelow,
-       s.autoMode, s.radiance[0], s.radiance[1], s.radiance[2], s.centreRadiance[0], s.centreRadiance[1],
-       s.centreRadiance[2], s.radius, s.cone, s.centreCone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
-       s.fallbackOn ? L"yes" : L"no");
+  hlog(L"headlights (%s): %s, auto below sun %.1f deg in mode %d, radiance %.0f/%.0f/%.0f, "
+       L"radius %.3f, cone %.1f, softness %.2f, focus %.2f, pitch %.1f, forward %.2f, volumetric %.2f, "
+       L"keep fallback light %s; brights radiance %.0f cone %.1f softness %.3f pitch %.1f inset %.2f forward %.2f",
+       found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", s.autoBelow,
+       s.autoMode, s.radiance[0], s.radiance[1], s.radiance[2], s.radius, s.cone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
+       s.fallbackOn ? L"yes" : L"no", s.brightsRadiance[0], s.brightsCone, s.brightsSoftness, s.brightsPitch, s.brightsInset, s.brightsForward);
 }
 
 // ---------------------------------------------------------------- car model (.sgc node tree)
@@ -127,7 +139,26 @@ struct CarModel {
   V3 forward = { 0, 0, -1 };                           // model forward axis (up = +y)
   Placed body = { { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 0 } } };   // model root -> body node (e_body, i_body)
   std::string bodyName = "(none: root frame)";
+  std::vector<Placed> parts;                           // every drawn node (e_* / i_*), identical frames merged
 } g_car;
+
+// Model root -> node local (row vectors) from the node's chain to the root: p_local = R^-1 (p_root - t). A real
+// inverse: some nodes are scaled (fiesta_r2 e_body: x 1.048).
+bool placed_of(const float R[3][3], V3 t, Placed* pl) {
+  const float det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) - R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
+                    R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
+  if (std::fabs(det) < 1e-6f) return false;
+  float inv[3][3];
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c) {
+      const int r1 = (c + 1) % 3, r2 = (c + 2) % 3, c1 = (r + 1) % 3, c2 = (r + 2) % 3;
+      inv[r][c] = (R[r1][c1] * R[r2][c2] - R[r1][c2] * R[r2][c1]) / det;   // cofactor transpose
+    }
+  for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) pl->A[r][c] = inv[c][r];
+  const float tt[3] = { t.x, t.y, t.z };
+  for (int c = 0; c < 3; ++c) pl->A[3][c] = -(tt[0] * pl->A[0][c] + tt[1] * pl->A[1][c] + tt[2] * pl->A[2][c]);
+  return true;
+}
 
 // Chain node -> root: p_root = R p + t (column vectors). transposed = read the stored 3x3 as R^T.
 void total_of(const std::unordered_map<unsigned, Node>& nodes, unsigned id, bool transposed, float R[3][3], V3& t) {
@@ -205,27 +236,28 @@ void load_car_model(const std::wstring& file) {
     float R[3][3];
     V3 t;
     total_of(nodes, it->second, false, R, t);
-    // p_local = R^-1 (p_root - t); row vectors: p_local = (p_root - t) * (R^-1)^T. A real inverse: some bodies are
-    // scaled (fiesta_r2 e_body: x 1.048).
-    const float det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) - R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
-                      R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
-    if (std::fabs(det) < 1e-6f) continue;
-    float inv[3][3];
-    for (int r = 0; r < 3; ++r)
-      for (int c = 0; c < 3; ++c) {
-        const int r1 = (c + 1) % 3, r2 = (c + 2) % 3, c1 = (r + 1) % 3, c2 = (r + 2) % 3;
-        inv[r][c] = (R[r1][c1] * R[r2][c2] - R[r1][c2] * R[r2][c1]) / det;   // cofactor transpose
-      }
-    Placed& pl = g_car.body;
-    for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) pl.A[r][c] = inv[c][r];
-    const float tt[3] = { t.x, t.y, t.z };
-    for (int c = 0; c < 3; ++c) pl.A[3][c] = -(tt[0] * pl.A[0][c] + tt[1] * pl.A[1][c] + tt[2] * pl.A[2][c]);
+    if (!placed_of(R, t, &g_car.body)) continue;
     g_car.bodyName = name;
     break;
   }
+  for (const auto& [id, n] : nodes) {                  // every drawn part, for the offset vote (measure_frame)
+    if (n.name.size() < 3 || (n.name.compare(0, 2, "e_") && n.name.compare(0, 2, "i_"))) continue;
+    float R[3][3];
+    V3 t;
+    total_of(nodes, id, false, R, t);
+    Placed pl;
+    if (!placed_of(R, t, &pl)) continue;
+    bool dup = false;
+    for (const Placed& o : g_car.parts) {
+      float dev = 0.0f;
+      for (int r = 0; r < 4; ++r) for (int c = 0; c < 3; ++c) dev = (std::max)(dev, std::fabs(o.A[r][c] - pl.A[r][c]));
+      if (dev < 1e-3f) { dup = true; break; }
+    }
+    if (!dup) g_car.parts.push_back(pl);
+  }
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-  hlog(L"headlights: car model %s: %zu nodes, body frame %S, lamps %s lf (%.3f %.3f %.3f) rf (%.3f %.3f %.3f), "
-       L"forward model %+.0f z, %.1f ms", file.c_str(), nodes.size(), g_car.bodyName.c_str(), g_car.lamps ? L"found" : L"MISSING",
+  hlog(L"headlights: car model %s: %zu nodes (%zu distinct drawn parts), body frame %S, lamps %s lf (%.3f %.3f %.3f) rf (%.3f %.3f %.3f), "
+       L"forward model %+.0f z, %.1f ms", file.c_str(), nodes.size(), g_car.parts.size(), g_car.bodyName.c_str(), g_car.lamps ? L"found" : L"MISSING",
        g_car.lf.x, g_car.lf.y, g_car.lf.z, g_car.rf.x, g_car.rf.y, g_car.rf.z, g_car.forward.z, ms);
 }
 
@@ -274,14 +306,13 @@ void compose(const Placed& a, const float* W, float C[16]) {
 // with Y and Z swapped (decoded 2026-10-23 01:43 from "pose sample" lines: the body draw's rows are
 // swap(M0), swap(M2), swap(M1) to 3 decimals in two poses). So C rows = those, and C's origin = position + d * R,
 // d = the model root's offset from the physics origin in car axes (E30 standing: (-0.06, -0.24, -0.16) m).
-// d is measured per car from the body draw (>= 1000 triangles, axes within ~2.5 deg of the physics axes, root within
-// 1.5 m), only while the car stands still (draws and physics come from slightly different moments: the moving car's
+// d is measured per car by a vote of the car draws (measure_frame), only while the car stands still (draws and physics come from slightly different moments: the moving car's
 // draw trailed the physics by ~0.37 m), averaged over 20 frames, then locked (kept for the session per model file).
 // Until then d = 0 (lamps ~0.3 m off). Car draws are not needed for the lamps at all: every camera works, and the
 // lamps go out at the first BeginScene with the sun (one fixed point per frame; the UI trigger did not come every
 // frame, so lamps were sometimes sent after Remix had taken the frame's lights: periodic flashing).
 unsigned g_frameNo = 0, g_solved = 0, g_failed = 0;
-struct Offset { int n = 0; V3 sum = {}; bool locked = false; V3 d = {}; };
+struct Offset { int n = 0; V3 sum = {}; bool locked = false; V3 d = {}; int rejected = 0; };
 Offset g_off;
 std::unordered_map<std::wstring, V3> g_offsetByModel;  // locked offsets of this session
 V3 g_lastPhys = {};
@@ -311,27 +342,69 @@ void measure_frame() {
   const bool still = g_haveLastPhys && len(phys - g_lastPhys) < 0.002f;
   g_lastPhys = phys;
   g_haveLastPhys = true;
-  if (g_off.locked || !still) return;
-  const Group* best = nullptr;
-  float C[16], bestC[16];
-  for (const Group& g : g_groups) {
-    if (g.prims < 1000) continue;
-    compose(g_car.body, g.m, C);
-    bool axes = true;
-    for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(Q, r))) > 0.999f;
-    if (!axes || len(row(C, 3) - phys) > 1.5f) continue;
-    if (!best || g.prims > best->prims) { best = &g; std::memcpy(bestC, C, sizeof(C)); }
+  if (!still) return;
+  if (g_off.locked) return;
+  // Vote: every car draw group (>= 200 triangles), for every drawn part of the model it could be, gives the model
+  // root's offset d from RBR's car centre (in car axes) if its axes then match RBR's. The right offset gets a vote
+  // from every correctly placed part, a part taken for the wrong node only its own: so one big off-centre part (the
+  // Evo IX bonnet, 0.725 m off at its hinge: one lamp inside the car, one outside) or a centred one (Quattro: a
+  // 2800-triangle part, lamps 0.83 m ahead of the car) can no longer decide it (2026-10-23 tests). Plausible offsets
+  // only: within 1.5 m, RBR's car centre within 0.25 m of the centreline between the lamps. Bins of 2 cm.
+  struct Vote { long long key; int group; V3 d; };
+  std::vector<Vote> votes;
+  const float centre = (g_car.lf.x + g_car.rf.x) * 0.5f;
+  float C[16];
+  for (int j = 0; j < static_cast<int>(g_groups.size()); ++j) {
+    const Group& g = g_groups[j];
+    if (g.prims < 200) continue;
+    for (const Placed& pl : g_car.parts) {
+      compose(pl, g.m, C);
+      bool axes = true;
+      for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(Q, r))) > 0.999f;
+      if (!axes) continue;
+      const V3 e = row(C, 3) - phys;                    // root offset in render space -> car axes
+      const V3 dv = { dot(e, norm(row(Q, 0))), dot(e, norm(row(Q, 1))), dot(e, norm(row(Q, 2))) };
+      if (len(dv) > 1.5f || std::fabs(-dv.x - centre) > 0.25f) continue;
+      const long long key = (static_cast<long long>(std::lround(dv.x * 50.0f) + 1000) << 40) |
+                            (static_cast<long long>(std::lround(dv.y * 50.0f) + 1000) << 20) | (std::lround(dv.z * 50.0f) + 1000);
+      votes.push_back({ key, j, dv });
+    }
   }
-  if (!best) return;
-  const V3 e = row(bestC, 3) - phys;                    // root offset in render space -> car axes
-  const V3 d = { dot(e, norm(row(Q, 0))), dot(e, norm(row(Q, 1))), dot(e, norm(row(Q, 2))) };
+  std::sort(votes.begin(), votes.end(), [](const Vote& a, const Vote& b) { return a.key != b.key ? a.key < b.key : a.group < b.group; });
+  int bestGroups = 0;
+  V3 d = {};
+  unsigned bestPrims = 0;
+  for (size_t i = 0; i < votes.size();) {
+    size_t e = i;
+    int groups = 0;
+    V3 sum = {};
+    unsigned prims = 0;
+    for (; e < votes.size() && votes[e].key == votes[i].key; ++e) {
+      if (e == i || votes[e].group != votes[e - 1].group) { ++groups; prims += g_groups[votes[e].group].prims; }
+      sum = sum + votes[e].d;
+    }
+    if (groups > bestGroups || (groups == bestGroups && prims > bestPrims)) {
+      bestGroups = groups;
+      bestPrims = prims;
+      d = sum * (1.0f / static_cast<float>(e - i));
+    }
+    i = e;
+  }
+  if (bestGroups < 2) {                                // one part alone does not decide it
+    if (++g_off.rejected <= 3 && !votes.empty())
+      hlog(L"headlights: offset not measured this frame: no two car draws agree (%zu votes)", votes.size());
+    return;
+  }
   g_off.sum = g_off.sum + d;
   if (++g_off.n >= 20) {
+    const bool again = g_off.locked;
     g_off.d = g_off.sum * (1.0f / g_off.n);
     g_off.locked = true;
+    g_off.n = 0;
+    g_off.sum = {};
     g_offsetByModel[g_car.file] = g_off.d;
-    hlog(L"headlights: model root offset from RBR's car position measured: (%.3f %.3f %.3f) m in car axes (%u-triangle body draw)",
-         g_off.d.x, g_off.d.y, g_off.d.z, best->prims);
+    hlog(L"headlights: model root offset from RBR's car position %s: (%.3f %.3f %.3f) m in car axes (last frame: %d car draws agreed, %u triangles)",
+         again ? L"measured again" : L"measured", g_off.d.x, g_off.d.y, g_off.d.z, bestGroups, bestPrims);
   }
 }
 
@@ -342,7 +415,7 @@ bool place_frame(float C[16]) {
 
 // ---------------------------------------------------------------- state
 
-enum { kOff = 0, kCentre = 1, kPair = 2 };
+enum { kOff = 0, kPair = 2, kBrights = 3 };
 const remixapi_Interface* g_api = nullptr;
 int g_mode = kOff;
 bool g_manual = false;                                 // the key was used on this stage: no automatic switching
@@ -350,7 +423,8 @@ bool g_dark = false;                                   // sun below auto_below_s
 int g_track = -1, g_carSlot = -1;
 bool g_emitted = false;
 struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; bool drawn = false; };
-Lamp g_lamps[3] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL } };   // RBRHLCEN / RBRHLLFT / RBRHLRGT
+Lamp g_lamps[5] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
+                    { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL } };   // RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF
 unsigned g_creates = 0;
 
 void destroy_lamp(Lamp& l) {
@@ -360,7 +434,9 @@ void destroy_lamp(Lamp& l) {
 
 void destroy_all() { for (Lamp& l : g_lamps) destroy_lamp(l); }
 
-const wchar_t* mode_name(int m) { return m == kCentre ? L"ON 1 (one centre light)" : m == kPair ? L"ON 2 (two lamps)" : L"OFF"; }
+const wchar_t* mode_name(int m) {
+  return m == kPair ? L"ON (two lamps)" : m == kBrights ? L"BRIGHTS (four lamps)" : L"OFF";
+}
 
 void set_mode(int m, const wchar_t* why) {
   if (m == g_mode) return;
@@ -373,7 +449,7 @@ void set_mode(int m, const wchar_t* why) {
   rbrrtx_report_event(ev);
 }
 
-void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3]) {
+void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float softness) {
   const bool moved = !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone;
   if (moved) {
     destroy_lamp(l);
@@ -384,7 +460,7 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3]) {
     sphere.shaping_hasvalue = TRUE;
     sphere.shaping_value.direction = { dir.x, dir.y, dir.z };
     sphere.shaping_value.coneAngleDegrees = cone;
-    sphere.shaping_value.coneSoftness = g_cfg.softness;
+    sphere.shaping_value.coneSoftness = softness;
     sphere.shaping_value.focusExponent = g_cfg.focus;
     sphere.volumetricRadianceScale = g_cfg.volumetric;
     remixapi_LightInfo info = {};
@@ -419,7 +495,11 @@ void rbrrtx_headlights_init(const remixapi_Interface* api) {
 }
 
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended) {
-  if (!g_cfg.enabled || g_mode == kOff || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
+  // Collected while the lights are on, and on a stage until the model offset is measured, lights off too: the
+  // game shows the car in a 3rd-person view whenever a stage loads, where several car parts agree (user 2026-10-23;
+  // the cockpit view often shows just one, and the lamps then moved once, ~0.3 m, when the view changed).
+  const bool measuring = g_track >= 0 && !g_off.locked;
+  if (!g_cfg.enabled || (g_mode == kOff && !measuring) || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
   for (Group& g : g_groups) if (same_matrix(g.m, world)) { g.prims += prims; return; }
   Group g;
   std::memcpy(g.m, world, sizeof(g.m));
@@ -445,13 +525,18 @@ void rbrrtx_headlights_emit() {
   const V3 wl = to_world(C, lf + ahead), wr = to_world(C, rf + ahead);
   const V3 fwd = norm(row(C, 2) * g_car.forward.z);
   const V3 up = norm(row(C, 1));
-  const float pr = g_cfg.pitch * 0.0174533f;
-  const V3 dir = norm(fwd * std::cos(pr) - up * std::sin(pr));
-  if (g_mode == kCentre) {
-    draw_lamp(g_lamps[0], (wl + wr) * 0.5f, dir, g_cfg.centreCone, g_cfg.centreRadiance);
-  } else {
-    draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance);
-    draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance);
+  auto aim = [&](float pitchDeg) { const float pr = pitchDeg * 0.0174533f; return norm(fwd * std::cos(pr) - up * std::sin(pr)); };
+  const V3 dir = aim(g_cfg.pitch);
+  draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
+  draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
+  if (g_mode == kBrights) {                            // high beams: each lamp node moved toward the car's middle
+    const float in = g_cfg.brightsInset;
+    const V3 bahead = ahead + g_car.forward * g_cfg.brightsForward;
+    const V3 bl = to_world(C, lf + bahead + V3{ lf.x > rf.x ? -in : in, 0, 0 });
+    const V3 br = to_world(C, rf + bahead + V3{ lf.x > rf.x ? in : -in, 0, 0 });
+    const V3 bdir = aim(g_cfg.brightsPitch);
+    draw_lamp(g_lamps[3], bl, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
+    draw_lamp(g_lamps[4], br, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
   }
 }
 
@@ -459,7 +544,7 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   ++g_frameNo;
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
   g_emitted = false;                                     // emitted at the next first BeginScene
-  if (layerOn && g_mode != kOff) measure_frame();         // with every car draw of the frame
+  if (layerOn && (g_mode != kOff || (g_track >= 0 && !g_off.locked))) measure_frame();   // with every car draw of the frame
   g_groups.clear();
   if (!g_cfg.enabled || !g_api) return;
   RbrStageInfo si;
@@ -486,7 +571,7 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   }
   if (keyed) {
     g_manual = true;
-    set_mode(g_mode == kOff ? kCentre : g_mode == kCentre ? kPair : kOff, rbrrtx_key_name(RBRKEY_HEADLIGHTS));
+    set_mode(g_mode == kOff ? kPair : g_mode == kPair ? kBrights : kOff, rbrrtx_key_name(RBRKEY_HEADLIGHTS));
   }
   const bool dark = sunElevation < g_cfg.autoBelow;
   if (!g_manual && dark != g_dark) {

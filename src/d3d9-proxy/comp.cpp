@@ -608,6 +608,7 @@ int g_sunRuleLogged = -1;                              // last rule logged (0 no
 // and their SunDir is often a normal day sun (Kaihuavaara 2021 O_E_nosnow_clear: 17 degrees). On such a stage the
 // Remix sun's elevation is held inside atmosphere.ini [atmosphere] night_sun = min, max (default -5, 5; none = off).
 bool g_night = false, g_nightOn = true;
+float g_nightEvMin = 3.0f;                             // auto exposure lower limit at full night (debug_sky)
 float g_nightMin = -5.0f, g_nightMax = 5.0f;
 
 void sun_rule(float d[3]) {
@@ -700,7 +701,7 @@ void remix_set(const char* key, const char* value) {
 
 // Night with the debug sun: Remix lights the scene from the sky too, so the sky light dims with the sun (1 at the
 // horizon, 1 % at -12 degrees). Auto exposure would brighten the dark scene back up (evMin 0 .. evMax 4 = up to 16x,
-// test 2026-10-17: a grey night "lit from below"), so the lower exposure limit rises with the night to evMax - 1.
+// test 2026-10-17: a grey night "lit from below"), so the lower exposure limit rises with the night to night_ev_min (atmosphere.ini, 3.0).
 // Base values from the conf Remix reads (last line wins); all go back when the debug sun is switched off. Set through
 // remix_set like K.
 float conf_float(const char* name, float dflt) {
@@ -737,7 +738,9 @@ void debug_sky() {
     g_skySet = sky;
   }
   const float night = (1.0f - f) / 0.99f;              // 0 at the horizon .. 1 at -12 degrees
-  const float evMin = evMinBase + ((std::max)(evMinBase, evMax - 1.0f) - evMinBase) * night;
+  // Night end point: atmosphere.ini night_ev_min (default 3.0; was evMax - 1 = 4, too bright for the user, 2026-10-23).
+  const float evNight = (std::min)((std::max)(evMinBase, g_nightEvMin), evMax - 0.5f);
+  const float evMin = evMinBase + (evNight - evMinBase) * night;
   if (std::fabs(evMin - evMinSet) >= 0.05f) {
     sprintf_s(v, "%.3f", evMin);
     remix_set("rtx.autoExposure.evMinValue", v);
@@ -807,6 +810,8 @@ void atmo_load() {
     wchar_t v[32] = {};
     GetPrivateProfileStringW(L"atmosphere", L"menu_sun_azimuth", L"28.0", v, 32, path);
     g_menuSunOn = swscanf_s(v, L"%f", &g_menuSunAz) == 1;
+    GetPrivateProfileStringW(L"atmosphere", L"night_ev_min", L"3.0", v, 32, path);
+    g_nightEvMin = static_cast<float>(_wtof(v));
     GetPrivateProfileStringW(L"atmosphere", L"night_sun", L"-5, 5", v, 32, path);
     float lo, hi;
     g_nightOn = swscanf_s(v, L"%f , %f", &lo, &hi) == 2;

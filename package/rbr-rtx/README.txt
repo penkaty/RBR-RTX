@@ -53,9 +53,10 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
            and damp patches can show as black, mirror-like holes, and it uses a lot of memory on big stages.
 
   Driving:
-  L        headlights: ON 1 (one light from the middle of the car, cheapest) -> ON 2 (two lights at the car's own
-           headlights) -> OFF. They switch on by themselves when the sun is lower than 10 degrees (and off again
-           above it) until you press L on that stage. Brightness, beam width, automatic switch:
+  L        headlights: OFF -> ON (two lights at the car's own headlights) -> BRIGHTS (two more, tight high beams
+           that reach further; four lights) -> OFF.
+           They switch on by themselves when the sun is lower than 10 degrees (and off again above it) until you
+           press L on that stage. Brightness, beam width, automatic switch:
            rbr-rtx\config\headlights.ini. Night weathers (the stage's weather says "night") get a sun between
            -5 and +5 degrees (atmosphere.ini night_sun), so the headlights come on there by themselves.
 
