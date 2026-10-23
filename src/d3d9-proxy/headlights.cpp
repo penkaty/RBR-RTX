@@ -64,8 +64,8 @@ struct Settings {
   bool enabled = true;
   float autoBelow = 10.0f;                             // sun elevation (degrees) below which the lights come on; -90 = never
   int autoMode = 2;                                    // mode the automatic switch uses
-  // user 2026-10-23: x27 of the first build, +50 %, then -20 %
-  float radiance[3] = { 12960.0f, 12312.0f, 11016.0f }; // per lamp
+  // user 2026-10-23: x27 of the first build, +50 %, -20 %, then -15 %
+  float radiance[3] = { 11016.0f, 10465.0f, 9364.0f };  // per lamp
   float radius = 0.05f;                                // sphere light radius (m)
   float cone = 36.0f;                                  // half angle (degrees; Remix takes cos of it)
   float softness = 0.15f, focus = 1.0f;
@@ -73,7 +73,7 @@ struct Settings {
   // cone does not make the beam brighter: the reach comes from the extra radiance on the axis, the tight cone keeps
   // it off the near road and the verges. Softness is in cosine units: 0.15 would darken a 12 degree cone (1 - cos =
   // 0.022) almost completely, so the brights have their own.
-  float brightsRadiance[3] = { 53460.0f, 50787.0f, 45441.0f };   // per high beam (user tuning 2026-10-23, then +10 %)
+  float brightsRadiance[3] = { 45441.0f, 43169.0f, 38625.0f };   // per high beam (user tuning 2026-10-23, +10 %, then -15 %)
   float brightsCone = 15.0f, brightsSoftness = 0.01f, brightsPitch = -0.5f;
   float brightsInset = 0.25f;                          // metres toward the car's middle from each lamp node
   float brightsForward = 0.15f;                        // extra metres ahead (user 2026-10-23: the Quattro's big front
@@ -83,18 +83,19 @@ struct Settings {
   float volumetric = 1.0f;                             // volumetricRadianceScale (beams in fog / dust)
   bool fallbackOn = true;                              // keep Remix's fallback light while the lights are on at night
   V3 fallback = { 0.6f, 0.5f, -1.8f };                 // model offset of the left lamp when the model has none
-  // Rear lamps (gta4-rtx: rear intensity 0.6 vs 1.2 headlights = half; cone 0.6 x + 5; aimed back, 0.2 down). RBR's
-  // own lamp sprites are pure red (Cars\*\*_settings.ini Red 255 Green 0 Blue 0). Tail = a quarter of the brake light.
+  // Rear lamps (cone and aim after gta4-rtx: cone 0.6 x + 5; aimed back, 0.2 down). RBR's own lamp sprites are pure
+  // red (Cars\*\*_settings.ini Red 255 Green 0 Blue 0). Brightness (user 2026-10-23 tuning, replacing gta4-rtx's
+  // half): braking = a headlight's red, tail = 66 % dimmer than that.
   bool rear = true, brakeLights = true;
-  float brakeRadiance[3] = { 6480.0f, 130.0f, 65.0f }; // per lamp while braking: half a headlight, red
-  float tailRadiance[3] = { 1620.0f, 32.0f, 16.0f };   // per lamp with the headlights on
+  float brakeRadiance[3] = { 11016.0f, 220.0f, 110.0f };   // per lamp while braking: as a headlight, red
+  float tailRadiance[3] = { 3745.0f, 75.0f, 37.0f };   // per lamp with the headlights on: 0.34 x braking
   float rearCone = 36.0f * 0.6f + 5.0f, rearSoftness = 0.15f;
   float rearPitch = 11.3f;                             // degrees below straight back (atan 0.2)
   float rearBack = 0.05f;                              // metres behind the lamp node (outside the lens)
   float brakeOn = 0.05f;                               // brake input (0..1) that lights them; off again below half of it
   // Backfire flash
   bool pop = true;
-  float popRadiance[3] = { 8000.0f, 3600.0f, 960.0f }; // orange (flame), point light
+  float popRadiance[3] = { 53460.0f, 24057.0f, 6415.0f };   // orange (flame), point light; the high beams before their -15 % (user 2026-10-23)
   float popRadius = 0.08f, popHold = 0.06f, popOut = 0.12f;   // m, s after the last pop draw, m beyond the pipe tip
   unsigned long long popTexture = 0x93E4994710A5380BULL;
 } g_cfg;
