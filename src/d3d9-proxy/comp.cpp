@@ -445,18 +445,8 @@ bool g_rbrVPvalid = false;   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
 
-// Dust/smoke (Valstagna replay 05:57, user): RBR draws gravel dust as Particle.vso batches of alpha-tested, blended
-// sprites. Path traced, hundreds of stacked translucent quads cost a lot and fill the screen as a brown wall (onboard
-// replays at slow hairpins). Only the first g_dustKeep percent of each batch's triangles is drawn (rounded to whole
-// quads). RBRRTX_DUST=<percent> (100 = all, 0 = none); the dust key cycles them live.
-// Run 06:19 (user): with the sprites tagged as Remix particles (rtx.conf) full dust looked best; 15% left a few flat
-// sprite planes trailing the car. Run 16:52 (user): full dust is far too expensive (the test install has ParticleMod by
-// Kahoo: many fine sprites); wanted: cheap and not too dense. ParticleQuality = low (the 2004 PS_*_LOW.ini) drew no
-// dust at all under Remix (run 18:26, Alt+Pause had nothing to trim), so ParticleMod's sprites. Trimming keeps the
-// first part of each batch, which in a TV-cam replay (run 18:41) cut the trail into dust / gap / dust instead of
-// thinning it, so the default is 100 again until thinning is spread evenly. Dust key: 100 -> 0 -> 25 -> 50.
-// g_dustQuads counts drawn quads for the log.
-unsigned g_dustKeep = 100, g_dustTrimmed = 0, g_dustQuads = 0, g_dustFrames = 0;
+// Frames since the last comp log line (the per-frame averages in that line divide by it).
+unsigned g_logFrames = 0;
 UINT g_primCap = UINT_MAX, g_pendingPrims = 0;                             // set per draw by comp_draw, applied by the draw hooks
 UINT cap_prims(UINT count) { return count < g_primCap ? count : g_primCap; }
 // Off-screen scenery (run 18:41 dumps): every frame RBR redraws sky, ground and foliage into its car reflection cube
@@ -1927,36 +1917,36 @@ void log_frame(const wchar_t* why) {
        g_st.scenes, g_st.worldErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
        g_st.skyDraws, g_st.skyErr, g_st.skyCamOff, g_glassOn ? L"on" : L"off", g_st.glassSkipped, g_st.screenSpace, g_uiTriggerOn ? L"on" : L"off",
        g_st.uiTriggerAt, g_st.oqAtUi, g_oqActive, kTestModes[g_testMode]);
-  clog(L"  foliage mode %d (cut-out ALPHAREF %lu): %u draws with lowered ALPHAREF, %u soft passes skipped; %u mid-scene screen quads skipped; dust %u%% (%u batches trimmed, %.0f quads drawn per frame); off-screen scenery %s (%.0f draws skipped per frame) since last line",
-       g_foliageMode, g_cutoutRef, g_refLowered, g_softSkipped, g_midQuadSkipped, g_dustKeep, g_dustTrimmed,
-       g_dustFrames ? static_cast<double>(g_dustQuads) / g_dustFrames : 0.0, g_skipOffscreen ? L"skipped" : L"drawn",
-       g_dustFrames ? static_cast<double>(g_offSkipped) / g_dustFrames : 0.0);
+  clog(L"  foliage mode %d (cut-out ALPHAREF %lu): %u draws with lowered ALPHAREF, %u soft passes skipped; %u mid-scene screen quads skipped; off-screen scenery %s (%.0f draws skipped per frame) since last line",
+       g_foliageMode, g_cutoutRef, g_refLowered, g_softSkipped, g_midQuadSkipped,
+       g_skipOffscreen ? L"skipped" : L"drawn",
+       g_logFrames ? static_cast<double>(g_offSkipped) / g_logFrames : 0.0);
   clog(L"  fixed-function scenery now mode %d (%s); since last line %.0f draws per frame without their vertex shader, %.0f of them swaying ones beyond %.0f m",
        g_ffMode, g_ffMode == 0 ? L"off, vertex capture" : g_ffMode == 1 ? L"static RL scenery" : L"static RL scenery + far swaying foliage",
-       g_dustFrames ? static_cast<double>(g_ffDraws) / g_dustFrames : 0.0,
-       g_dustFrames ? static_cast<double>(g_ffSwayFar) / g_dustFrames : 0.0, g_ffSwayNear);
+       g_logFrames ? static_cast<double>(g_ffDraws) / g_logFrames : 0.0,
+       g_logFrames ? static_cast<double>(g_ffSwayFar) / g_logFrames : 0.0, g_ffSwayNear);
   clog(L"  opaque cut-outs %s: %.0f alpha-tested draws per frame drawn without alpha test (texture never below ALPHAREF)",
-       g_opaqueAlpha ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_opaqueDraws) / g_dustFrames : 0.0);
+       g_opaqueAlpha ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_opaqueDraws) / g_logFrames : 0.0);
   clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",
-       g_dirtOn ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_dirtDraws) / g_dustFrames : 0.0, g_dirtUntagged);
+       g_dirtOn ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_dirtDraws) / g_logFrames : 0.0, g_dirtUntagged);
   g_dirtDraws = g_dirtUntagged = 0;
   {
     unsigned held = 0, twins = 0;
     double mb = 0;
     rbrrtx_layer_stats(&held, &twins, &mb);
     clog(L"  ground second layer %s: %.0f per frame (%u without twin or UV set, %u untagged); %u sources held, %u twins, %.0f MB",
-         g_layerOn ? L"ON" : L"off", g_dustFrames ? static_cast<double>(g_layerDraws) / g_dustFrames : 0.0,
+         g_layerOn ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_layerDraws) / g_logFrames : 0.0,
          g_layerMissing, g_layerUntagged, held, twins, mb);
     g_layerDraws = g_layerMissing = g_layerUntagged = 0;
   }
   if (g_clockChanges) clog(L"  start clock digits: %u changes drawn as new meshes since last line", g_clockChanges);
   g_clockChanges = 0;
   wchar_t acLine[400];
-  rbrrtx_alphacut_summary(acLine, 400, g_dustFrames);
+  rbrrtx_alphacut_summary(acLine, 400, g_logFrames);
   clog(L"  alpha-card cut-outs %s: %s", g_alphaCut ? L"ON" : L"off", acLine);
-  rbrrtx_radnorm_summary(acLine, 400, g_dustFrames);
+  rbrrtx_radnorm_summary(acLine, 400, g_logFrames);
   clog(L"  radial foliage normals %s", acLine);
-  g_refLowered = g_softSkipped = g_midQuadSkipped = g_dustTrimmed = g_dustQuads = g_dustFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
+  g_refLowered = g_softSkipped = g_midQuadSkipped = g_logFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
   g_opaqueDraws = 0;
   if (okInv)
     clog(L"  camera pos (%.2f, %.2f, %.2f) vs c50 (%.2f, %.2f, %.2f); camera up (%.3f, %.3f, %.3f); fovY %.1f deg, "
@@ -2403,18 +2393,13 @@ void end_frame(IDirect3DDevice9* dev) {
     log_frame(why);
   }
   if (rbrrtx_key_pressed(RBRKEY_RAIN)) rbrrtx_rain_toggle();          // rain/snow: Remix <-> the game's own
-  if (kDust && rbrrtx_particles_active()) rbrrtx_particles_toggle();   // Remix dust on/off; game dust never spawned
-  else if (kDust) {                                    // no Remix dust: game dust 100 -> 0 -> 25 -> 50
-    g_dustKeep = g_dustKeep == 100 ? 0 : g_dustKeep == 0 ? 25 : g_dustKeep == 25 ? 50 : 100;
-    swprintf_s(why, L"%s: dust %u%%", rbrrtx_key_name(RBRKEY_DUST), g_dustKeep);
-    log_frame(why);
-  }
+  if (kDust && rbrrtx_particles_active()) rbrrtx_particles_toggle();   // Remix API dust on/off
   if (kSky) {                                          // sky mode 2 <-> 1
     g_skyMode = g_skyMode == 2 ? 1 : 2;
     swprintf_s(why, L"%s: %s", rbrrtx_key_name(RBRKEY_SKY), g_skyMode == 2 ? L"sky mode 2 (Remix sky)" : L"sky mode 1 (skip)");
     log_frame(why);
   }
-  ++g_dustFrames;
+  ++g_logFrames;
   if (kBrighter || kDimmer) {                          // sun brightness live (sun_brighter / sun_dimmer), game or debug sun
     g_sunScale = std::clamp(g_sunScale * (kBrighter ? 1.1f : 1.0f / 1.1f), 0.05f, 20.0f);
     g_sunFade = -1.0f;                                 // forces the light to be re-created with the new radiance
@@ -3255,9 +3240,9 @@ void sweep_begin() {
   rbrrtx_headlights_status(s, 1024);
   r += s;
   r += L"\n";
-  swprintf_s(s, L"proxy: comp %s, FF scenery mode %d (sway near %.0f m), foliage mode %d (ALPHAREF %lu), dust %u %%, sky mode %d, "
+  swprintf_s(s, L"proxy: comp %s, FF scenery mode %d (sway near %.0f m), foliage mode %d (ALPHAREF %lu), sky mode %d, "
                 L"windscreen %s, culling %s, transform mode %d\n",
-             g_enabled ? L"ON" : L"off", g_ffMode, g_ffSwayNear, g_foliageMode, g_cutoutRef, g_dustKeep, g_skyMode,
+             g_enabled ? L"ON" : L"off", g_ffMode, g_ffSwayNear, g_foliageMode, g_cutoutRef, g_skyMode,
              g_glassOn ? L"on" : L"skipped", g_cull.enabled ? L"ON" : L"off", g_testMode);
   r += s;
   wchar_t conf[MAX_PATH] = {};
@@ -3643,19 +3628,6 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       rbrrtx_rain_note_draw(rbrrtx_texture_hash(t), g_pendingPrims, false);
     }
   }
-  if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE)) {
-    DWORD at = 0, blend = 0;
-    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
-    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
-    if (at && blend) {
-      if (g_dustKeep == 0) { ++g_dustTrimmed; return D3D_OK; }
-      if (g_dustKeep < 100) {
-        g_primCap = (std::max)(2u, g_pendingPrims * g_dustKeep / 100 / 2 * 2);   // whole quads (2 triangles each)
-        if (g_primCap < g_pendingPrims) ++g_dustTrimmed;
-      }
-      g_dustQuads += (std::min)(g_primCap, g_pendingPrims) / 2;
-    }
-  }
   if (sky && g_skyMode == 1) { ++g_st.skyDraws; return D3D_OK; }
   DWORD oldRef = 0;
   bool refChanged = false;
@@ -3926,7 +3898,6 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_skipOffscreen = !rbrrtx_env_flag(L"RBRRTX_OFFSCREEN", false);
     wchar_t fol[16];
     if (GetEnvironmentVariableW(L"RBRRTX_FOLIAGE", fol, 16)) g_foliageMode = std::clamp(_wtoi(fol), 0, 2);
-    if (GetEnvironmentVariableW(L"RBRRTX_DUST", fol, 16)) g_dustKeep = static_cast<unsigned>(std::clamp(_wtoi(fol), 0, 100));
     if (GetEnvironmentVariableW(L"RBRRTX_FF", fol, 16)) g_ffMode = g_ffBase = std::clamp(_wtoi(fol), 0, 2);
     g_opaqueAlpha = g_opaqueBase = rbrrtx_env_flag(L"RBRRTX_OPAQUE_ALPHA", true) ? 1 : 0;
     g_alphaCut = g_alphaCutBase = rbrrtx_env_flag(L"RBRRTX_ALPHACUT", true) ? 1 : 0;

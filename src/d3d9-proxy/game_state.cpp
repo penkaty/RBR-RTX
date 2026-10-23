@@ -50,6 +50,19 @@ bool read_car_brake(float* brake) {
   return true;
 }
 
+// Gear of the player car: [0x165FC68] + 0x170 (KB prior-art.md; NGPCarMenu RBRAPI.h): 0 = reverse, 1 = neutral, 2.. = forward.
+bool read_car_gear(int* gear) {
+  int g;
+  __try {
+    const uintptr_t car = *reinterpret_cast<volatile uintptr_t*>(0x0165FC68);
+    if (!car) return false;
+    g = *reinterpret_cast<volatile int*>(car + 0x170);
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+  if (g < 0 || g > 9) return false;
+  *gear = g;
+  return true;
+}
+
 int read_game_mode() {
   __try {
     const uintptr_t cfg = *reinterpret_cast<volatile uintptr_t*>(0x007EAC48);
@@ -124,6 +137,8 @@ void load_rsf() {
 bool rbrrtx_player_car_raw(float out[20]) { return read_car_raw(out); }
 
 bool rbrrtx_player_car_brake(float* brake) { return read_car_brake(brake); }
+
+bool rbrrtx_player_car_gear(int* gear) { return read_car_gear(gear); }
 
 bool rbrrtx_stage_info(RbrStageInfo* out) {
   if (!out) return false;

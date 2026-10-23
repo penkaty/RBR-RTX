@@ -16,9 +16,7 @@ Install
 Recommended game settings (RSF launcher / in-game options)
   Cubic env maps: off/Low, Render car shadows: off. RBR-RTX path traces car reflections and shadows; the game's
   reflection cube map pass and blob shadow only cost time (RBR-RTX skips the cube map draws anyway).
-  Particles: dust and smoke are path traced, so they cost FPS. Particles off (launcher) is the cheapest, as many
-  players race anyway; U (below) switches dust live.
-  (Particle quality Low currently shows no dust at all under RBR-RTX.)
+  Particles: off (Remix uses its own particle renderer; the game's own particles are never drawn).
 
 Weather: RBR's sky type (crisp, hazy, rain, snow, fog), cloud cover, time of day and the stage's country set the
   Remix haze, sky light and sun automatically (rbr-rtx\config\atmosphere.ini; enable = 0 there turns it off).
@@ -64,7 +62,7 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
            All in headlights.ini (tail_lights, brake_lights, backfire_light).
 
   Tuning:
-  7       gravel dust: all (default) -> none -> quarter -> half (quarter/half shorten the trail for now)
+  7       dust and tyre smoke (Remix particles) on/off
   Alt+N / Alt+M  sun brighter / dimmer (10 % per press; the log shows the value to keep)
   H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).

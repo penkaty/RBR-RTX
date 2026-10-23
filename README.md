@@ -105,7 +105,6 @@ Known issues:
   holds the game's own files. `rbr-rtx\logs\rbrrtx_comp.log` then says "WARNING: game shaders not recognised".
 - **High FPS counter, but it feels choppy?** The counter counts the frames the game sends, not the frames that reach
   your screen. Try fullscreen instead of windowed, and close other overlays.
-- Dust and smoke cost a lot of FPS (trees much less since 0.2.5).
 - With Cubic env maps on, the 3rd-person car looks wrong.
 - Some modern RSF cars use shaders I don't handle yet. Please send a sweep.
 - **BTB stages** (made with Bob's Track Builder, e.g. Ruuhimaki) don't work with path tracing yet: the stage is

@@ -81,6 +81,7 @@ bool rbrrtx_stage_info(RbrStageInfo* out);
 // RBR's car movement object (0x8EF660) +0x100, 20 floats; car position = out[16..18] in physics space (= render world
 // with Y and Z swapped). Pre-stage/stage/replay only; false if not readable.
 bool rbrrtx_player_car_raw(float out[20]);
+bool rbrrtx_player_car_gear(int* gear);                        // 0 reverse, 1 neutral, 2.. forward (0x165FC68 +0x170)
 bool rbrrtx_player_car_brake(float* brake);                    // brake input 0..1 (car object +0x860)
 const wchar_t* rbrrtx_sky_name(int skyType);                  // Crisp, Hazy, NoRain, LightRain, ...
 const wchar_t* rbrrtx_cloud_name(int clouds);

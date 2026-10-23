@@ -94,6 +94,8 @@ struct Settings {
   float rearCone = 36.0f * 0.6f + 5.0f, rearSoftness = 0.15f;
   float rearPitch = 11.3f;                             // degrees below straight back (atan 0.2)
   float rearBack = 0.05f;                              // metres behind the lamp node (outside the lens)
+  bool reverseLight = true;                            // right rear lamp white in reverse (user 2026-10-24)
+  float reverseRadiance[3] = { 6000.0f, 6000.0f, 6000.0f };
   float brakeOn = 0.05f;                               // brake input (0..1) that lights them; off again below half of it
   // Backfire flash
   bool pop = true;
@@ -159,6 +161,8 @@ void load_settings() {
     s.fallbackOn = ini_float(path, L"keep_fallback_light", 1.0f) != 0.0f;
     s.rear = ini_float(path, L"tail_lights", 1.0f) != 0.0f;
     s.brakeLights = ini_float(path, L"brake_lights", 1.0f) != 0.0f;
+    s.reverseLight = ini_float(path, L"reverse_light", 1.0f) != 0.0f;
+    ini_rgb(path, L"reverse_radiance", s.reverseRadiance);
     ini_rgb(path, L"brake_radiance", s.brakeRadiance);
     ini_rgb(path, L"tail_radiance", s.tailRadiance);
     s.rearCone = std::clamp(ini_float(path, L"rear_cone", s.rearCone), 1.0f, 89.0f);
@@ -688,6 +692,8 @@ Lamp g_lamps[8] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4
                     { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
                     { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL } };
 unsigned g_creates = 0;
+bool g_reversing = false;                              // reverse lamp lit (gear 0)
+unsigned g_reverseSwitches = 0;
 bool g_braking = false;                                // brake lights lit (hysteresis on the brake input)
 unsigned g_brakeSwitches = 0;
 std::chrono::steady_clock::time_point g_lastPop;       // last frame with a backfire draw
@@ -882,12 +888,17 @@ void rbrrtx_headlights_emit() {
   if (braking != g_braking && ++g_brakeSwitches <= 3)
     hlog(L"headlights: brake lights %s (brake input %.2f)", braking ? L"ON" : L"off", brake);
   g_braking = braking;
+  int gear = 1;                                        // reverse: the right rear lamp turns white
+  const bool reversing = g_cfg.reverseLight && rbrrtx_player_car_gear(&gear) && gear == 0;
+  if (reversing != g_reversing && ++g_reverseSwitches <= 3)
+    hlog(L"headlights: reverse light %s (gear %d)", reversing ? L"ON" : L"off", gear);
+  g_reversing = reversing;
   const bool pop = g_cfg.pop && g_popSeen &&
                    std::chrono::duration<float>(std::chrono::steady_clock::now() - g_lastPop).count() <= g_cfg.popHold;
   if (pop && !g_popActive && ++g_popFlashes <= 3) hlog(L"headlights: backfire flash (%u pop draws so far)", g_popDraws);
   g_popActive = pop;
   const bool tail = g_cfg.rear && g_mode != kOff;
-  if (g_mode == kOff && !braking && !pop) return;
+  if (g_mode == kOff && !braking && !pop && !reversing) return;
   g_emitted = true;
   float C[16];
   if (!place_frame(C)) {
@@ -915,13 +926,16 @@ void rbrrtx_headlights_emit() {
   const V3 fwd = norm(row(C, 2) * g_car.forward.z);
   const V3 up = norm(row(C, 1));
   auto aim = [&](float pitchDeg) { const float pr = pitchDeg * 0.0174533f; return norm(fwd * std::cos(pr) - up * std::sin(pr)); };
-  if ((tail || braking) && g_car.rear) {               // rear: aimed straight back and rearPitch down
+  if ((tail || braking || reversing) && g_car.rear) {               // rear: aimed straight back and rearPitch down
     const V3 back = g_car.forward * -g_cfg.rearBack;
     const float pr = g_cfg.rearPitch * 0.0174533f;
     const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
     const float* rad = braking ? g_cfg.brakeRadiance : g_cfg.tailRadiance;
-    draw_lamp(g_lamps[5], to_world(C, g_car.lb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
-    draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+    if (tail || braking)
+      draw_lamp(g_lamps[5], to_world(C, g_car.lb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+    if (tail || braking || reversing)                  // reverse: this lamp is white
+      draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone,
+                reversing ? g_cfg.reverseRadiance : rad, g_cfg.rearSoftness);
   }
   if (pop && g_car.exhaust)                            // backfire: a point light just beyond the pipe tip
     draw_lamp(g_lamps[7], to_world(C, g_car.exhaustTip + g_car.exhaustDir * g_cfg.popOut), up, 180.0f, g_cfg.popRadiance,
