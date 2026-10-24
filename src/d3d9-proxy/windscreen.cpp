@@ -600,7 +600,40 @@ void rbrrtx_windscreen_car_drawn(const float M[16]) {
   (void)M;                                             // run 10 (user): outside views get no drops at all
 }
 
-void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) { (void)camToWorld; (void)fovY; }
+// Run 16 (user 2026-10-24: no run had the right place; "how would you do it"): RBR's own cockpit windscreen quad
+// (k_windscreen) in the driving camera's space, from the car's files (headlights.cpp load_cockpit_quad), put on the
+// live camera every frame. Nothing measured in game. Driving camera only: a cabin camera whose field of view is the
+// car ini's [Cam_internal] FOV (0.85 rad = 36.5 deg vertical at 16:9); the quad is defined for that camera.
+void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) {
+  if (!g_api || !g_cfg.enabled || !g_pl.valid || g_drawnThisFrame || !rbrrtx_camera_in_cabin()) return;
+  const float F = rbrrtx_car_internal_fov();
+  if (F > 0.0f && std::fabs(fovY - 2.0f * std::atan(std::tan(F * 0.5f) * 0.727f) * 57.29578f) > 4.0f) return;
+  float c[4][3];
+  if (!rbrrtx_car_cockpit_quad(c)) return;
+  const V cr = norm({ camToWorld[0], camToWorld[1], camToWorld[2] }), cu = norm({ camToWorld[4], camToWorld[5], camToWorld[6] }),
+          cf = norm({ camToWorld[8], camToWorld[9], camToWorld[10] }), cp = { camToWorld[12], camToWorld[13], camToWorld[14] };
+  V w[4];
+  for (int k = 0; k < 4; ++k) w[k] = cp + cr * c[k][0] + cu * c[k][1] + cf * c[k][2];
+  V bottom = (w[0] + w[1]) * 0.5f, top = (w[2] + w[3]) * 0.5f;
+  float wb = std::sqrt(dot(w[1] - w[0], w[1] - w[0])), wt = std::sqrt(dot(w[3] - w[2], w[3] - w[2]));
+  V S = norm(top - bottom);
+  const V R = norm(w[1] - w[0]);
+  V N = norm(cross(R, S));
+  if (dot(N, cf) < 0.0f) N = N * -1.0f;                // outward: away from the driver
+  // [windscreen.<model>] offsets: up the glass, back toward the driver, right; wider / longer.
+  const V shift = S * g_off.up - N * g_off.back + R * g_off.right;
+  bottom = bottom + shift - S * (g_off.longer * 0.5f);
+  top = top + shift + S * (g_off.longer * 0.5f);
+  const float length = std::sqrt(dot(top - bottom, top - bottom));
+  if (length < 0.05f) return;
+  S = (top - bottom) * (1.0f / length);
+  const Plane model = g_pl;
+  g_pl = { bottom, S, R, N, length, (std::max)(0.1f, wb + g_off.wider), (std::max)(0.1f, wt + g_off.wider), true };
+  static const float I[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+  ++g_camFrames;
+  draw_drops(I);
+  g_pl = model;
+}
 
 void rbrrtx_windscreen_frame_end() {}
 

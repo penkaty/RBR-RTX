@@ -236,6 +236,11 @@ struct CarModel {
   // <car>_internal_kwindscreen.dds: RBR's own windscreen plane for the cockpit, the mesh CarGlassInternal draws.
   struct Fit { bool ok = false; V3 local[4] = {}; Placed node = {}; } fits[3];
   int cockpitMesh = -1;                                // which fit the cockpit draw is expected to be
+  // Run 16: RBR's own cockpit windscreen quad (k_windscreen mesh record: its 3x4 matrix x its 4 vertices) in the
+  // car ini's camera frame, and the driving camera [Cam_internal] (Pos/Target/Up) in that frame: the quad in camera
+  // space, from the files alone.
+  bool kQuad = false;
+  V3 kCam[4] = {};                                     // bottom left, bottom right, top left, top right (camera space)
   Placed glassNode = {};                               // model root -> e_window_f node local (its node chain)
 } g_car;
 
@@ -409,6 +414,76 @@ void load_windscreen(const std::vector<char>& d, const std::unordered_map<unsign
   g_car.cockpitMesh = fits[2].ok ? 2 : g_car.glassName == "e_window_f" ? 1 : 0;
 }
 
+// k_windscreen mesh record (tag 0xC 0 k 1, name): +64 a 3x4 matrix (rows: R | t), +136 vertex count, +144 vertices
+// (position, normal). The E30's: t (-0.04 1.04 -2.09), 4 vertices 1.6 x 0.88 m. Cam_internal of the car's ini:
+// Pos (0.30 0.99 -1.00), Target, Up. Both in the same frame (the quad lands 0.8-1.2 m in front of that camera, its
+// bottom edge ~15 degrees down: the E30's glass bottom on screen ~11). Camera axes: forward = Target - Pos,
+// up = Up made square to it, right = up x forward (left-handed, as D3D).
+void load_cockpit_quad(const std::vector<char>& d, const std::wstring& file) {
+  static const char kKey[] = "k_windscreen";
+  const char* p = d.data();
+  V3 q[4];
+  bool found = false;
+  for (size_t i = 0; i + 20 + sizeof(kKey) + 144 + 96 <= d.size() && !found; ++i) {
+    if (p[i] != 0xC) continue;
+    uint32_t tag[4];
+    std::memcpy(tag, p + i, 16);
+    if (tag[0] != 0xC || tag[1] != 0 || tag[2] > 7 || tag[3] != 1 || std::memcmp(p + i + 20, kKey, sizeof(kKey))) continue;
+    const size_t a = i + 20 + sizeof(kKey);
+    uint32_t n;
+    std::memcpy(&n, p + a + 136, 4);
+    if (n != 4) continue;
+    float m[12];
+    std::memcpy(m, p + a + 64, 48);
+    for (int k = 0; k < 4; ++k) {
+      float v[3];
+      std::memcpy(v, p + a + 144 + k * 24, 12);
+      q[k] = { m[0] * v[0] + m[1] * v[1] + m[2] * v[2] + m[3], m[4] * v[0] + m[5] * v[1] + m[6] * v[2] + m[7],
+               m[8] * v[0] + m[9] * v[1] + m[10] * v[2] + m[11] };
+    }
+    found = true;
+  }
+  if (!found) { hlog(L"headlights: no k_windscreen quad in %s: no cockpit drops for this car", file.c_str()); return; }
+  const size_t dot0 = file.find_last_of(L'.');
+  const std::wstring base = dot0 == std::wstring::npos ? file : file.substr(0, dot0);
+  float pos[3] = {}, tgt[3] = {}, upv[3] = {};
+  bool cam = false;
+  for (const wchar_t* sfx : { L"_personal.ini", L".ini" }) {
+    wchar_t a[96] = {}, b[96] = {}, c[96] = {};
+    const std::wstring ini = base + sfx;
+    GetPrivateProfileStringW(L"Cam_internal", L"Pos", L"", a, 96, ini.c_str());
+    GetPrivateProfileStringW(L"Cam_internal", L"Target", L"", b, 96, ini.c_str());
+    GetPrivateProfileStringW(L"Cam_internal", L"Up", L"", c, 96, ini.c_str());
+    if (swscanf_s(a, L"%f %f %f", &pos[0], &pos[1], &pos[2]) == 3 && swscanf_s(b, L"%f %f %f", &tgt[0], &tgt[1], &tgt[2]) == 3 &&
+        swscanf_s(c, L"%f %f %f", &upv[0], &upv[1], &upv[2]) == 3) { cam = true; break; }
+  }
+  if (!cam) { hlog(L"headlights: no [Cam_internal] Pos/Target/Up for %s: no cockpit drops for this car", file.c_str()); return; }
+  const V3 P = { pos[0], pos[1], pos[2] };
+  const V3 F = norm(V3{ tgt[0], tgt[1], tgt[2] } - P);
+  V3 U = { upv[0], upv[1], upv[2] };
+  U = norm(U - F * dot(U, F));
+  const V3 R = { U.y * F.z - U.z * F.y, U.z * F.x - U.x * F.z, U.x * F.y - U.y * F.x };
+  V3 c[4];
+  for (int k = 0; k < 4; ++k) { const V3 r = q[k] - P; c[k] = { dot(r, R), dot(r, U), dot(r, F) }; }
+  // bottom = the two lower corners (camera up), each pair left then right
+  int idx[4] = { 0, 1, 2, 3 };
+  std::sort(idx, idx + 4, [&](int x, int y) { return c[x].y < c[y].y; });
+  if (c[idx[0]].x > c[idx[1]].x) std::swap(idx[0], idx[1]);
+  if (c[idx[2]].x > c[idx[3]].x) std::swap(idx[2], idx[3]);
+  for (int k = 0; k < 4; ++k) g_car.kCam[k] = c[idx[k]];
+  g_car.kQuad = true;
+  const V3 b = (g_car.kCam[0] + g_car.kCam[1]) * 0.5f, t = (g_car.kCam[2] + g_car.kCam[3]) * 0.5f;
+  hlog(L"headlights: cockpit windscreen from the files (k_windscreen + [Cam_internal]): bottom %.2f ahead %+.2f up %+.2f "
+       L"right, top %.2f ahead %+.2f up %+.2f right, %.2f/%.2f wide", b.z, b.y, b.x, t.z, t.y, t.x,
+       len(g_car.kCam[1] - g_car.kCam[0]), len(g_car.kCam[3] - g_car.kCam[2]));
+}
+
+bool cockpit_quad(float c[4][3]) {                     // camera space (x right, y up, z ahead)
+  if (!g_car.kQuad) return false;
+  for (int k = 0; k < 4; ++k) { c[k][0] = g_car.kCam[k].x; c[k][1] = g_car.kCam[k].y; c[k][2] = g_car.kCam[k].z; }
+  return true;
+}
+
 void load_car_model(const std::wstring& file) {
   const auto t0 = std::chrono::steady_clock::now();
   g_car = CarModel();
@@ -484,6 +559,7 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
   load_windscreen(d, nodes, byName);
+  load_cockpit_quad(d, file);
   for (const char* name : { "e_body", "i_body" }) {   // the frame most of the car is drawn in
     auto it = byName.find(name);
     if (it == byName.end()) continue;
@@ -1048,7 +1124,7 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
     if (g_camFrameNo == g_frameNo && camera_inside() && physics_pose(P, &phys, false) && len(row(world, 3) - row(g_camM, 3)) < 2.0f) {
       bool axes = true;
       for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(world, r)), norm(row(P, r))) > 0.95f;
-      if (axes) rbrrtx_windscreen_cockpit_drawn(world);
+      (void)axes;                                      // run 16: drops placed from the car files instead
     }
   }
   if (!g_rootThisFrame && !blended && prims >= 200 && g_track >= 0 && g_off.locked) drawn_root(world);
@@ -1180,6 +1256,8 @@ bool rbrrtx_car_windscreen_glass(float bottom[3], float top[3], float n[3], floa
   *widthTop = g_car.glassWt;
   return true;
 }
+
+bool rbrrtx_car_cockpit_quad(float c[4][3]) { return cockpit_quad(c); }
 
 int rbrrtx_car_windscreen_source() { return g_car.glass ? (g_car.glassName == "i_window_f" ? 2 : 1) : 0; }
 
