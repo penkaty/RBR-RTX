@@ -602,10 +602,11 @@ void rbrrtx_windscreen_car_drawn(const float M[16]) {
 
 void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) { (void)camToWorld; (void)fovY; }
 
-void rbrrtx_windscreen_frame_end() {
+void rbrrtx_windscreen_frame_end() {}
+
+// The car as drawn from the cockpit (headlights.cpp: the CarGlassInternal draw's matrix), during the frame.
+void rbrrtx_windscreen_cockpit_drawn(const float M[16]) {
   if (!g_api || !g_cfg.enabled || !g_pl.valid || g_drawnThisFrame) return;
-  float M[16];
-  if (!rbrrtx_cockpit_root(M)) { ++g_glassMissFrames; return; }   // not a cockpit view
   // The car's glass plane (model frame, g_pl) on the car as drawn this frame; [windscreen.<model>] offsets in the
   // plane's own axes: up the glass, back toward the driver, right.
   const Plane model = g_pl;

@@ -151,6 +151,7 @@ void rbrrtx_windscreen_emit(bool sweeping);                   // once per frame 
 void rbrrtx_windscreen_destroy();
 void rbrrtx_windscreen_car_drawn(const float M[16]);           // headlights.cpp: this frame's drawn model root (rows x,y,z,pos)
 void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY);   // comp.cpp: this frame's camera
+void rbrrtx_windscreen_cockpit_drawn(const float M[16]);      // headlights.cpp: the car as drawn from the cockpit, mid-frame
 void rbrrtx_windscreen_frame_end();                           // comp.cpp per Present, after headlights: cockpit drops
 // headlights.cpp: the car's model root in render space (rows x, y, z, position), head lamp nodes, model forward.
 bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]);

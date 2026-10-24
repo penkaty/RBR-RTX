@@ -1041,6 +1041,15 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
     std::memcpy(w.m, world, sizeof(w.m));
     w.blended = blended;
     g_glassW.push_back(w);
+    // Run 15 (user: drops never visible though placed every frame): drawn here, during the frame. At frame end
+    // (Present) Remix has already taken the scene at the UI trigger, so instances sent then never showed.
+    float P[16];
+    V3 phys;
+    if (g_camFrameNo == g_frameNo && camera_inside() && physics_pose(P, &phys, false) && len(row(world, 3) - row(g_camM, 3)) < 2.0f) {
+      bool axes = true;
+      for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(world, r)), norm(row(P, r))) > 0.95f;
+      if (axes) rbrrtx_windscreen_cockpit_drawn(world);
+    }
   }
   if (!g_rootThisFrame && !blended && prims >= 200 && g_track >= 0 && g_off.locked) drawn_root(world);
   // Collected while the lights are on, and on a stage until the model offset is measured, lights off too: the

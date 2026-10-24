@@ -30,6 +30,7 @@ bool rbrrtx_player_car_brake(float*) { return false; }
 bool rbrrtx_player_car_gear(int*) { return false; }
 float g_wsRoot[16] = {};                               // the model root the windscreen drops were last placed with
 int g_wsCalls = 0;
+void rbrrtx_windscreen_cockpit_drawn(const float*) {}
 void rbrrtx_windscreen_car_drawn(const float M[16]) { std::memcpy(g_wsRoot, M, sizeof(g_wsRoot)); ++g_wsCalls; }
 #define XXH_INLINE_ALL
 #include "../third_party/xxhash.h"
