@@ -19,7 +19,6 @@ can trade the headroom for picture quality.
 | **Ray Reconstruction model** (`rtx.rayreconstruction.model`) | 0 (CNN) | 1 (Transformer) | Sharper, steadier denoising, heavier. A tester's slow 5120x1440 run turned out to be this setting plus the pixel count. |
 | **Indirect light quality** (`rtx.neuralRadianceCache.qualityPreset`) | 0 (Medium) | 1 (High), 2 (Ultra) | Cleaner, more accurate bounce light, costs frame time. |
 | **Light bounces** (`rtx.pathMaxBounces`) | 1 | 2 or 3 | More accurate indirect light and reflections; each extra bounce costs frame time. |
-| **Resolution** | your monitor | | 1440p is 1.8 times and 4K 4 times the pixels of 1080p. |
 
 ## Settings that look like free quality but are not
 - **Opacity micromaps** are meant to speed up see-through foliage but gave no gain on RBR's foliage; they stay off.

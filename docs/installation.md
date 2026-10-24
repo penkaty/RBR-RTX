@@ -16,6 +16,7 @@
    - **Render car shadows: off.** Remix traces the real shadow; the game's blob shadow is not needed.
    - **Particles: off.** Remix uses its own particle renderer.
    - Normal or windowed "Fullscreen mode" in the launcher is recommended: the stage sweep screenshots come out black in exclusive fullscreen.
+   - **Windscreen: Default/Enabled.** otherwise the raindrops/melting snowflakes might not show properly.
 4. Start the game as usual. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
 
 ## Updating

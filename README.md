@@ -12,8 +12,8 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)** through NVIDIA's [
 
 <img src=".github/img/onboard_e30_02.jpg" alt="BMW M3 E30, onboard view, path traced" width="90%">
 
-**This is not a remaster.** Cars, stages and textures are still the original game's. The mod only makes RBR
-readable for RTX Remix. **Work in progress: expect issues, and please [report them](docs/troubleshooting.md).**
+**This is not a remaster.** The mod only makes RBR readable for RTX Remix. 
+**Work in progress: expect issues, and please [report them](docs/troubleshooting.md).**
 
 </div>
 
@@ -70,8 +70,8 @@ day). In many cases the weather name alone will not give enough information, so 
 
 ## Keybinds
 
-Keys work while the game window is active. You need none of them to drive. Every key can be changed in
-`rbr-rtx\config\keys.ini`; the full list is in [Keybinds](docs/keybinds.md).
+Keys work while the game window is active. Every key can be changed in `rbr-rtx\config\keys.ini`; 
+the full list is in [Keybinds](docs/keybinds.md).
 
 | Key | What it does |
 |---|---|

@@ -37,22 +37,18 @@ needs real lights, so the mod now creates them through the Remix API and attache
 - **The game's own lamp flares** switch with `L`, and lit lamp textures glow, so the original skins keep their look.
 
 Why it is built this way:
-- *Lamp positions come from RBR's own car object*, plus a per-car offset measured at stage load. Five earlier
+- *Lamp positions come from RBR's own car object*, plus a per-car offset measured at stage load. Earlier
   attempts that placed lamps from the car's draw calls failed on rotated bodies and wrong 3rd-person transforms. The
-  car object is smooth in every camera, and held on every car tried (E30, E36, Twingo, Evo IX, Ascona, Quattro).
+  car object is smooth in every camera, and held on every car tried.
 - *Tail and brake lights share one lamp per side* (two lights, not four), because noise in Remix's light sampling
   grows with the number of lights. The brake light position exists on all 109 car models; the tail one is broken on some.
 - *Head lamps sit a little ahead of the car* (0.50 m in outside views, 0.40 m in the cockpit, both tuned in game).
   The car's own body blocked the light and the beams dropped out; moving the lamp ahead stopped it.
-- *Brightness values* are the ones tuned in game over long test runs, then lowered by 15 %.
 
 ### Picture
 - **Key `P`: secondary ray bounces 2 (default) or 1.** 1 is faster; on some heavily forested stages it leaves a black
   background behind the first two rows of trees, so 2 stays the default.
 - **Remix fallback light is off** by default (it was a faint night light that fought the new headlights).
-- **RabocsiRing 2021:** its sky is tagged as a sky texture. Before, it was ray traced as a shell around the stage,
-  which gave a black sky and no sun light anywhere.
-- **Three more decal tags** (car textures) so overlays stop fighting the surface under them.
 
 ### Documentation
 - New main page with requirements and the sun fix up front, new `docs/` pages (installation, keybinds, particles and
