@@ -1170,7 +1170,10 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
   remixapi_MaterialInfo mi = {};
   mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
   mi.pNext = &opaque;
-  mi.hash = 0x52425254585F7230ull + kind;              // "RBRTX_r0".."r3"
+  // "RBRTX_r0".."r4", new per settings read like the mesh (user 2026-10-24: light snow gone after a few particles.ini
+  // saves; the old material was destroyed and one with the same hash made in the same frame, and Remix may carry the
+  // destroy out after the create, leaving the spawner without its material).
+  mi.hash = (0x52425254585F7230ull + kind) ^ (static_cast<uint64_t>(g_precipEpoch) << 40);
   mi.albedoTexture = haveTex ? tex[kind] : L"";
   mi.normalTexture = L"";
   mi.tangentTexture = L"";

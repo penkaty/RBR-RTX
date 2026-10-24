@@ -748,8 +748,15 @@ extern int g_expStep;                                          // experiment / s
 // Lucia, Spain, Crisp, Clear = all 1). Stage settings come from game_state.cpp (RSF stage id -> country). Checked
 // every 30 frames while loading / driving; only options that differ from rtx.conf (or from what was sent last) go
 // to Remix (API user layer: Alt+X lists them as unsaved; rbr-remix.ps1 strips them from a saved user.conf).
+// 2026-10-24 (user: rain looked far too clear next to the raster image; descriptions name the real weather): sections
+// [sky.<Sky>.<Time>] and [stage.<id>.<Sky>] too; the stage section's description (weather.cpp) picks <Sky>, <Clouds>
+// and <Time> (Morning Noon Evening Night Dawn Sunset) when it names them; stage_fog = s takes the haze from the
+// stage's own FogStart/FogEnd (extinction 2 / (FogEnd - FogStart) x s); density multiplies how thick the haze is. The file
+// is read again when it is saved (live tuning in a stage).
 struct AtmoFactors {
   float dist = 1.0f, col[3] = { 1.0f, 1.0f, 1.0f }, sky = 1.0f, sun = 1.0f;
+  float density = 1.0f;                                // haze extinction x this (both ways of setting the haze)
+  float stageFog = -1.0f;                              // absolute when set: use the stage's fog x this (0 = off)
   float albedo = -1.0f, aniso = -1000.0f;              // absolute values when set
   float sunMaxElev = -1.0f;                            // absolute when set: fallback sun cap (deg)
   float fbAz = -1000.0f, fbEl = -1.0f;                 // absolute when set: fallback sun "azimuth, elevation" (deg)
@@ -787,13 +794,23 @@ AtmoFactors atmo_read(const wchar_t* path, const wchar_t* sec) {
   if (GetPrivateProfileStringW(sec, L"anisotropy", L"", v, 128, path)) f.aniso = static_cast<float>(_wtof(v));
   if (GetPrivateProfileStringW(sec, L"sun_max_elev", L"", v, 128, path)) f.sunMaxElev = static_cast<float>(_wtof(v));
   if (GetPrivateProfileStringW(sec, L"fallback_sun", L"", v, 128, path)) swscanf_s(v, L"%f , %f", &f.fbAz, &f.fbEl);
+  if (GetPrivateProfileStringW(sec, L"density", L"", v, 128, path)) f.density = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"stage_fog", L"", v, 128, path)) f.stageFog = static_cast<float>(_wtof(v));
   return f;
 }
+
+FILETIME g_atmoTime = {};
 
 void atmo_load() {
   g_atmoLoaded = true;
   wchar_t* path = g_atmoPath;
   rbrrtx_config_path(L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", path, MAX_PATH * 2);
+  g_atmoRegions.clear();
+  g_atmoSections.clear();
+  {
+    WIN32_FILE_ATTRIBUTE_DATA a = {};
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &a)) g_atmoTime = a.ftLastWriteTime;
+  }
   rbrrtx_config_path(L"RBRRTX_SUN_SAVED", L"sun-saved.ini", g_sunSavedPath, MAX_PATH * 2);
   g_atmoEnabled = GetPrivateProfileIntW(L"atmosphere", L"enable", 1, path) != 0;
   {
@@ -864,53 +881,23 @@ std::wstring car_desc(int carId) {
          (shaders[0] ? shaders : L"none") + L")";
 }
 
-// The stage's TrackSettings section for this time of day and weather says night ("night" in its Comment or in the
-// text after the section name). Both section forms are tried: <id><T>_<sky>_<clouds> and <id>O_<T>_<sky>_<clouds>.
-bool stage_is_night(const RbrStageInfo& si, std::wstring* found) {
-  wchar_t exe[MAX_PATH] = {};
-  DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-  if (n == 0 || n >= MAX_PATH || si.timeOfDay < 0 || si.timeOfDay > 2) return false;
-  const fs::path maps = fs::path(exe).parent_path() / L"Maps";
-  const std::wstring id = std::to_wstring(si.trackId);
-  fs::path file;
-  std::error_code ec;
-  for (auto it = fs::directory_iterator(maps, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-    const std::wstring dir = it->path().filename().wstring();
-    if (dir.compare(0, id.size(), id) || (dir.size() > id.size() && iswdigit(dir[id.size()]))) continue;
-    const fs::path f = it->path() / (L"TrackSettings" + id + L".ini");
-    if (fs::exists(f, ec)) { file = f; break; }
-  }
-  if (file.empty()) return false;
-  const wchar_t tod = L"MNE"[si.timeOfDay];
-  std::wstring sky = rbrrtx_sky_name(si.skyType), clouds = rbrrtx_cloud_name(si.clouds);
-  for (auto& c : sky) c = towlower(c);
-  for (auto& c : clouds) c = towlower(c);
-  const std::wstring want[2] = { id + tod + L"_" + sky + L"_" + clouds, id + L"O_" + tod + L"_" + sky + L"_" + clouds };
-  std::ifstream in(file);
-  bool inWanted = false;
-  for (std::string l; std::getline(in, l);) {
-    std::string low = l;
-    for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    const size_t b = low.find_first_not_of(" \t");
-    if (b == std::string::npos) continue;
-    if (low[b] == '[') {
-      const size_t e = low.find(']', b);
-      const std::wstring name(l.begin() + b + 1, l.begin() + (e == std::string::npos ? l.size() : e));
-      inWanted = !_wcsicmp(name.c_str(), want[0].c_str()) || !_wcsicmp(name.c_str(), want[1].c_str());
-      if (inWanted && e != std::string::npos && low.find("night", e) != std::string::npos) { *found = name; return true; }
-      continue;
-    }
-    if (inWanted && low.compare(b, 7, "comment") == 0 && low.find("night", b) != std::string::npos) {
-      *found = want[0];
-      return true;
-    }
-  }
-  return false;
-}
+// The stage's weather section for the current stage/weather (read once per change) and what its description names.
+StageWeather g_stageWx;
+WeatherText g_stageWxText;
+bool g_stageWxNamed = false;
 
 void atmo_frame() {
   if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
   if (!g_atmoLoaded) atmo_load();
+  {                                                    // atmosphere.ini saved: read again and apply (live tuning)
+    WIN32_FILE_ATTRIBUTE_DATA a = {};
+    if (g_atmoPath[0] && GetFileAttributesExW(g_atmoPath, GetFileExInfoStandard, &a) &&
+        CompareFileTime(&a.ftLastWriteTime, &g_atmoTime) != 0) {
+      atmo_load();
+      g_atmoKey.clear();
+      clog(L"atmosphere: %s saved: read again", g_atmoPath);
+    }
+  }
   RbrStageInfo si;
   const bool inStage = rbrrtx_stage_info(&si) && si.trackId > 0 &&
                        (si.gameMode == 1 || si.gameMode == 2 || si.gameMode == 5 || si.gameMode == 8 || si.gameMode == 10);
@@ -925,15 +912,32 @@ void atmo_frame() {
     swprintf_s(k, L"%d|%d|%d|%d", si.trackId, si.skyType, si.clouds, si.timeOfDay);
     if (nightKey != k) {
       nightKey = k;
-      std::wstring sec;
-      g_night = stage_is_night(si, &sec);
+      rbrrtx_stage_weather(si, &g_stageWx);
+      g_stageWxNamed = !g_stageWx.description.empty() &&
+                       rbrrtx_weather_from_text(g_stageWx.description, si.skyType, &g_stageWxText);
+      if (!g_stageWxNamed) g_stageWxText = WeatherText();
+      if (g_stageWx.found)
+        clog(L"stage weather: section [%s], description \"%s\" -> %s%s%s%s%s%s; game fog %s %.0f..%.0f m, colour (%.2f %.2f %.2f)",
+             g_stageWx.section.c_str(), g_stageWx.description.c_str(),
+             g_stageWxNamed ? L"names" : L"names nothing (the section name counts)",
+             g_stageWxText.sky >= 0 ? L" sky " : L"", g_stageWxText.sky >= 0 ? rbrrtx_sky_name(g_stageWxText.sky) : L"",
+             g_stageWxText.clouds >= 0 ? (std::wstring(L" clouds ") + rbrrtx_cloud_name(g_stageWxText.clouds)).c_str() : L"",
+             g_stageWxText.time >= 0 ? L" time " : L"", g_stageWxText.time >= 0 ? rbrrtx_weather_time_name(g_stageWxText.time) : L"",
+             g_stageWx.useFog ? L"on" : L"OFF", g_stageWx.fogStart, g_stageWx.fogEnd, g_stageWx.fogCol[0], g_stageWx.fogCol[1],
+             g_stageWx.fogCol[2]);
+      else clog(L"stage weather: no TrackSettings section for stage %d %s %s %s", si.trackId, rbrrtx_time_name(si.timeOfDay),
+                rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds));
+      g_night = g_stageWxText.night;
       g_sunRuleLogged = -1;
-      if (g_night) clog(L"night weather: section [%s] says night; sun elevation held in %.1f..%.1f deg%s", sec.c_str(),
+      if (g_night) clog(L"night weather: section [%s] says night; sun elevation held in %.1f..%.1f deg%s", g_stageWx.section.c_str(),
                         g_nightMin, g_nightMax, g_nightOn ? L"" : L" (OFF: atmosphere.ini night_sun = none)");
     }
   } else {
     nightKey.clear();
     g_night = false;
+    g_stageWx = StageWeather();
+    g_stageWxText = WeatherText();
+    g_stageWxNamed = false;
   }
   if (!g_atmoEnabled || !inStage) return;
   wchar_t key[96];
@@ -947,6 +951,7 @@ void atmo_frame() {
   for (const auto& r : g_atmoRegions)
     for (const auto& c : r.countries) if (!_wcsicmp(c.c_str(), country.c_str())) { region = &r; break; }
   AtmoFactors total;
+  float stageFog = -1.0f;
   float albedo = -1.0f, aniso = -1000.0f;
   float sunCap = 60.0f, fbAz = 167.5f, fbEl = 40.0f;   // defaults when atmosphere.ini has none
   auto mul = [&](const AtmoFactors* f) {
@@ -957,16 +962,28 @@ void atmo_frame() {
     if (f->aniso > -999.0f) aniso = f->aniso;
     if (f->sunMaxElev >= 0.0f) sunCap = (std::min)(sunCap, f->sunMaxElev);
     if (f->fbAz > -999.0f && f->fbEl >= 0.0f) { fbAz = f->fbAz; fbEl = f->fbEl; }
+    total.density *= f->density;
+    if (f->stageFog >= 0.0f) stageFog = f->stageFog;
   };
-  auto sec = [&](const wchar_t* prefix, const wchar_t* name) -> const AtmoFactors* {
+  auto sec = [&](const wchar_t* prefix, const std::wstring& name) -> const AtmoFactors* {
     auto it = g_atmoSections.find(std::wstring(prefix) + name);
     return it != g_atmoSections.end() ? &it->second : nullptr;
   };
+  // The weather the stage's description names wins over the game's three-part name (weather.cpp).
+  const WeatherText& wt = g_stageWxText;
+  const std::wstring skyName = rbrrtx_sky_name(wt.sky >= 0 ? wt.sky : si.skyType);
+  const std::wstring cloudName = rbrrtx_cloud_name(wt.clouds >= 0 ? wt.clouds : si.clouds);
+  std::wstring timeName = wt.time >= 0 ? rbrrtx_weather_time_name(wt.time) : rbrrtx_time_name(si.timeOfDay);
+  if (!g_atmoSections.count(L"time." + timeName))      // no [time.Night] / [time.Dawn] / [time.Sunset]: nearest RBR time
+    timeName = wt.time == 4 ? L"Morning" : wt.time == 3 || wt.time == 5 ? L"Evening" : timeName;
+  const std::wstring stageId = std::to_wstring(si.trackId);
   mul(region ? &region->f : nullptr);
-  mul(sec(L"sky.", rbrrtx_sky_name(si.skyType)));
-  mul(sec(L"clouds.", rbrrtx_cloud_name(si.clouds)));
-  mul(sec(L"time.", rbrrtx_time_name(si.timeOfDay)));
-  mul(sec(L"stage.", std::to_wstring(si.trackId).c_str()));   // per-stage look (soft baked shadows: weaker sun)
+  mul(sec(L"sky.", skyName));
+  mul(sec(L"clouds.", cloudName));
+  mul(sec(L"time.", timeName));
+  mul(sec(L"sky.", skyName + L"." + timeName));         // weather x time of day standards
+  mul(sec(L"stage.", stageId));                         // per-stage look (soft baked shadows: weaker sun)
+  mul(sec(L"stage.", stageId + L"." + skyName));        // per stage and weather
   if (!g_sunFallbackFixed) { g_sunFallbackAz = fbAz; g_sunFallbackEl = (std::min)(fbEl, sunCap); }
   g_atmoStage = si;
   rbrrtx_layer_release_other(si.trackId);              // ground second layer: other stages' textures go
@@ -987,7 +1004,30 @@ void atmo_frame() {
     col[i] = std::clamp(g_atmoBase.col[i] * total.col[i], 0.05f, 0.999f);
     alb[i] = albedo >= 0.0f ? std::clamp(albedo, 0.0f, 0.999f) : g_atmoBase.albedo[i];
   }
-  const float dist = (std::max)(1.0f, g_atmoBase.dist * total.dist);
+  float dist = (std::max)(1.0f, g_atmoBase.dist * total.dist / (std::max)(0.01f, total.density));
+  // The stage's own fog (rain, snow, fog weathers; atmosphere.ini stage_fog). The weather factors above shortened the
+  // measurement distance but brought the colour near 1 (Rosciszow HeavyRain: 16 m at 0.97 = 97 % kept over 16 m, a
+  // light haze): rain looked clear next to the raster's FogEnd 300 m wall. The raster fog is linear (half fogged half
+  // way, all at FogEnd); the extinction 2 / (FogEnd - FogStart) follows it through the middle (37 % of the light left
+  // half way, 13 % at FogEnd), keeping the hue of the factors above; the scattering albedo takes the hue of the game's
+  // fog colour.
+  wchar_t fogNote[160] = L"";
+  const StageWeather& sw = g_stageWx;
+  if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
+    const float range = (std::max)(10.0f, sw.fogEnd - sw.fogStart);
+    const float sigma = 2.0f / range * stageFog * total.density;   // per metre
+    float ext[3], mean = 0.0f;
+    for (int i = 0; i < 3; ++i) { ext[i] = -std::log(col[i]); mean += ext[i] / 3.0f; }
+    dist = g_atmoBase.dist;
+    for (int i = 0; i < 3; ++i) col[i] = std::clamp(std::exp(-sigma * dist * (mean > 1e-4f ? ext[i] / mean : 1.0f)), 0.02f, 0.999f);
+    if (sw.fogCol[0] >= 0.0f && sw.fogCol[1] >= 0.0f && sw.fogCol[2] >= 0.0f) {
+      const float m = (std::max)({ sw.fogCol[0], sw.fogCol[1], sw.fogCol[2], 0.01f });
+      const float a = albedo >= 0.0f ? albedo : (g_atmoBase.albedo[0] + g_atmoBase.albedo[1] + g_atmoBase.albedo[2]) / 3.0f;
+      for (int i = 0; i < 3; ++i) alb[i] = std::clamp(a * sw.fogCol[i] / m, 0.0f, 0.999f);
+    }
+    swprintf_s(fogNote, L"; stage fog %.0f..%.0f m x%.2f: 13 %% of the light left at %.0f m", sw.fogStart, sw.fogEnd,
+               stageFog * total.density, 2.0f / sigma);
+  }
   const float an = aniso > -999.0f ? std::clamp(aniso, -0.99f, 0.99f) : g_atmoBase.aniso;
   const float sky = g_atmoBase.sky * total.sky;
   atmo_send("rtx.volumetrics.transmittanceMeasurementDistanceMeters", fmt1(dist), fmt1(g_atmoBase.dist));
@@ -998,11 +1038,12 @@ void atmo_frame() {
   if (!g_sunManual) { atmo_send("rtx.skyBrightness", fmt1(sky), fmt1(g_atmoBase.sky)); g_skySet = -1.0f; }
   if (std::fabs(total.sun - g_sunWeather) > 0.001f) { g_sunWeather = total.sun; g_sunFade = -1.0f; }   // light re-created
   wchar_t line[512];
-  swprintf_s(line, L"stage %d %s (%S, region %s), sky %s, clouds %s, %s -> haze %.0f m (x%.2f), colour (%.2f %.2f %.2f), "
-                   L"albedo %.2f, anisotropy %.2f, sky light %.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
+  swprintf_s(line, L"stage %d %s (%S, region %s), sky %s, clouds %s, %s%s -> haze %.0f m (x%.2f), colour (%.2f %.2f %.2f), "
+                   L"albedo %.2f %.2f %.2f, anisotropy %.2f, sky light %.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s%s",
              si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region ? region->name.c_str() : L"none",
-             rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds), rbrrtx_time_name(si.timeOfDay), dist, total.dist,
-             col[0], col[1], col[2], alb[0], an, sky, total.sun, g_sunFallbackAz, g_sunFallbackEl, sunFrom);
+             skyName.c_str(), cloudName.c_str(), timeName.c_str(), g_stageWxNamed ? L" (from the stage's description)" : L"",
+             dist, total.dist, col[0], col[1], col[2], alb[0], alb[1], alb[2], an, sky, total.sun, g_sunFallbackAz,
+             g_sunFallbackEl, sunFrom, fogNote);
   g_atmoLine = line;
   clog(L"atmosphere: %s", line);
 }
@@ -1861,8 +1902,10 @@ bool before_draw(IDirect3DDevice9* dev) {
       g_frameCam = true;
       g_st.recErr = static_cast<float>(rec);
       D3DMATRIX vi;                                    // windscreen drops in cockpit views ride on the camera
-      if (g_enabled && g_apiOk && g_primaryRT && inverse(g_V, vi) && g_P._22 > 1e-4f)
+      if (g_enabled && g_apiOk && g_primaryRT && inverse(g_V, vi) && g_P._22 > 1e-4f) {
+        rbrrtx_headlights_camera(&vi._11);             // cockpit or not: is the camera in the cabin
         rbrrtx_windscreen_camera(&vi._11, 2.0f * std::atan(1.0f / g_P._22) * 57.29578f);
+      }
     }
   }
   if (!g_haveCam) { ++g_st.noCamera; return false; }

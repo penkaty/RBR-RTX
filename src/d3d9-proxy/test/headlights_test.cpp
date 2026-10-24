@@ -27,6 +27,7 @@ bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
 float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
 bool g_testPhysOn = false;
 bool rbrrtx_player_car_brake(float*) { return false; }
+bool rbrrtx_player_car_gear(int*) { return false; }
 float g_wsRoot[16] = {};                               // the model root the windscreen drops were last placed with
 int g_wsCalls = 0;
 void rbrrtx_windscreen_car_drawn(const float M[16]) { std::memcpy(g_wsRoot, M, sizeof(g_wsRoot)); ++g_wsCalls; }
@@ -191,6 +192,53 @@ int wmain(int argc, wchar_t** argv) {
       ++noGlass;
       wprintf(L"%-30s windscreen root from the drawn car off by %.3f (%d calls) BAD\n", e.path().filename().c_str(), wsErr, g_wsCalls);
     }
+    // Glass as drawn (run 9, glass_calibrate): an outside view, the body and the glass drawn (the glass with its node's
+    // matrix, blended) for 20 frames: the drawn plane locks and, where the file's plane is plausible, equals it.
+    g_car.drawnGlass = false;
+    g_cal = GlassCal();
+    g_wmats.clear();
+    g_bodyFrames = 3;
+    int calFrames = 0;
+    for (int f = 0; f < 25 && !g_car.drawnGlass && g_car.glassMesh; ++f, ++calFrames) {
+      g_rootThisFrame = g_predThisFrame = false;
+      float body3[16], Lg[16], glassW[16];
+      mul(L, C3, body3);
+      local_to_root(g_car.glassNode, Lg);
+      mul(Lg, C3, glassW);
+      rbrrtx_headlights_car_draw(body3, 9000, false);
+      rbrrtx_headlights_car_draw(glassW, 40, true);
+      glass_calibrate();
+      g_wmats.clear();
+    }
+    const float drawnErr = g_car.drawnGlass ? (std::max)(len(g_car.drawnBottom - g_car.glassBottom), len(g_car.drawnTop - g_car.glassTop)) : -1.0f;
+    const bool drawnOk = !g_car.glass || (g_car.drawnGlass && drawnErr < 0.01f);
+    if (!drawnOk) {
+      ++noGlass;
+      wprintf(L"%-30s glass as drawn %s (%d frames, off by %.3f) BAD\n", e.path().filename().c_str(),
+              g_car.drawnGlass ? L"locked" : L"NOT locked", calFrames, drawnErr);
+    }
+    // Cockpit from the camera (run 9): 0.45 m behind the middle of the glass and 0.15 m lower = in the cabin; 0.5 m in
+    // front of the glass bottom, 0.2 m up = a bonnet camera, outside. RBR's object is C2 (no drift).
+    physics_at(C2);
+    V3 pb, pt, pn;
+    int camBad = 0;
+    if (windscreen_plane(&pb, &pt, &pn)) {
+      if (dot(pn, g_car.forward) < 0.0f) pn = pn * -1.0f;
+      const V3 eye = (pb + pt) * 0.5f - pn * 0.45f - V3{ 0, 0.15f, 0 };
+      const V3 bonnet = pb + g_car.forward * 0.5f + V3{ 0, 0.2f, 0 };
+      for (int k = 0; k < 2; ++k) {
+        const V3 w = to_world(C2, k == 0 ? eye : bonnet);
+        float cam[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, w.x, w.y, w.z, 1 };
+        rbrrtx_headlights_camera(cam);
+        g_insideFrame = ~0u;
+        if (camera_inside() != (k == 0)) ++camBad;
+      }
+    }
+    if (camBad) {
+      ++noGlass;
+      wprintf(L"%-30s camera in the cabin test wrong (%d of 2) BAD\n", e.path().filename().c_str(), camBad);
+    }
+    g_bodyFrames = 0;
     g_track = -1;
     g_groups.clear();
     g_drift = {};

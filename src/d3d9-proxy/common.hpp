@@ -2,6 +2,7 @@
 #pragma once
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <string>
 
 // Appends one timestamped line to <RBRRTX_LOG_DIR>\<file>; does nothing when RBRRTX_LOG_DIR is unset.
 void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...);
@@ -87,6 +88,19 @@ const wchar_t* rbrrtx_sky_name(int skyType);                  // Crisp, Hazy, No
 const wchar_t* rbrrtx_cloud_name(int clouds);
 const wchar_t* rbrrtx_time_name(int timeOfDay);
 const wchar_t* rbrrtx_wetness_name(int wetness);
+// weather.cpp: the stage's TrackSettings section for this weather (its description: Comment + text after the section
+// name; its fog) and the weather a description names (any of several languages; -1 = not named).
+struct StageWeather {
+  bool found = false;
+  std::wstring section, description;
+  bool useFog = true, haveUseFog = false;
+  int haveFog = 0;                                             // bit 1 FogStart, bit 2 FogEnd
+  float fogStart = 0.0f, fogEnd = 0.0f, fogCol[3] = { -1.0f, -1.0f, -1.0f };
+};
+struct WeatherText { int sky = -1, clouds = -1, time = -1; bool night = false; };   // time: 0..5, rbrrtx_weather_time_name
+bool rbrrtx_stage_weather(const RbrStageInfo& si, StageWeather* out);
+bool rbrrtx_weather_from_text(const std::wstring& text, int gameSky, WeatherText* out);
+const wchar_t* rbrrtx_weather_time_name(int t);               // Morning Noon Evening Night Dawn Sunset
 // Copies the window's client area from the screen into a PNG (what Remix presented). mean_luma = 0..255 (0 = black:
 // exclusive full screen hides the image from GDI).
 bool rbrrtx_screenshot(HWND wnd, const wchar_t* png_path, double* mean_luma);
@@ -108,6 +122,7 @@ void rbrrtx_headlights_pop_drawn();                            // a draw with th
 void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir);  // before Remix starts: lit lamp textures made emissive
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
+void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this frame's camera (cockpit = camera in the cabin)
 
 // particles.cpp: Remix particles test build (docs/research/particles-remix.md): RBRRTX_EMIT_PROBE logs RBR's
 // CEmitter_Emit calls, RBRRTX_PARTICLE_TEST = Remix dust at the wheels (key dust = 7) and the game's dust never spawned.
@@ -139,6 +154,7 @@ void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY);   // comp
 bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]);
 bool rbrrtx_car_object_frame(float M[16]);                     // RBR's car object + model offset, no drift
 bool rbrrtx_car_windscreen_glass(float bottom[3], float top[3], float n[3], float* widthBottom, float* widthTop);   // model frame
+int rbrrtx_car_windscreen_source();                            // 2 glass as drawn, 1 the model file's glass, 0 none
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
 enum RbrKey {

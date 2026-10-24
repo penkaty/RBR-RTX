@@ -6,7 +6,8 @@
 //
 // Here: a plane on the car where the windscreen is, in the car's model frame (headlights.cpp rbrrtx_car_model_frame):
 // fitted to the car's own windscreen mesh (e_window_f, every model of the install; user 2026-10-23 "read each car's
-// windscreen plane from its glass mesh"), else placed from the head lamp nodes with particles.ini [windscreen] offsets. Drops live in the plane's own 2D
+// windscreen plane from its glass mesh"), measured as the game draws it in the first outside view (run 9:
+// headlights.cpp glass_calibrate), else placed from the head lamp nodes with particles.ini [windscreen] offsets. Drops live in the plane's own 2D
 // coordinates (u across -1..1, v up the glass 0..1) and are drawn every frame as instances of one water lens mesh
 // (translucent, index 1.33: the path tracer refracts the road through them). Snow lands as flat white flakes that
 // shrink over melt_seconds and end as a small drop. Rain/snow amount = the game's weather (particles.cpp
@@ -52,7 +53,11 @@ struct Cfg {
   bool showPlane = false;                              // a faint red plane where the drops sit (to place it)
   int useGlass = 2;                                    // 0 lamp plane, 1 glass plane, 2 lamps when symmetric else glass
   float inset = 0.04f;                                 // glass edges moved in this far (m): rubber, frame
+  // Drop shape (user 2026-10-24 run 9: drops looked blue): lens height / radius and refractive index. A flatter or
+  // weaker lens bends less of the sky into the drop.
+  float dropHeight = 0.35f, dropIor = 1.33f;
 } g_cfg;
+unsigned g_lensGen = 0;                                // new lens/material hashes when drop_height / drop_ior change
 
 wchar_t g_path[MAX_PATH * 2] = {};
 FILETIME g_time = {};
@@ -94,6 +99,9 @@ void load() {
   c.showPlane = ini_f(L"show_plane", 0.0f) >= 0.5f;
   c.useGlass = static_cast<int>(ini_f(L"use_glass", 2.0f));
   c.inset = ini_f(L"inset", c.inset);
+  c.dropHeight = (std::max)(0.05f, (std::min)(1.0f, ini_f(L"drop_height", c.dropHeight)));
+  c.dropIor = (std::max)(1.0f, (std::min)(2.0f, ini_f(L"drop_ior", c.dropIor)));
+  if (c.dropHeight != g_cfg.dropHeight || c.dropIor != g_cfg.dropIor) ++g_lensGen;   // make_all builds them again
   g_cfg = c;
   plog(L"windscreen: %s; plane %.2f back %.2f up -> %.2f back %.2f up, width %.2f/%.2f; rain %.0f/s, drops %.1f-%.1f mm, "
        L"move above %.0f km/h at %.2f m/s per 50 km/h; snow %.0f/s, flakes %.1f-%.1f mm, melt %.0f-%.0f s; at most %d%s",
@@ -200,14 +208,14 @@ remixapi_MeshHandle make_lens(remixapi_MaterialHandle mat) {
       const float ph = 6.2831853f * s / kSeg;
       remixapi_HardcodedVertex& o = v[nv++];
       const float x = std::sin(th) * std::cos(ph), y = std::cos(th), z = std::sin(th) * std::sin(ph);
-      o.position[0] = x; o.position[1] = y * 0.35f; o.position[2] = z;
+      o.position[0] = x; o.position[1] = y * g_cfg.dropHeight; o.position[2] = z;
       o.normal[0] = x; o.normal[1] = y; o.normal[2] = z;
       o.texcoord[0] = 0.5f + 0.5f * x; o.texcoord[1] = 0.5f + 0.5f * z;
       o.color = 0xFFFFFFFF;
     }
   }
   const int top = nv;
-  v[nv].position[1] = 0.35f; v[nv].normal[1] = 1.0f; v[nv].texcoord[0] = v[nv].texcoord[1] = 0.5f; v[nv].color = 0xFFFFFFFF;
+  v[nv].position[1] = g_cfg.dropHeight; v[nv].normal[1] = 1.0f; v[nv].texcoord[0] = v[nv].texcoord[1] = 0.5f; v[nv].color = 0xFFFFFFFF;
   ++nv;
   for (int r = 0; r + 1 < kRings; ++r)
     for (int s = 0; s < kSeg; ++s) {
@@ -238,7 +246,7 @@ remixapi_MeshHandle make_lens(remixapi_MaterialHandle mat) {
   tri.material = mat;
   remixapi_MeshInfo mesh = {};
   mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
-  mesh.hash = 0x52425254585F776Cull;                   // "RBRTX_wl"
+  mesh.hash = 0x52425254585F776Cull ^ (static_cast<uint64_t>(g_lensGen) << 40);   // "RBRTX_wl"
   mesh.surfaces_values = &tri;
   mesh.surfaces_count = 1;
   remixapi_MeshHandle h = nullptr;
@@ -298,26 +306,40 @@ remixapi_MaterialHandle make_opaque(uint64_t hash, const wchar_t* albedo, remixa
   return g_api->CreateMaterial(&mi, &h) == REMIXAPI_ERROR_CODE_SUCCESS ? h : nullptr;
 }
 
+unsigned g_madeGen = 0;
+
 bool make_all() {
+  if (g_lens && g_madeGen != g_lensGen) {              // drop_height / drop_ior changed: a new lens (new hashes: a
+    g_api->DestroyMesh(g_lens);                        // destroy and a create of one hash in a frame can lose it)
+    g_api->DestroyMaterial(g_water);
+    g_lens = nullptr;
+    g_water = nullptr;
+  }
   if (g_lens && g_disc && g_plane) return true;
   if (g_failed || !g_api) return false;
+  g_madeGen = g_lensGen;
   remixapi_MaterialInfoTranslucentEXT tr = {};
   tr.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TRANSLUCENT_EXT;
   tr.transmittanceTexture = L"";
-  tr.refractiveIndex = 1.33f;                          // water
+  tr.refractiveIndex = g_cfg.dropIor;                  // water 1.33
   tr.transmittanceColor = { 0.97f, 0.98f, 1.0f };
   tr.transmittanceMeasurementDistance = 0.05f;
   tr.useDiffuseLayer = 0;
   remixapi_MaterialInfo mi = {};
   mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
   mi.pNext = &tr;
-  mi.hash = 0x52425254585F7777ull;                     // "RBRTX_ww"
+  mi.hash = 0x52425254585F7777ull ^ (static_cast<uint64_t>(g_lensGen) << 40);   // "RBRTX_ww"
   mi.albedoTexture = L"";
   mi.normalTexture = L"";
   mi.tangentTexture = L"";
   mi.emissiveTexture = L"";
   mi.filterMode = 1;
-  if (g_api->CreateMaterial(&mi, &g_water) != REMIXAPI_ERROR_CODE_SUCCESS) g_water = nullptr;
+  if (!g_water && g_api->CreateMaterial(&mi, &g_water) != REMIXAPI_ERROR_CODE_SUCCESS) g_water = nullptr;
+  if (g_disc && g_plane) {                             // only the lens was made again
+    g_lens = g_water ? make_lens(g_water) : nullptr;
+    plog(L"windscreen: drop lens made again: height %.2f x radius, index %.2f", g_cfg.dropHeight, g_cfg.dropIor);
+    return g_lens != nullptr;
+  }
   const bool haveFlake = GetFileAttributesW(g_flakeTex) != INVALID_FILE_ATTRIBUTES;
   g_snowMat = make_opaque(0x52425254585F7773ull, haveFlake ? g_flakeTex : L"", { 0.95f, 0.96f, 0.98f }, 1.0f);   // "RBRTX_ws"
   g_planeMat = make_opaque(0x52425254585F7770ull, L"", { 1.0f, 0.1f, 0.1f }, 0.25f);                          // "RBRTX_wp"
@@ -504,7 +526,10 @@ void rbrrtx_windscreen_emit(bool sweeping) {
   // lamp nodes are lopsided (0.16 m in height, 0.22 m in length), so it gets the glass plane.
   const bool symmetric = std::fabs(lf[1] - rf[1]) < 0.04f && std::fabs(lf[2] - rf[2]) < 0.04f &&
                          std::fabs(lf[0] + rf[0]) < 0.1f && std::fabs(lf[0] - rf[0]) > 0.6f;
-  const bool wantGlass = g_cfg.useGlass == 1 || (g_cfg.useGlass >= 2 && !symmetric);
+  // Run 9 (user 2026-10-24: "judge the plane per car, not from the Golf"): once the glass has been measured as drawn
+  // (headlights.cpp glass_calibrate, the pre-stage orbit), auto uses it on every car.
+  const int source = rbrrtx_car_windscreen_source();
+  const bool wantGlass = g_cfg.useGlass == 1 || (g_cfg.useGlass >= 2 && (source == 2 || !symmetric));
   const bool glass = wantGlass && rbrrtx_car_windscreen_glass(gb, gt, gn, &gwb, &gwt);
   if (glass) {
     bottom = { gb[0], gb[1], gb[2] };
@@ -526,11 +551,15 @@ void rbrrtx_windscreen_emit(bool sweeping) {
     }
   }
   static int lastSource = -1;
-  if ((glass ? 1 : 0) != lastSource) {
-    lastSource = glass ? 1 : 0;
+  static float lastLf = 1e9f;
+  const int src = glass ? 1 + source : 0;
+  if (src != lastSource || lf[0] != lastLf) {
+    lastSource = src;
+    lastLf = lf[0];
     plog(L"windscreen: plane from %s: bottom (%.2f %.2f %.2f) %.2f wide, top (%.2f %.2f %.2f) %.2f wide (model frame)",
-         glass ? L"the car's glass (e_window_f; lamps not symmetric)" : L"the lamps + [windscreen] offsets", bottom.x, bottom.y, bottom.z, wB,
-         top.x, top.y, top.z, wT);
+         src == 3 ? L"the car's glass as drawn (measured in an outside view)" :
+         src == 2 ? L"the car's glass (e_window_f in the model file)" : L"the lamps + [windscreen] offsets",
+         bottom.x, bottom.y, bottom.z, wB, top.x, top.y, top.z, wT);
   }
   const V slope = top - bottom;
   const float length = std::sqrt(dot(slope, slope));
