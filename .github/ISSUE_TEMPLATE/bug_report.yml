@@ -1,0 +1,55 @@
+name: Bug report
+description: Something looks wrong, crashes or runs badly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The most useful reports come with data: press **9** the moment it happens (the stage
+        report zip in `rbr-rtx\logs\reports\` is kept and named `-marked`), or run the **Alt+K** sweep at the spot.
+        See [Troubleshooting](https://github.com/penkaty/RBR-RTX/blob/main/docs/troubleshooting.md).
+  - type: input
+    id: version
+    attributes:
+      label: RBR-RTX version
+      placeholder: "0.3"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Stage, car, weather and time of day
+      placeholder: "Chirdonhead, BMW M3 E30, heavy rain, noon"
+    validations:
+      required: true
+  - type: dropdown
+    id: camera
+    attributes:
+      label: Camera
+      options: [Cockpit, Bonnet, Chase / 3rd person, TV / replay, Several]
+  - type: input
+    id: pc
+    attributes:
+      label: GPU, driver and resolution
+      placeholder: "RTX 2080 Ti, 572.18, 1920x1080"
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Report zip, sweep or screenshots
+      description: Drag the `-marked` report zip, the zipped sweep folder or screenshots here (or link them).
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I checked the [known issues](https://github.com/penkaty/RBR-RTX/blob/main/docs/known-issues.md)
+          required: true
+        - label: Pressing **0** (ray tracing off) shows the original picture fine at the same spot

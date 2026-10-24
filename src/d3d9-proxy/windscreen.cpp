@@ -349,7 +349,8 @@ bool make_all() {
     return g_lens != nullptr;
   }
   const bool haveFlake = GetFileAttributesW(g_flakeTex) != INVALID_FILE_ATTRIBUTES;
-  g_snowMat = make_opaque(0x52425254585F7773ull, haveFlake ? g_flakeTex : L"", { 0.95f, 0.96f, 0.98f }, 1.0f);   // "RBRTX_ws"
+  // Flakes half see-through (user run 18: against the sun they showed as dark grey / black opaque blobs).
+  g_snowMat = make_opaque(0x52425254585F7773ull, haveFlake ? g_flakeTex : L"", { 0.95f, 0.96f, 0.98f }, 0.45f);   // "RBRTX_ws"
   g_planeMat = make_opaque(0x52425254585F7770ull, L"", { 1.0f, 0.1f, 0.1f }, 0.25f);                          // "RBRTX_wp"
   g_lens = g_water ? make_lens(g_water) : nullptr;
   g_disc = g_snowMat ? make_square(g_snowMat, 0x52425254585F7764ull) : nullptr;    // "RBRTX_wd"

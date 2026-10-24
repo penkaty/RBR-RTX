@@ -1,0 +1,22 @@
+name: Sun fix for a stage
+description: Send a sun direction that matches a stage's baked shadows
+labels: [sun-fix]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        How to make one: [Fixing the sun](https://github.com/penkaty/RBR-RTX/blob/main/docs/fixing-the-sun.md).
+  - type: input
+    id: stage
+    attributes:
+      label: Stage and time of day
+      placeholder: "Gestel I, morning"
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: sun-saved.ini
+      description: Attach `rbr-rtx\config\sun-saved.ini` or paste its section for this stage.
+    validations:
+      required: true

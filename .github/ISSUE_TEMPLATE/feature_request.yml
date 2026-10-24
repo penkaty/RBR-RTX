@@ -1,0 +1,15 @@
+name: Idea or request
+description: A feature, an effect, or a setting you would like
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why, and where would it show?
+      description: Stages, cars, weather or cameras where it matters. Screenshots or videos of the original game help.

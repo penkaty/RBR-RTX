@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/penkaty/RBR-RTX/security/advisories/new
+    about: Report security problems privately, not as an issue.
+  - name: Known issues
+    url: https://github.com/penkaty/RBR-RTX/blob/main/docs/known-issues.md
+    about: Check here first, your problem may already be known.
