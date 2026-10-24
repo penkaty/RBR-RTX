@@ -2440,6 +2440,13 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (rbrrtx_key_pressed(RBRKEY_RAIN)) rbrrtx_rain_toggle();          // rain/snow: Remix <-> the game's own
   if (kDust && rbrrtx_particles_active()) rbrrtx_particles_toggle();   // Remix API dust on/off
+  if (rbrrtx_key_pressed(RBRKEY_BOUNCES)) {            // secondary ray bounces: rtx.conf default 2 <-> 1 (user 2026-10-24)
+    static int bounces = 2;
+    bounces = bounces == 2 ? 1 : 2;
+    remix_set("rtx.secondaryRayMaxInteractions", bounces == 2 ? "2" : "1");
+    swprintf_s(why, L"%s: secondary ray bounces %d", rbrrtx_key_name(RBRKEY_BOUNCES), bounces);
+    log_frame(why);
+  }
   if (kSky) {                                          // sky mode 2 <-> 1
     g_skyMode = g_skyMode == 2 ? 1 : 2;
     swprintf_s(why, L"%s: %s", rbrrtx_key_name(RBRKEY_SKY), g_skyMode == 2 ? L"sky mode 2 (Remix sky)" : L"sky mode 1 (skip)");

@@ -28,7 +28,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"dust", '7', L"dust"},                                  // Remix API dust on/off (user 2026-10-23)
   {L"windscreen", 'I', L"windscreen"},
   {L"sky", '6', L"sky mode"},
-  {L"debug_sun", 'H', L"debug sun"},
+  {L"debug_sun", VK_OEM_2, L"debug sun"},                     // /  (was H until 2026-10-24, user)
   {L"debug_sun_left", VK_OEM_4, L"debug sun turn left"},     // [
   {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
@@ -48,6 +48,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},
   {L"foliage_normals", kAlt | 'R', L"radial foliage normals on/off (prototype, foliage-normals.ini)"},
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
+  {L"bounces", 'P', L"secondary ray bounces 2 <-> 1 (rtx.secondaryRayMaxInteractions)"},   // user 2026-10-24
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};

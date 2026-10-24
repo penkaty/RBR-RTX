@@ -64,9 +64,10 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
   Tuning:
   7       dust and tyre smoke (Remix particles) on/off
   Alt+N / Alt+M  sun brighter / dimmer (10 % per press; the log shows the value to keep)
-  H        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
+  /        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
            [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
   \        keep the sun now shown for this stage and time of day (see "Fixing the sun on a stage")
+  P        secondary ray bounces 2 <-> 1 (rtx.secondaryRayMaxInteractions): 1 is faster, 2 reflects further
   Alt+P    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
            setting in rbr-rtx\logs\rbrrtx_comp.log
 
@@ -89,8 +90,8 @@ Reporting a problem (please do!)
 
 Fixing the sun on a stage
   Some stages need their sun position fixed: the Remix sun comes from another direction than the stage's baked
-  shadows. Press H (debug sun), move it with [ ] ; ' until the light matches, then press \ (beep). That sun is kept
-  for this stage and time of day, also after H and next time, in rbr-rtx\config\sun-saved.ini. Please send that
+  shadows. Press / (debug sun), move it with [ ] ; ' until the light matches, then press \ (beep). That sun is kept
+  for this stage and time of day, also after / and next time, in rbr-rtx\config\sun-saved.ini. Please send that
   file in so the fixes go in for everyone; delete a line there to go back. Uninstall removes it: copy it out first.
 
 Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, 8 frame dump, crash dumps) into

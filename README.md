@@ -69,9 +69,9 @@ All debug keybinds are listed in **`rbr-rtx\README.txt`** and can be changed in
 Some stages need their sun position fixed: the Remix sun comes from a different direction than the stage's
 baked shadows. To fix it on the stage you're on:
 
-1. Press **H** for the debug sun. Hold **`[`** / **`]`** to turn it and **`;`** / **`'`** to lower / raise it until
+1. Press **`/`** for the debug sun. Hold **`[`** / **`]`** to turn it and **`;`** / **`'`** to lower / raise it until
    the light matches the baked shadows.
-2. Press **`\`** (beep). That sun is kept for this stage and time of day, also after you press **H** again and next
+2. Press **`\`** (beep). That sun is kept for this stage and time of day, also after you press **`/`** again and next
    time you drive it.
 3. The suns are saved in `rbr-rtx\config\sun-saved.ini`. Please send me that file, so the fixes go in for
    everyone. Delete a line there to go back to the stage's own sun. Uninstall removes `rbr-rtx\`, so copy the file
