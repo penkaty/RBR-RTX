@@ -460,8 +460,10 @@ void load_cockpit_quad(const std::vector<char>& d, const std::wstring& file) {
   if (!cam) { hlog(L"headlights: no [Cam_internal] Pos/Target/Up for %s: no cockpit drops for this car", file.c_str()); return; }
   const V3 P = { pos[0], pos[1], pos[2] };
   const V3 F = norm(V3{ tgt[0], tgt[1], tgt[2] } - P);
-  V3 U = { upv[0], upv[1], upv[2] };
-  U = norm(U - F * dot(U, F));
+  // The ini's Up is not an up vector: (0, 0.05, 1) on every car, nearly along the view, so what is left of it after
+  // squaring to the view was noise (run 17: Audi quattro / Fiesta R5 quads mirrored and tilted). World up instead.
+  (void)upv;
+  V3 U = norm(V3{ 0, 1, 0 } - F * F.y);
   const V3 R = { U.y * F.z - U.z * F.y, U.z * F.x - U.x * F.z, U.x * F.y - U.y * F.x };
   V3 c[4];
   for (int k = 0; k < 4; ++k) { const V3 r = q[k] - P; c[k] = { dot(r, R), dot(r, U), dot(r, F) }; }
