@@ -162,7 +162,7 @@ const wchar_t* rbrrtx_car_model_name();                       // model file name
 bool rbrrtx_camera_in_cabin();                                  // this frame's camera is inside the car's cabin
 // The windscreen RBR drew from the cockpit in the frame that just ended (world space; headlights.cpp), and how often
 // it was found / not found in cockpit frames.
-bool rbrrtx_cockpit_glass(float bottom[3], float top[3], float n[3], float* wb, float* wt);
+bool rbrrtx_cockpit_root(float M[16]);                         // the car as drawn from the cockpit (CarGlassInternal matrix)
 void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed);
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.

@@ -986,68 +986,48 @@ struct CockpitGlass { V3 b, t, n; float wb, wt; V3 camRel; int mesh; } g_cg = {}
 unsigned g_cgFrame = ~0u, g_cgFound = 0, g_cgMissed = 0;
 bool g_cgLogged = false;
 
+// Run 14 (log 21:37-21:46): k_windscreen through its CarGlassInternal matrix lands 0.97 m under the eye: the quad is a
+// flat overlay RBR places ~2 m ahead with its own record matrix (openRBRVR drops it in VR), not the glass. But that
+// draw's matrix is the car as drawn in the cockpit: its origin sat where the car root was measured from the camera
+// (0.30 right, 0.97 down, 0.25 ahead vs 0.30 / 0.92 / 0.33). So the drops go on the car's glass plane (model frame)
+// through this matrix: the drawn car, every frame, fixed to it. Taken: a CarGlassInternal matrix whose axes match RBR's
+// car object and whose origin lies within 2 m of the camera; nearest the last one.
+float g_cockpitRoot[16];
 void cockpit_glass_find() {
-  if (g_camFrameNo != g_frameNo || !camera_inside()) { g_glassW.clear(); return; }
-  const V3 right = norm(row(g_camM, 0)), up = norm(row(g_camM, 1)), fwd = norm(row(g_camM, 2)), cam = row(g_camM, 3);
-  const bool prev = g_cgFrame != ~0u && g_cgFrame + 2 >= g_frameNo;
-  float bestScore = 1e9f, nearRejected = 1e9f;
-  CockpitGlass best = {}, rejected = {};
-  for (const WMat& w : g_glassW)
-    for (int k = 0; k < 3; ++k) {
-      if (!g_car.fits[k].ok) continue;
-      V3 p[4];
-      for (int i = 0; i < 4; ++i) p[i] = to_world(w.m, g_car.fits[k].local[i]);
-      CockpitGlass c;
-      c.b = (p[0] + p[1]) * 0.5f;
-      c.t = (p[2] + p[3]) * 0.5f;
-      c.wb = len(p[1] - p[0]);
-      c.wt = len(p[3] - p[2]);
-      const V3 across = p[1] - p[0], slope = c.t - c.b;
-      c.n = norm(V3{ slope.y * across.z - slope.z * across.y, slope.z * across.x - slope.x * across.z,
-                     slope.x * across.y - slope.y * across.x });
-      if (dot(c.n, fwd) < 0.0f) c.n = c.n * -1.0f;      // outward: away from the driver
-      const V3 mid = (c.b + c.t) * 0.5f - cam;
-      c.camRel = { dot(mid, right), dot(mid, up), dot(mid, fwd) };
-      c.mesh = k;
-      if (c.camRel.z < 0.2f || c.camRel.z > 2.0f || std::fabs(c.camRel.x) > 0.9f || c.camRel.y < -1.0f || c.camRel.y > 0.8f ||
-          c.wb < 0.5f || c.wb > 2.2f || len(slope) < 0.2f || len(slope) > 1.4f || dot(slope, up) < 0.05f || dot(c.n, fwd) < 0.3f) {
-        if (k == g_car.cockpitMesh && std::fabs(c.camRel.x) < nearRejected) { nearRejected = std::fabs(c.camRel.x); rejected = c; }
-        continue;
-      }
-      const float score = std::fabs(c.camRel.x) + (k != g_car.cockpitMesh ? 0.3f : 0.0f) + (prev ? 2.0f * len(c.camRel - g_cg.camRel) : 0.0f);
-      if (score < bestScore) { bestScore = score; best = c; }
-    }
   const size_t draws = g_glassW.size();
+  if (g_camFrameNo != g_frameNo || !camera_inside() || !draws) { g_glassW.clear(); return; }
+  float P[16];
+  V3 phys;
+  if (!physics_pose(P, &phys, false)) { g_glassW.clear(); return; }
+  const V3 cam = row(g_camM, 3);
+  const bool prev = g_cgFrame != ~0u && g_cgFrame + 2 >= g_frameNo;
+  float bestScore = 1e9f;
+  const WMat* best = nullptr;
+  for (const WMat& w : g_glassW) {
+    bool axes = true;
+    for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(w.m, r)), norm(row(P, r))) > 0.95f;
+    const float d = len(row(w.m, 3) - cam);
+    if (!axes || d > 2.0f) continue;
+    const float score = d + (prev ? 3.0f * len(row(w.m, 3) - row(g_cockpitRoot, 3)) : 0.0f);
+    if (score < bestScore) { bestScore = score; best = &w; }
+  }
   g_glassW.clear();
-  if (bestScore > 1e8f) {
-    if (draws && ++g_cgMissed == 120) {                 // the windscreen is drawn but no mesh fits it: say why once
-      const V3 sl = rejected.t - rejected.b;
-      hlog(L"headlights: cockpit glass NOT matched (%zu CarGlassInternal draws, mesh %d): nearest %s: %.2f ahead, %+.2f right, "
-           L"%+.2f up, %.2f wide, %.2f long, slope up %.2f, facing %.2f", draws, g_car.cockpitMesh,
-           nearRejected < 1e8f ? L"candidate" : L"none", rejected.camRel.z, rejected.camRel.x, rejected.camRel.y, rejected.wb,
-           len(sl), dot(sl, up), dot(rejected.n, fwd));
-    }
+  if (!best) {
+    if (++g_cgMissed == 120) hlog(L"headlights: cockpit: %zu CarGlassInternal draws, none with the car's axes near the camera", draws);
     return;
   }
-  g_cg = best;
+  std::memcpy(g_cockpitRoot, best->m, sizeof(g_cockpitRoot));
   g_cgFrame = g_frameNo;
-  ++g_cgFound;
-  if (!g_cgLogged) {
-    g_cgLogged = true;
-    hlog(L"headlights: cockpit glass (CarGlassInternal x %S): %.2f m ahead of the camera, %+.2f right, %+.2f up, %.2f/%.2f "
-         L"wide, %.2f long", best.mesh == 0 ? "i_window_f" : best.mesh == 1 ? "e_window_f" : "k_windscreen", best.camRel.z, best.camRel.x, best.camRel.y, best.wb,
-         best.wt, len(best.t - best.b));
+  if (++g_cgFound == 1) {
+    const V3 o = row(best->m, 3) - cam;
+    hlog(L"headlights: cockpit: car placed by the CarGlassInternal draw, %.2f m from the camera; drops on the car's glass", len(o));
   }
 }
 
-// The windscreen as RBR drew it from the cockpit in the frame that just ended (world space), for windscreen.cpp.
-bool rbrrtx_cockpit_glass(float bottom[3], float top[3], float n[3], float* wb, float* wt) {
+// The car as drawn from the cockpit in the frame that just ended (rows x, y, z, position), for windscreen.cpp.
+bool rbrrtx_cockpit_root(float M[16]) {
   if (g_cgFrame == ~0u || g_cgFrame + 1 != g_frameNo) return false;
-  bottom[0] = g_cg.b.x; bottom[1] = g_cg.b.y; bottom[2] = g_cg.b.z;
-  top[0] = g_cg.t.x; top[1] = g_cg.t.y; top[2] = g_cg.t.z;
-  n[0] = g_cg.n.x; n[1] = g_cg.n.y; n[2] = g_cg.n.z;
-  *wb = g_cg.wb;
-  *wt = g_cg.wt;
+  std::memcpy(M, g_cockpitRoot, sizeof(g_cockpitRoot));
   return true;
 }
 

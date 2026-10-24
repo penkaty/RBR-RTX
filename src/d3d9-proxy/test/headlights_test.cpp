@@ -214,41 +214,32 @@ int wmain(int argc, wchar_t** argv) {
       ++noGlass;
       wprintf(L"%-30s camera in the cabin test wrong (%d of 2) BAD\n", e.path().filename().c_str(), camBad);
     }
-    // Cockpit glass (runs 12-13): camera in the cabin of the car drawn at C3; the cockpit mesh (k_windscreen) drawn by
-    // CarGlassInternal with its node matrix: that mesh is found, its centre where the model puts it at C3.
+    // Cockpit pose (run 14): camera in the cabin of the car drawn at C3, CarGlassInternal drawn with the car's matrix
+    // C3 (and a wrong one 3 m away): rbrrtx_cockpit_root gives C3.
     int linkBad = 0;
-    if (g_car.glass && g_car.cockpitMesh >= 0 && windscreen_plane(&pb, &pt, &pn)) {
-      if (dot(pn, g_car.forward) < 0.0f) pn = pn * -1.0f;
-      const V3 eyeM = (pb + pt) * 0.5f - g_car.forward * 0.75f - V3{ 0, 0.1f, 0 };   // a driver's eye
-      const V3 eye = to_world(C3, eyeM), ahead = norm(to_world(C3, eyeM + g_car.forward) - eye);
-      const V3 upW = norm(row(C3, 1)), rightW = norm(V3{ upW.y * ahead.z - upW.z * ahead.y, upW.z * ahead.x - upW.x * ahead.z,
-                                                          upW.x * ahead.y - upW.y * ahead.x });
-      float cam[16] = { rightW.x, rightW.y, rightW.z, 0, upW.x, upW.y, upW.z, 0, ahead.x, ahead.y, ahead.z, 0, eye.x, eye.y, eye.z, 1 };
+    if (windscreen_plane(&pb, &pt, &pn)) {
+      const V3 eyeM = (pb + pt) * 0.5f - g_car.forward * 0.75f - V3{ 0, 0.1f, 0 };
+      const V3 eye = to_world(C3, eyeM);
+      float cam[16] = { C3[0], C3[1], C3[2], 0, C3[4], C3[5], C3[6], 0, C3[8], C3[9], C3[10], 0, eye.x, eye.y, eye.z, 1 };
       physics_at(C3);
       rbrrtx_headlights_camera(cam);
       g_insideFrame = ~0u;
-      float Lg[16], glassW[16];
-      const CarModel::Fit& fit = g_car.fits[g_car.cockpitMesh];
-      local_to_root(fit.node, Lg);
-      mul(Lg, C3, glassW);
+      float far3[16];
+      std::memcpy(far3, C3, sizeof(far3));
+      far3[12] += 3.0f;
       g_glassW.clear();
-      rbrrtx_headlights_car_draw(glassW, 40, true, true);
+      rbrrtx_headlights_car_draw(far3, 2, true, true);
+      rbrrtx_headlights_car_draw(C3, 2, true, true);
       cockpit_glass_find();
       ++g_frameNo;
-      float gb[3], gt[3], gn[3], wb, wt;
-      if (!rbrrtx_cockpit_glass(gb, gt, gn, &wb, &wt)) linkBad = 1;
-      else {
-        const V3 lc = (fit.local[0] + fit.local[1] + fit.local[2] + fit.local[3]) * 0.25f;
-        const V3 want = to_world(glassW, lc), got = (V3{ gb[0], gb[1], gb[2] } + V3{ gt[0], gt[1], gt[2] }) * 0.5f;
-        if (g_cg.mesh == g_car.cockpitMesh && len(got - want) > 0.01f) linkBad = 2;   // another mesh may fit too: the
-        // test places k_windscreen by its node chain, which on some models (Volvo 242) is not where the game draws it
-      }
+      float R3[16];
+      if (!rbrrtx_cockpit_root(R3)) linkBad = 1;
+      else for (int i = 0; i < 16; ++i) if (std::fabs(R3[i] - C3[i]) > 1e-4f) linkBad = 2;
       physics_at(C2);
     }
     if (linkBad) {
       ++noGlass;
-      wprintf(L"%-30s cockpit glass %s (expected mesh %d, found %d, fits %d%d%d) BAD\n", e.path().filename().c_str(),
-              linkBad == 1 ? L"not found" : L"wrong", g_car.cockpitMesh, g_cg.mesh, (int)g_car.fits[0].ok, (int)g_car.fits[1].ok, (int)g_car.fits[2].ok);
+      wprintf(L"%-30s cockpit pose %s BAD\n", e.path().filename().c_str(), linkBad == 1 ? L"not found" : L"wrong");
     }
     g_bodyFrames = 0;
     g_track = -1;

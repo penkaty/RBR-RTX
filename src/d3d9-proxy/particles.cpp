@@ -1330,6 +1330,13 @@ void draw_one(int pre, float rateScale) {
     x = car[16];
     z = car[17];
     if (c.spawner == 1) y = car[18];                   // the shell is in metres above the car's root
+    // Run 14 (user: TV cameras far from the car showed the snow box's edges): a camera more than 8 m from the car gets
+    // the precipitation box around itself (the car's gap goes with it, harmless there); the wake stays on the car.
+    const float cdx = g_camPos[0] - x, cdz = g_camPos[1] - z;
+    if (c.spawner != 1 && cdx * cdx + cdz * cdz > 64.0f) {
+      x = g_camPos[0];
+      z = g_camPos[1];
+    }
     inst.transform = { { { az, 0, ax, x }, { 0, 1, 0, y }, { -ax, 0, az, z } } };
   } else {
     const float ahead = c.ahead + c.aheadPerKmh * g_camKmh;

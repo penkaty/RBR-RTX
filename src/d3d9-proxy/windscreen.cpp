@@ -604,27 +604,20 @@ void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) { (void)ca
 
 void rbrrtx_windscreen_frame_end() {
   if (!g_api || !g_cfg.enabled || !g_pl.valid || g_drawnThisFrame) return;
-  float b[3], t[3], n[3], wb = 0.0f, wt = 0.0f;
-  if (!rbrrtx_cockpit_glass(b, t, n, &wb, &wt)) {      // not a cockpit view, or no windscreen drawn this frame
-    ++g_glassMissFrames;
-    return;
-  }
-  V bottom = { b[0], b[1], b[2] }, top = { t[0], t[1], t[2] };
-  const V N = norm({ n[0], n[1], n[2] });
-  V S = norm(top - bottom);
-  const V R = norm(cross(S, N));
-  const V shift = S * g_off.up - N * g_off.back + R * g_off.right;
-  bottom = bottom + S * g_cfg.inset + shift - S * (g_off.longer * 0.5f);
-  top = top - S * g_cfg.inset + shift + S * (g_off.longer * 0.5f);
-  const float length = std::sqrt(dot(top - bottom, top - bottom));
-  if (length < 0.05f) return;
-  S = (top - bottom) * (1.0f / length);
-  const Plane model = g_pl;                            // the simulation's plane (car frame); drawn on the world one
-  g_pl = { bottom, S, R, N, length, (std::max)(0.1f, wb - 2.0f * g_cfg.inset + g_off.wider),
-           (std::max)(0.1f, wt - 2.0f * g_cfg.inset + g_off.wider), true };
-  static const float I[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+  float M[16];
+  if (!rbrrtx_cockpit_root(M)) { ++g_glassMissFrames; return; }   // not a cockpit view
+  // The car's glass plane (model frame, g_pl) on the car as drawn this frame; [windscreen.<model>] offsets in the
+  // plane's own axes: up the glass, back toward the driver, right.
+  const Plane model = g_pl;
+  Plane P = model;
+  const V shift = P.S * g_off.up - P.N * g_off.back + P.R * g_off.right;
+  P.bottom = P.bottom + shift - P.S * (g_off.longer * 0.5f);
+  P.length = (std::max)(0.05f, P.length + g_off.longer);
+  P.wB = (std::max)(0.1f, P.wB + g_off.wider);
+  P.wT = (std::max)(0.1f, P.wT + g_off.wider);
+  g_pl = P;
   ++g_camFrames;
-  draw_drops(I);
+  draw_drops(M);
   g_pl = model;
 }
 
