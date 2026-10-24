@@ -57,6 +57,9 @@ struct Cfg {
   // Drop shape (user 2026-10-24 run 9: drops looked blue): lens height / radius and refractive index. A flatter or
   // weaker lens bends less of the sky into the drop.
   float dropHeight = 0.35f, dropIor = 1.33f;
+  // drop_style (run 12, user: purple / blue drops in runs 9-12 whatever the rays): 1 = a glossy, see-through lens
+  // (opaque material, blended); 0 = the refracting water lens (translucent, drop_ior).
+  int dropStyle = 1;
 } g_cfg;
 unsigned g_lensGen = 0;                                // new lens/material hashes when drop_height / drop_ior change
 
@@ -102,7 +105,8 @@ void load() {
   c.inset = ini_f(L"inset", c.inset);
   c.dropHeight = (std::max)(0.05f, (std::min)(1.0f, ini_f(L"drop_height", c.dropHeight)));
   c.dropIor = (std::max)(1.0f, (std::min)(2.0f, ini_f(L"drop_ior", c.dropIor)));
-  if (c.dropHeight != g_cfg.dropHeight || c.dropIor != g_cfg.dropIor) ++g_lensGen;   // make_all builds them again
+  c.dropStyle = ini_f(L"drop_style", 1.0f) >= 0.5f ? 1 : 0;
+  if (c.dropHeight != g_cfg.dropHeight || c.dropIor != g_cfg.dropIor || c.dropStyle != g_cfg.dropStyle) ++g_lensGen;   // made again
   g_cfg = c;
   plog(L"windscreen: %s; plane %.2f back %.2f up -> %.2f back %.2f up, width %.2f/%.2f; rain %.0f/s, drops %.1f-%.1f mm, "
        L"move above %.0f km/h at %.2f m/s per 50 km/h; snow %.0f/s, flakes %.1f-%.1f mm, melt %.0f-%.0f s; at most %d%s",
@@ -283,7 +287,8 @@ remixapi_MeshHandle make_square(remixapi_MaterialHandle mat, uint64_t hash) {
   return g_api->CreateMesh(&mesh, &h) == REMIXAPI_ERROR_CODE_SUCCESS ? h : nullptr;
 }
 
-remixapi_MaterialHandle make_opaque(uint64_t hash, const wchar_t* albedo, remixapi_Float3D colour, float opacity) {
+remixapi_MaterialHandle make_opaque(uint64_t hash, const wchar_t* albedo, remixapi_Float3D colour, float opacity,
+                                    float roughness = 0.8f) {
   remixapi_MaterialInfoOpaqueEXT op = {};
   op.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
   op.roughnessTexture = L"";
@@ -291,7 +296,7 @@ remixapi_MaterialHandle make_opaque(uint64_t hash, const wchar_t* albedo, remixa
   op.heightTexture = L"";
   op.albedoConstant = colour;
   op.opacityConstant = opacity;
-  op.roughnessConstant = 0.8f;
+  op.roughnessConstant = roughness;
   op.useDrawCallAlphaState = 1;                        // alpha from the blend extension at draw time
   remixapi_MaterialInfo mi = {};
   mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
@@ -335,7 +340,9 @@ bool make_all() {
   mi.tangentTexture = L"";
   mi.emissiveTexture = L"";
   mi.filterMode = 1;
-  if (!g_water && g_api->CreateMaterial(&mi, &g_water) != REMIXAPI_ERROR_CODE_SUCCESS) g_water = nullptr;
+  if (!g_water && g_cfg.dropStyle == 1)                // glossy see-through drop: no refraction (no tinted sky in it)
+    g_water = make_opaque(mi.hash, L"", { 0.80f, 0.84f, 0.88f }, 0.30f, 0.03f);
+  else if (!g_water && g_api->CreateMaterial(&mi, &g_water) != REMIXAPI_ERROR_CODE_SUCCESS) g_water = nullptr;
   if (g_disc && g_plane) {                             // only the lens was made again
     g_lens = g_water ? make_lens(g_water) : nullptr;
     plog(L"windscreen: drop lens made again: height %.2f x radius, index %.2f", g_cfg.dropHeight, g_cfg.dropIor);
@@ -417,21 +424,12 @@ void inverse_rigid(const float* m, float* out) {
   out[15] = 1.0f;
 }
 
-// Cockpit views (car body not drawn): the drops ride on the camera, which RBR fixes to the cockpit. The model root
-// relative to the camera (g_rel: M = g_rel * camera) is measured from RBR's car object while the car stands (then the
-// object and the drawn car agree) and kept for that view; while it moves, a slow average stands in until a stop.
-// Run 7 (user 2026-10-23): with the cockpit's interior drawn by shaders the proxy does not know, no car draw placed
-// the drops (4115 frames from RBR's object, 0.1-0.2 m off each frame: the remaining wiggle, drops through the glass).
-// Run 10 (user 2026-10-24): the plane moved with every camera change and slid while driving (the slow average followed
-// RBR's object, which lags the drawn car while moving). Run 11 (user: "focus on the DRIVING camera", the plane showed
-// in the bonnet view and moved between bonnet / internal 2 / internal): drops only in the car's driving camera
-// ([Cam_internal] of its ini, recognised by its field of view, camera inside the cabin), one link per car, kept once
-// it has 30 samples and never measured again this session: samples from the interior as drawn in the same frame as
-// the camera (headlights.cpp cockpit_root_vote, exact while moving); until there are any, RBR's object while the car
-// stands (replaced once drawn samples come). No drops before 10 samples.
-struct Link { float car[3]; float m[16]; int n; bool drawn, locked; };
-std::vector<Link> g_links;
-unsigned g_camFrames = 0;
+// Cockpit views: the drops go on the windscreen as RBR drew it from the cockpit this frame (headlights.cpp
+// cockpit_glass_find: CarGlassInternal's world matrix x the glass mesh), at frame end (rbrrtx_windscreen_frame_end).
+// Fixed to the car's glass, not the camera (run 12, user: seat/camera settings differ per player). Runs 7-11 tied the
+// drops to RBR's object or to the camera (a link measured once): wiggling, or moving with every camera change.
+unsigned g_camFrames = 0, g_glassMissFrames = 0;
+struct CarOffsets { float up, back, right, wider, longer; } g_off = {};   // particles.ini [windscreen.<model>]
 
 // This frame's plane in the model frame (set by rbrrtx_windscreen_emit, drawn by draw_drops).
 struct Plane { V bottom, S, R, N; float length, wB, wT; bool valid; } g_pl = {};
@@ -455,7 +453,7 @@ void draw_drops(const float M[16]) {
       draw(g_disc, w, Rw * r, Nw * (r * 0.3f), Sw * r, &blend);
       ++flakes;
     } else {
-      draw(g_lens, w, Rw * d.r, Nw * d.r, Sw * d.r, nullptr);
+      draw(g_lens, w, Rw * d.r, Nw * d.r, Sw * d.r, g_cfg.dropStyle == 1 ? &blend : nullptr);
       ++drops;
     }
   }
@@ -467,8 +465,10 @@ void draw_drops(const float M[16]) {
   const ULONGLONG now = GetTickCount64();
   if (now - g_lastLog > 20000 && (drops || flakes)) {
     g_lastLog = now;
-    plog(L"windscreen: %u drops, %u flakes on the glass at %.0f km/h (%s); %u cockpit frames drawn",
-         drops, flakes, g_kmh, g_kmh > g_cfg.moveAboveKmh ? L"air pushes them outward" : L"big drops run down", g_camFrames);
+    unsigned found = 0, missed = 0;
+    rbrrtx_cockpit_glass_stats(&found, &missed);
+    plog(L"windscreen: %u drops, %u flakes on the glass at %.0f km/h (%s); cockpit glass found in %u frames, not in %u",
+         drops, flakes, g_kmh, g_kmh > g_cfg.moveAboveKmh ? L"air pushes them outward" : L"big drops run down", found, missed);
   }
 }
 
@@ -547,9 +547,8 @@ void rbrrtx_windscreen_emit(bool sweeping) {
       wT = (std::max)(0.1f, gwt - 2.0f * g_cfg.inset);
     }
   }
-  // Per car by hand (particles.ini [windscreen.<model file name>], e.g. [windscreen.BMW_M3_E30]): up / back / right
-  // move the plane (metres, the car's axes), wider / longer add to its width and length. Kept for good: a car fixed
-  // once stays fixed.
+  // Per car by hand (particles.ini [windscreen.<model file name>]): up (along the glass) / back (toward the driver) /
+  // right move the plane, wider / longer add to it (metres); applied where it is drawn (rbrrtx_windscreen_frame_end).
   const wchar_t* model = rbrrtx_car_model_name();
   const ULONGLONG cfgStamp = (static_cast<ULONGLONG>(g_time.dwHighDateTime) << 32) | g_time.dwLowDateTime;
   static std::wstring offModel;
@@ -566,13 +565,8 @@ void rbrrtx_windscreen_emit(bool sweeping) {
       return static_cast<float>(_wtof(v));
     };
     up = car_f(L"up"); back = car_f(L"back"); right = car_f(L"right"); wider = car_f(L"wider"); longer = car_f(L"longer");
+    g_off = { up, back, right, wider, longer };
   }
-  const V shift = U * up - F * back + R * right;
-  bottom = bottom + shift;
-  top = top + shift;
-  if (longer != 0.0f) { const V S0 = norm(top - bottom); bottom = bottom - S0 * (longer * 0.5f); top = top + S0 * (longer * 0.5f); }
-  wB = (std::max)(0.1f, wB + wider);
-  wT = (std::max)(0.1f, wT + wider);
   static int lastSource = -1;
   static float lastLf = 1e9f;
   static ULONGLONG lastCfg = 0;
@@ -583,7 +577,7 @@ void rbrrtx_windscreen_emit(bool sweeping) {
     lastCfg = cfgStamp;
     plog(L"windscreen: %s: plane from %s%s: bottom (%.2f %.2f %.2f) %.2f wide, top (%.2f %.2f %.2f) %.2f wide (model frame)",
          model, src == 2 ? L"the interior glass (i_window_f)" : src == 1 ? L"the exterior glass (e_window_f)" : L"the lamps + [windscreen] offsets",
-         up || back || right || wider || longer ? L" + [windscreen.<car>] offsets" : L"",
+         up || back || right || wider || longer ? L" ([windscreen.<car>] offsets where drawn)" : L"",
          bottom.x, bottom.y, bottom.z, wB, top.x, top.y, top.z, wT);
   }
   const V slope = top - bottom;
@@ -606,65 +600,32 @@ void rbrrtx_windscreen_car_drawn(const float M[16]) {
   (void)M;                                             // run 10 (user): outside views get no drops at all
 }
 
-bool driving_camera(float fovY) {
-  if (!rbrrtx_camera_in_cabin()) return false;         // bonnet / bumper / outside cameras
-  const float F = rbrrtx_car_internal_fov();
-  if (F <= 0.0f) return true;                          // the car's ini has no [Cam_internal]: any cabin camera
-  // [Cam_internal] FOV 0.85 rad came out as 36.5 deg vertical (16:9), the 1.309 rad cameras as 56.3: the ini value
-  // is horizontal for 4:3, scaled 0.727 into the vertical half angle.
-  const float want = 2.0f * std::atan(std::tan(F * 0.5f) * 0.727f) * 57.29578f;
-  static float logged = -1.0f;
-  const bool ok = std::fabs(fovY - want) < 4.0f;
-  if (fovY != logged) {
-    logged = fovY;
-    plog(L"windscreen: cabin camera fov %.1f, driving camera %.1f (car ini %.3f rad): %s", fovY, want, F,
-         ok ? L"drops on" : L"no drops in this camera");
-  }
-  return ok;
-}
+void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) { (void)camToWorld; (void)fovY; }
 
-void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) {
-  if (!g_api || !g_cfg.enabled || !driving_camera(fovY)) return;   // links are kept as they are
-  float M[16], lf[3], rf[3], fwd[3], O[16];
-  if (!rbrrtx_car_model_frame(M, lf, rf, fwd)) return;
-  Link* L = nullptr;
-  for (Link& l : g_links)
-    if (std::fabs(l.car[0] - lf[0]) + std::fabs(l.car[1] - lf[1]) + std::fabs(l.car[2] - lf[2]) < 1e-3f) { L = &l; break; }
-  if (!L) {
-    Link l = {};
-    std::memcpy(l.car, lf, sizeof(l.car));
-    g_links.push_back(l);
-    L = &g_links.back();
+void rbrrtx_windscreen_frame_end() {
+  if (!g_api || !g_cfg.enabled || !g_pl.valid || g_drawnThisFrame) return;
+  float b[3], t[3], n[3], wb = 0.0f, wt = 0.0f;
+  if (!rbrrtx_cockpit_glass(b, t, n, &wb, &wt)) {      // not a cockpit view, or no windscreen drawn this frame
+    ++g_glassMissFrames;
+    return;
   }
-  float sample[16];
-  bool have = false, drawn = false;
-  if (rbrrtx_cockpit_link_sample(sample)) {
-    have = drawn = true;
-  } else if (!L->drawn && g_kmh < 1.0f && rbrrtx_car_object_frame(O)) {   // standing: RBR's object = the drawn car
-    float inv[16];
-    inverse_rigid(camToWorld, inv);
-    mul4(O, inv, sample);
-    have = true;
-  }
-  if (have && drawn && !L->drawn) { L->n = 0; L->locked = false; L->drawn = true; }   // the drawn interior wins once
-  if (have && !L->locked && (drawn || !L->drawn)) {
-    const float k = 1.0f / static_cast<float>(L->n + 1);   // plain mean of the samples
-    for (int i = 0; i < 16; ++i) L->m[i] += (sample[i] - L->m[i]) * (L->n ? k : 1.0f);
-    if (++L->n >= 30) {
-      L->locked = true;
-      plog(L"windscreen: driving camera of %s kept: car root at (%.2f %.2f %.2f) in camera space, from %s",
-           rbrrtx_car_model_name(), L->m[12], L->m[13], L->m[14], L->drawn ? L"the interior as drawn" : L"RBR's car object while standing");
-    }
-  }
-  if (L->n < 10) return;
-  float W[16];
-  mul4(L->m, camToWorld, W);
-  for (int r = 0; r < 3; ++r) {                        // keep the axes unit length after the averaging
-    const float l = std::sqrt(W[r * 4] * W[r * 4] + W[r * 4 + 1] * W[r * 4 + 1] + W[r * 4 + 2] * W[r * 4 + 2]);
-    if (l > 1e-4f) for (int c = 0; c < 3; ++c) W[r * 4 + c] /= l;
-  }
+  V bottom = { b[0], b[1], b[2] }, top = { t[0], t[1], t[2] };
+  const V N = norm({ n[0], n[1], n[2] });
+  V S = norm(top - bottom);
+  const V R = norm(cross(S, N));
+  const V shift = S * g_off.up - N * g_off.back + R * g_off.right;
+  bottom = bottom + S * g_cfg.inset + shift - S * (g_off.longer * 0.5f);
+  top = top - S * g_cfg.inset + shift + S * (g_off.longer * 0.5f);
+  const float length = std::sqrt(dot(top - bottom, top - bottom));
+  if (length < 0.05f) return;
+  S = (top - bottom) * (1.0f / length);
+  const Plane model = g_pl;                            // the simulation's plane (car frame); drawn on the world one
+  g_pl = { bottom, S, R, N, length, (std::max)(0.1f, wb - 2.0f * g_cfg.inset + g_off.wider),
+           (std::max)(0.1f, wt - 2.0f * g_cfg.inset + g_off.wider), true };
+  static const float I[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
   ++g_camFrames;
-  draw_drops(W);
+  draw_drops(I);
+  g_pl = model;
 }
 
 void rbrrtx_windscreen_destroy() {

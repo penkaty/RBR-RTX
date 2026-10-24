@@ -112,7 +112,8 @@ void rbrrtx_exception_trace_install();
 // on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
 struct remixapi_Interface;
 void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Remix API: headlights off
-void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended);   // each car draw on the primary target (row-major W)
+// each car draw on the primary target (row-major W); cockpitGlass = CarGlassInternal.vso (the windscreen seen from the cockpit)
+void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended, bool cockpitGlass);
 void rbrrtx_headlights_emit();                                 // once per frame at the first BeginScene (with the sun)
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
 void rbrrtx_headlights_destroy();
@@ -149,7 +150,8 @@ void rbrrtx_windscreen_init(const remixapi_Interface* api);
 void rbrrtx_windscreen_emit(bool sweeping);                   // once per frame with the particles
 void rbrrtx_windscreen_destroy();
 void rbrrtx_windscreen_car_drawn(const float M[16]);           // headlights.cpp: this frame's drawn model root (rows x,y,z,pos)
-void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY);   // comp.cpp: this frame's camera (cockpit drops)
+void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY);   // comp.cpp: this frame's camera
+void rbrrtx_windscreen_frame_end();                           // comp.cpp per Present, after headlights: cockpit drops
 // headlights.cpp: the car's model root in render space (rows x, y, z, position), head lamp nodes, model forward.
 bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]);
 bool rbrrtx_car_object_frame(float M[16]);                     // RBR's car object + model offset, no drift
@@ -158,7 +160,10 @@ int rbrrtx_car_windscreen_source();                            // 2 interior gla
 float rbrrtx_car_internal_fov();                               // [Cam_internal] FOV of the car's ini (radians), 0 unknown
 const wchar_t* rbrrtx_car_model_name();                       // model file name without folder/extension (BMW_M3_E30)
 bool rbrrtx_camera_in_cabin();                                  // this frame's camera is inside the car's cabin
-bool rbrrtx_cockpit_link_sample(float link[16]);               // cockpit: model root as drawn x inverse(camera), this/last frame
+// The windscreen RBR drew from the cockpit in the frame that just ended (world space; headlights.cpp), and how often
+// it was found / not found in cockpit frames.
+bool rbrrtx_cockpit_glass(float bottom[3], float top[3], float n[3], float* wb, float* wt);
+void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed);
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.
 enum RbrKey {

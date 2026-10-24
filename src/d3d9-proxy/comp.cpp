@@ -1938,7 +1938,7 @@ bool before_draw(IDirect3DDevice9* dev) {
     g_haveCar = true;
     DWORD blend = FALSE;                               // the ghost car is drawn blended (opacity 0.4)
     dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
-    rbrrtx_headlights_car_draw(&world._11, g_pendingPrims, blend != FALSE);
+    rbrrtx_headlights_car_draw(&world._11, g_pendingPrims, blend != FALSE, (g_curInfo->flags & SH_GLASS) != 0);
   }
   ++g_st.xformed;
   return apply_material_hint(dev);
@@ -2487,6 +2487,7 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
+  if (g_enabled && g_apiOk && !g_sweep) rbrrtx_windscreen_frame_end();   // drops on the windscreen RBR drew this frame
   rbrrtx_particles_frame_end();                       // particle test key, emit probe report
   {
     // Remix's fallback light (rtx.fallbackLightMode 1 = only while no light exists) went out whenever the

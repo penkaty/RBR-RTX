@@ -184,8 +184,8 @@ int wmain(int argc, wchar_t** argv) {
       float Lw[16];
       mul(L, wrong3, Lw);
       mul(L, C3, body3);
-      rbrrtx_headlights_car_draw(Lw, 16000, false);
-      rbrrtx_headlights_car_draw(body3, 9000, false);
+      rbrrtx_headlights_car_draw(Lw, 16000, false, false);
+      rbrrtx_headlights_car_draw(body3, 9000, false, false);
     }
     float wsErr = g_wsCalls == 1 ? 0.0f : 1.0f;
     for (int i = 0; i < 16; ++i) wsErr = (std::max)(wsErr, std::fabs(g_wsRoot[i] - C3[i]));
@@ -214,49 +214,35 @@ int wmain(int argc, wchar_t** argv) {
       ++noGlass;
       wprintf(L"%-30s camera in the cabin test wrong (%d of 2) BAD\n", e.path().filename().c_str(), camBad);
     }
-    // Cockpit anchor (run 10): camera in the cabin of the car drawn at C3 (0.4 m ahead of RBR's object C2, moving);
-    // interior parts drawn with their node matrices: the vote gives link = C3 * inverse(camera) exactly.
+    // Cockpit glass (run 12): camera in the cabin of the car drawn at C3; the chosen glass mesh drawn by
+    // CarGlassInternal with its node matrix: the plane found equals the model's glass plane put at C3.
     int linkBad = 0;
-    if (windscreen_plane(&pb, &pt, &pn)) {
+    if (g_car.glass && windscreen_plane(&pb, &pt, &pn)) {
       if (dot(pn, g_car.forward) < 0.0f) pn = pn * -1.0f;
-      const V3 eye = to_world(C3, (pb + pt) * 0.5f - pn * 0.45f - V3{ 0, 0.15f, 0 });
-      float cam[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, eye.x, eye.y, eye.z, 1 };
-      physics_at(C3);                                  // inside test against the drawn car's place
-      rbrrtx_headlights_camera(cam);
-      physics_at(C2);
-      g_insideFrame = ~0u;
-      g_wmats.clear();
-      g_linkFrame = ~0u;
-      for (size_t k = 0, added = 0; k < g_car.parts.size() && added < 5; ++k) {
-        float Lp[16];
-        local_to_root(g_car.parts[k], Lp);
-        WMat w;
-        mul(Lp, C3, w.m);
-        w.blended = false;
-        bool dup = false;
-        for (const WMat& o : g_wmats) if (same_matrix(o.m, w.m)) dup = true;
-        if (dup) continue;
-        g_wmats.push_back(w);
-        ++added;
-      }
-      g_insideFrame = ~0u;
+      const V3 eyeM = (pb + pt) * 0.5f - g_car.forward * 0.75f - V3{ 0, 0.1f, 0 };   // a driver's eye
+      const V3 eye = to_world(C3, eyeM), ahead = norm(to_world(C3, eyeM + g_car.forward) - eye);
+      const V3 upW = norm(row(C3, 1)), rightW = norm(V3{ upW.y * ahead.z - upW.z * ahead.y, upW.z * ahead.x - upW.x * ahead.z,
+                                                          upW.x * ahead.y - upW.y * ahead.x });
+      float cam[16] = { rightW.x, rightW.y, rightW.z, 0, upW.x, upW.y, upW.z, 0, ahead.x, ahead.y, ahead.z, 0, eye.x, eye.y, eye.z, 1 };
       physics_at(C3);
-      const bool inside = camera_inside();
+      rbrrtx_headlights_camera(cam);
+      g_insideFrame = ~0u;
+      float Lg[16], glassW[16];
+      local_to_root(g_car.glassNode, Lg);
+      mul(Lg, C3, glassW);
+      g_glassW.clear();
+      rbrrtx_headlights_car_draw(glassW, 40, true, true);
+      cockpit_glass_find();
+      ++g_frameNo;
+      float gb[3], gt[3], gn[3], wb, wt;
+      if (!rbrrtx_cockpit_glass(gb, gt, gn, &wb, &wt)) linkBad = 1;
+      else if (len(V3{ gb[0], gb[1], gb[2] } - to_world(C3, g_car.glassBottom)) > 0.01f ||
+               len(V3{ gt[0], gt[1], gt[2] } - to_world(C3, g_car.glassTop)) > 0.01f) linkBad = 2;
       physics_at(C2);
-      g_insideFrame = g_frameNo;
-      g_insideCached = inside;
-      cockpit_root_vote();
-      float link[16], back[16];
-      if (!inside || !rbrrtx_cockpit_link_sample(link)) linkBad = 1;
-      else {
-        mul(link, cam, back);
-        for (int i = 0; i < 15; ++i) if (std::fabs(back[i] - C3[i]) > 0.01f) linkBad = 2;
-      }
-      g_wmats.clear();
     }
     if (linkBad) {
       ++noGlass;
-      wprintf(L"%-30s cockpit anchor from the drawn interior %s BAD\n", e.path().filename().c_str(),
+      wprintf(L"%-30s cockpit glass %s BAD\n", e.path().filename().c_str(),
               linkBad == 1 ? L"not found" : L"wrong");
     }
     g_bodyFrames = 0;
