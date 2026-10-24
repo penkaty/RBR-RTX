@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <string>
 #include <vector>
 
 namespace {
@@ -422,11 +423,13 @@ void inverse_rigid(const float* m, float* out) {
 // Run 7 (user 2026-10-23): with the cockpit's interior drawn by shaders the proxy does not know, no car draw placed
 // the drops (4115 frames from RBR's object, 0.1-0.2 m off each frame: the remaining wiggle, drops through the glass).
 // Run 10 (user 2026-10-24): the plane moved with every camera change and slid while driving (the slow average followed
-// RBR's object, which lags the drawn car while moving). Now one link per car and cockpit view (fov), kept once it has
-// 30 samples and never measured again for that view this session: samples from the interior as drawn in the same
-// frame as the camera (headlights.cpp cockpit_root_vote, exact while moving), else from RBR's object while the car
-// stands. Drawn samples replace object ones once. No drops before a view has 10 samples.
-struct Link { float car[3]; float fov; float m[16]; int n; bool drawn, locked; };
+// RBR's object, which lags the drawn car while moving). Run 11 (user: "focus on the DRIVING camera", the plane showed
+// in the bonnet view and moved between bonnet / internal 2 / internal): drops only in the car's driving camera
+// ([Cam_internal] of its ini, recognised by its field of view, camera inside the cabin), one link per car, kept once
+// it has 30 samples and never measured again this session: samples from the interior as drawn in the same frame as
+// the camera (headlights.cpp cockpit_root_vote, exact while moving); until there are any, RBR's object while the car
+// stands (replaced once drawn samples come). No drops before 10 samples.
+struct Link { float car[3]; float m[16]; int n; bool drawn, locked; };
 std::vector<Link> g_links;
 unsigned g_camFrames = 0;
 
@@ -518,15 +521,12 @@ void rbrrtx_windscreen_emit(bool sweeping) {
   V bottom, top;
   float wB = g_cfg.widthBottom, wT = g_cfg.widthTop;
   float gb[3], gt[3], gn[3], gwb = 0.0f, gwt = 0.0f;
-  // Run 7 (user): the lamp plane is "WAY more accurate" on the E30 (its glass mesh plane sat ~0.2 m low), so the
-  // lamps are used when they are symmetric (same height and length, mirrored across the car's middle); the Golf's
-  // lamp nodes are lopsided (0.16 m in height, 0.22 m in length), so it gets the glass plane.
-  const bool symmetric = std::fabs(lf[1] - rf[1]) < 0.04f && std::fabs(lf[2] - rf[2]) < 0.04f &&
-                         std::fabs(lf[0] + rf[0]) < 0.1f && std::fabs(lf[0] - rf[0]) > 0.6f;
-  // Run 9 (user 2026-10-24: "judge the plane per car, not from the Golf"): once the glass has been measured as drawn
-  // (headlights.cpp glass_calibrate, the pre-stage orbit), auto uses it on every car.
+  // Run 11 (user 2026-10-24): the plane goes with the driving camera's view, so the car's own glass: the interior
+  // model's (i_window_f) where it has one, else the exterior's (headlights.cpp load_windscreen). Run 7's "the lamp plane
+  // is more accurate on the E30" came from the cockpit anchor (RBR's object) being off, not from the glass. The lamp
+  // plane (Golf offsets) only without usable glass, or with use_glass = 0.
   const int source = rbrrtx_car_windscreen_source();
-  const bool wantGlass = g_cfg.useGlass == 1 || (g_cfg.useGlass >= 2 && (source == 2 || !symmetric));
+  const bool wantGlass = g_cfg.useGlass >= 1;
   const bool glass = wantGlass && rbrrtx_car_windscreen_glass(gb, gt, gn, &gwb, &gwt);
   if (glass) {
     bottom = { gb[0], gb[1], gb[2] };
@@ -547,15 +547,43 @@ void rbrrtx_windscreen_emit(bool sweeping) {
       wT = (std::max)(0.1f, gwt - 2.0f * g_cfg.inset);
     }
   }
+  // Per car by hand (particles.ini [windscreen.<model file name>], e.g. [windscreen.BMW_M3_E30]): up / back / right
+  // move the plane (metres, the car's axes), wider / longer add to its width and length. Kept for good: a car fixed
+  // once stays fixed.
+  const wchar_t* model = rbrrtx_car_model_name();
+  const ULONGLONG cfgStamp = (static_cast<ULONGLONG>(g_time.dwHighDateTime) << 32) | g_time.dwLowDateTime;
+  static std::wstring offModel;
+  static ULONGLONG offStamp = 0;
+  static float up = 0.0f, back = 0.0f, right = 0.0f, wider = 0.0f, longer = 0.0f;
+  if (offModel != model || offStamp != cfgStamp) {     // read when the car or particles.ini changes, not per frame
+    offModel = model;
+    offStamp = cfgStamp;
+    wchar_t sec[96];
+    swprintf_s(sec, L"windscreen.%s", model);
+    auto car_f = [&](const wchar_t* key) {
+      wchar_t v[64] = {};
+      GetPrivateProfileStringW(sec, key, L"", v, 64, g_path);
+      return static_cast<float>(_wtof(v));
+    };
+    up = car_f(L"up"); back = car_f(L"back"); right = car_f(L"right"); wider = car_f(L"wider"); longer = car_f(L"longer");
+  }
+  const V shift = U * up - F * back + R * right;
+  bottom = bottom + shift;
+  top = top + shift;
+  if (longer != 0.0f) { const V S0 = norm(top - bottom); bottom = bottom - S0 * (longer * 0.5f); top = top + S0 * (longer * 0.5f); }
+  wB = (std::max)(0.1f, wB + wider);
+  wT = (std::max)(0.1f, wT + wider);
   static int lastSource = -1;
   static float lastLf = 1e9f;
-  const int src = glass ? 1 + source : 0;
-  if (src != lastSource || lf[0] != lastLf) {
+  static ULONGLONG lastCfg = 0;
+  const int src = glass ? source : 0;
+  if (src != lastSource || lf[0] != lastLf || cfgStamp != lastCfg) {
     lastSource = src;
     lastLf = lf[0];
-    plog(L"windscreen: plane from %s: bottom (%.2f %.2f %.2f) %.2f wide, top (%.2f %.2f %.2f) %.2f wide (model frame)",
-         src == 3 ? L"the car's glass as drawn (measured in an outside view)" :
-         src == 2 ? L"the car's glass (e_window_f in the model file)" : L"the lamps + [windscreen] offsets",
+    lastCfg = cfgStamp;
+    plog(L"windscreen: %s: plane from %s%s: bottom (%.2f %.2f %.2f) %.2f wide, top (%.2f %.2f %.2f) %.2f wide (model frame)",
+         model, src == 2 ? L"the interior glass (i_window_f)" : src == 1 ? L"the exterior glass (e_window_f)" : L"the lamps + [windscreen] offsets",
+         up || back || right || wider || longer ? L" + [windscreen.<car>] offsets" : L"",
          bottom.x, bottom.y, bottom.z, wB, top.x, top.y, top.z, wT);
   }
   const V slope = top - bottom;
@@ -578,20 +606,33 @@ void rbrrtx_windscreen_car_drawn(const float M[16]) {
   (void)M;                                             // run 10 (user): outside views get no drops at all
 }
 
+bool driving_camera(float fovY) {
+  if (!rbrrtx_camera_in_cabin()) return false;         // bonnet / bumper / outside cameras
+  const float F = rbrrtx_car_internal_fov();
+  if (F <= 0.0f) return true;                          // the car's ini has no [Cam_internal]: any cabin camera
+  // [Cam_internal] FOV 0.85 rad came out as 36.5 deg vertical (16:9), the 1.309 rad cameras as 56.3: the ini value
+  // is horizontal for 4:3, scaled 0.727 into the vertical half angle.
+  const float want = 2.0f * std::atan(std::tan(F * 0.5f) * 0.727f) * 57.29578f;
+  static float logged = -1.0f;
+  const bool ok = std::fabs(fovY - want) < 4.0f;
+  if (fovY != logged) {
+    logged = fovY;
+    plog(L"windscreen: cabin camera fov %.1f, driving camera %.1f (car ini %.3f rad): %s", fovY, want, F,
+         ok ? L"drops on" : L"no drops in this camera");
+  }
+  return ok;
+}
+
 void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) {
-  if (!g_api || !g_cfg.enabled || rbrrtx_car_body_visible() != 0) return;   // links are kept as they are
+  if (!g_api || !g_cfg.enabled || !driving_camera(fovY)) return;   // links are kept as they are
   float M[16], lf[3], rf[3], fwd[3], O[16];
   if (!rbrrtx_car_model_frame(M, lf, rf, fwd)) return;
   Link* L = nullptr;
   for (Link& l : g_links)
-    if (std::fabs(l.fov - fovY) < 0.5f && std::fabs(l.car[0] - lf[0]) + std::fabs(l.car[1] - lf[1]) + std::fabs(l.car[2] - lf[2]) < 1e-3f) {
-      L = &l;
-      break;
-    }
+    if (std::fabs(l.car[0] - lf[0]) + std::fabs(l.car[1] - lf[1]) + std::fabs(l.car[2] - lf[2]) < 1e-3f) { L = &l; break; }
   if (!L) {
     Link l = {};
     std::memcpy(l.car, lf, sizeof(l.car));
-    l.fov = fovY;
     g_links.push_back(l);
     L = &g_links.back();
   }
@@ -611,8 +652,8 @@ void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) {
     for (int i = 0; i < 16; ++i) L->m[i] += (sample[i] - L->m[i]) * (L->n ? k : 1.0f);
     if (++L->n >= 30) {
       L->locked = true;
-      plog(L"windscreen: cockpit view (fov %.1f) kept: car root at (%.2f %.2f %.2f) in camera space, from %s",
-           fovY, L->m[12], L->m[13], L->m[14], L->drawn ? L"the interior as drawn" : L"RBR's car object while standing");
+      plog(L"windscreen: driving camera of %s kept: car root at (%.2f %.2f %.2f) in camera space, from %s",
+           rbrrtx_car_model_name(), L->m[12], L->m[13], L->m[14], L->drawn ? L"the interior as drawn" : L"RBR's car object while standing");
     }
   }
   if (L->n < 10) return;

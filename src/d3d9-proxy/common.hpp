@@ -154,7 +154,10 @@ void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY);   // comp
 bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]);
 bool rbrrtx_car_object_frame(float M[16]);                     // RBR's car object + model offset, no drift
 bool rbrrtx_car_windscreen_glass(float bottom[3], float top[3], float n[3], float* widthBottom, float* widthTop);   // model frame
-int rbrrtx_car_windscreen_source();                            // 2 glass as drawn, 1 the model file's glass, 0 none
+int rbrrtx_car_windscreen_source();                            // 2 interior glass (i_window_f), 1 e_window_f, 0 none
+float rbrrtx_car_internal_fov();                               // [Cam_internal] FOV of the car's ini (radians), 0 unknown
+const wchar_t* rbrrtx_car_model_name();                       // model file name without folder/extension (BMW_M3_E30)
+bool rbrrtx_camera_in_cabin();                                  // this frame's camera is inside the car's cabin
 bool rbrrtx_cockpit_link_sample(float link[16]);               // cockpit: model root as drawn x inverse(camera), this/last frame
 
 // keys.cpp: hotkeys from rbr-rtx\config\keys.ini (defaults in keys.cpp). Order = g_actions in keys.cpp.

@@ -73,6 +73,7 @@ int wmain(int argc, wchar_t** argv) {
   const V3 rows[3] = { x, y, z };
   for (int r = 0; r < 3; ++r) { C[r * 4] = rows[r].x; C[r * 4 + 1] = rows[r].y; C[r * 4 + 2] = rows[r].z; }
   C[12] = 1234.5f; C[13] = 87.25f; C[14] = -4321.0f; C[15] = 1;
+  int interiorGlass = 0;
   int cars = 0, fails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0, noGlass = 0, glassFallback = 0;
   for (const auto& e : std::filesystem::recursive_directory_iterator(argv[1])) {
     if (_wcsicmp(e.path().extension().c_str(), L".sgc") != 0) continue;
@@ -192,31 +193,6 @@ int wmain(int argc, wchar_t** argv) {
       ++noGlass;
       wprintf(L"%-30s windscreen root from the drawn car off by %.3f (%d calls) BAD\n", e.path().filename().c_str(), wsErr, g_wsCalls);
     }
-    // Glass as drawn (run 9, glass_calibrate): an outside view, the body and the glass drawn (the glass with its node's
-    // matrix, blended) for 20 frames: the drawn plane locks and, where the file's plane is plausible, equals it.
-    g_car.drawnGlass = false;
-    g_cal = GlassCal();
-    g_wmats.clear();
-    g_bodyFrames = 3;
-    int calFrames = 0;
-    for (int f = 0; f < 25 && !g_car.drawnGlass && g_car.glassMesh; ++f, ++calFrames) {
-      g_rootThisFrame = g_predThisFrame = false;
-      float body3[16], Lg[16], glassW[16];
-      mul(L, C3, body3);
-      local_to_root(g_car.glassNode, Lg);
-      mul(Lg, C3, glassW);
-      rbrrtx_headlights_car_draw(body3, 9000, false);
-      rbrrtx_headlights_car_draw(glassW, 40, true);
-      glass_calibrate();
-      g_wmats.clear();
-    }
-    const float drawnErr = g_car.drawnGlass ? (std::max)(len(g_car.drawnBottom - g_car.glassBottom), len(g_car.drawnTop - g_car.glassTop)) : -1.0f;
-    const bool drawnOk = !g_car.glass || (g_car.drawnGlass && drawnErr < 0.01f);
-    if (!drawnOk) {
-      ++noGlass;
-      wprintf(L"%-30s glass as drawn %s (%d frames, off by %.3f) BAD\n", e.path().filename().c_str(),
-              g_car.drawnGlass ? L"locked" : L"NOT locked", calFrames, drawnErr);
-    }
     // Cockpit from the camera (run 9): 0.45 m behind the middle of the glass and 0.15 m lower = in the cabin; 0.5 m in
     // front of the glass bottom, 0.2 m up = a bonnet camera, outside. RBR's object is C2 (no drift).
     physics_at(C2);
@@ -301,6 +277,7 @@ int wmain(int argc, wchar_t** argv) {
     const float glassBack = dot(lampMid - gc, g_car.forward), glassLen = len(g_car.glassTop - g_car.glassBottom);
     const bool glassOk = g_car.glass || g_car.glassRejected;   // a plane from the glass, or knowingly the lamp-based one
     if (g_car.glassRejected) ++glassFallback;
+    if (g_car.glassName == "i_window_f") ++interiorGlass;
     if (!glassOk) ++noGlass;
     wprintf(L"%-30s glass %s: %.2f m behind the lamps, %.2f up, %.2f/%.2f wide, %.2f long, normal (%.2f %.2f %.2f), flat %.3f\n",
             e.path().filename().c_str(), g_car.glass ? L"ok" : g_car.glassRejected ? L"rejected (lamp plane)" : L"BAD", glassBack, gc.y - lampMid.y, g_car.glassWb, g_car.glassWt,
@@ -327,6 +304,7 @@ int wmain(int argc, wchar_t** argv) {
     wprintf(L"lit lamp textures: %zu, E30 lights_lit hash %s\n", lit, litOk ? L"ok" : L"FAIL");
     if (!litOk) ++fails;
   }
+  wprintf(L"%d cars use the interior glass (i_window_f)\n", interiorGlass);
   wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d bad windscreen glass (%d lamp-plane fallbacks), %d FAIL\n",
           cars, noLamps, noBody, noRear, noExhaust, noGlass, glassFallback, fails);
   return cars > 0 && fails == 0 ? 0 : 1;
