@@ -1020,14 +1020,81 @@ bool camera_inside() {
   return g_insideCached;
 }
 
+float g_camM[16] = {};                                 // this frame's camera to world (rows x, y, z, position)
+
 void rbrrtx_headlights_camera(const float camToWorld[16]) {
   g_camW[0] = camToWorld[12]; g_camW[1] = camToWorld[13]; g_camW[2] = camToWorld[14];
+  std::memcpy(g_camM, camToWorld, sizeof(g_camM));
   g_camFrameNo = g_frameNo;
   g_camSet = true;
 }
 
+// Cockpit windscreen anchor (user 2026-10-24 run 10: the drops' plane moved with every camera change and slid while
+// driving; RBR's car object lags the drawn car while moving). In the cockpit RBR draws the interior parts (i_*) with
+// their node matrices; each part's matrix x its node chain gives the model root as drawn. Roots that 3+ draws agree on
+// within 1 cm, near RBR's object, are the drawn car of this very frame, so model root x inverse(camera) is exact while
+// moving too. windscreen.cpp averages these samples per cockpit view and keeps the result. Cars whose interior the
+// proxy does not see (unknown shaders) give no sample: windscreen.cpp then measures while the car stands.
+float g_linkSample[16];
+unsigned g_linkFrame = ~0u, g_linkSamples = 0;
+int g_linkVotes = 0;
+
+void cockpit_root_vote() {
+  if (g_wmats.size() < 2 || g_camFrameNo != g_frameNo || !camera_inside()) return;
+  float P[16];
+  V3 phys;
+  if (!physics_pose(P, &phys, false)) return;
+  struct Cand { float m[16]; int w; };
+  std::vector<Cand> c;
+  c.reserve(256);
+  for (int wi = 0; wi < static_cast<int>(g_wmats.size()); ++wi) {
+    for (const Placed& pl : g_car.parts) {
+      Cand k;
+      compose(pl, g_wmats[wi].m, k.m);
+      bool axes = true;
+      for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(k.m, r)), norm(row(P, r))) > 0.99f;
+      if (!axes || len(row(k.m, 3) - row(P, 3)) > 0.8f) continue;
+      k.w = wi;
+      c.push_back(k);
+      if (c.size() >= 256) break;
+    }
+    if (c.size() >= 256) break;
+  }
+  int best = -1, bestDraws = 0;
+  for (size_t i = 0; i < c.size(); ++i) {                // the root the most distinct draws agree on
+    unsigned long long seen = 0;
+    for (size_t j = 0; j < c.size(); ++j)
+      if (len(row(c[j].m, 3) - row(c[i].m, 3)) < 0.01f) seen |= 1ull << (c[j].w & 63);
+    int draws = 0;
+    for (unsigned long long b = seen; b; b &= b - 1) ++draws;
+    if (draws > bestDraws) { bestDraws = draws; best = static_cast<int>(i); }
+  }
+  if (best < 0 || bestDraws < 3) return;
+  float inv[16];
+  for (int r = 0; r < 3; ++r) for (int k = 0; k < 3; ++k) inv[r * 4 + k] = g_camM[k * 4 + r];
+  for (int k = 0; k < 3; ++k) inv[12 + k] = -(g_camM[12] * inv[k] + g_camM[13] * inv[4 + k] + g_camM[14] * inv[8 + k]);
+  inv[3] = inv[7] = inv[11] = 0.0f;
+  inv[15] = 1.0f;
+  const float* m = c[best].m;
+  for (int r = 0; r < 4; ++r)                          // link = root * inverse(camera), row vectors
+    for (int k = 0; k < 4; ++k)
+      g_linkSample[r * 4 + k] = (r == 3 ? m[12] : m[r * 4]) * inv[k] + (r == 3 ? m[13] : m[r * 4 + 1]) * inv[4 + k] +
+                                (r == 3 ? m[14] : m[r * 4 + 2]) * inv[8 + k] + (r == 3 ? 1.0f : 0.0f) * inv[12 + k];
+  g_linkFrame = g_frameNo;
+  g_linkVotes = bestDraws;
+  if (++g_linkSamples == 1)
+    hlog(L"headlights: cockpit: the interior as drawn places the car (%d draws agree, %zu candidates): windscreen anchored "
+         L"to it", bestDraws, c.size());
+}
+
+bool rbrrtx_cockpit_link_sample(float link[16]) {
+  if (g_linkFrame == ~0u || g_linkFrame + 1 < g_frameNo) return false;   // this frame's or the last one's
+  std::memcpy(link, g_linkSample, sizeof(g_linkSample));
+  return true;
+}
+
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended) {
-  if (!g_car.drawnGlass && g_car.glassMesh && g_track >= 0 && g_wmats.size() < 48) {   // glass_calibrate's candidates
+  if (g_track >= 0 && g_wmats.size() < 64) {           // glass_calibrate's and cockpit_root_vote's candidates
     bool seen = false;
     for (WMat& w : g_wmats) if (same_matrix(w.m, world)) { seen = true; w.blended |= blended; break; }
     if (!seen) { WMat w; std::memcpy(w.m, world, sizeof(w.m)); w.blended = blended; g_wmats.push_back(w); }
@@ -1175,6 +1242,7 @@ int rbrrtx_car_windscreen_source() { return g_car.drawnGlass ? 2 : g_car.glass ?
 
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   glass_calibrate();                                     // this frame's car draws vs the model file's glass
+  cockpit_root_vote();                                   // cockpit: the drawn interior places the car
   g_wmats.clear();
   ++g_frameNo;
   g_rootThisFrame = g_predThisFrame = false;            // windscreen drops: placed from the next frame's draws

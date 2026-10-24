@@ -421,17 +421,18 @@ void inverse_rigid(const float* m, float* out) {
 // object and the drawn car agree) and kept for that view; while it moves, a slow average stands in until a stop.
 // Run 7 (user 2026-10-23): with the cockpit's interior drawn by shaders the proxy does not know, no car draw placed
 // the drops (4115 frames from RBR's object, 0.1-0.2 m off each frame: the remaining wiggle, drops through the glass).
-float g_rel[16] = {};
-bool g_relKnown = false, g_relLocked = false;
-unsigned g_relStill = 0;
-float g_relFov = 0.0f;                                 // the view it belongs to (a different cockpit camera: again)
-float g_relCar[3] = {};                                // the car it belongs to (its left lamp node)
+// Run 10 (user 2026-10-24): the plane moved with every camera change and slid while driving (the slow average followed
+// RBR's object, which lags the drawn car while moving). Now one link per car and cockpit view (fov), kept once it has
+// 30 samples and never measured again for that view this session: samples from the interior as drawn in the same
+// frame as the camera (headlights.cpp cockpit_root_vote, exact while moving), else from RBR's object while the car
+// stands. Drawn samples replace object ones once. No drops before a view has 10 samples.
+struct Link { float car[3]; float fov; float m[16]; int n; bool drawn, locked; };
+std::vector<Link> g_links;
 unsigned g_camFrames = 0;
 
 // This frame's plane in the model frame (set by rbrrtx_windscreen_emit, drawn by draw_drops).
 struct Plane { V bottom, S, R, N; float length, wB, wT; bool valid; } g_pl = {};
 bool g_drawnThisFrame = false;                         // draw_drops ran for this frame's simulation
-unsigned g_missedFrames = 0;                           // frames without a car draw to place the drops on
 
 // Drops on the glass, M = the model root in world space (rows x, y, z, position).
 void draw_drops(const float M[16]) {
@@ -463,8 +464,8 @@ void draw_drops(const float M[16]) {
   const ULONGLONG now = GetTickCount64();
   if (now - g_lastLog > 20000 && (drops || flakes)) {
     g_lastLog = now;
-    plog(L"windscreen: %u drops, %u flakes on the glass at %.0f km/h (%s); %u frames placed from RBR's object, not a draw",
-         drops, flakes, g_kmh, g_kmh > g_cfg.moveAboveKmh ? L"air pushes them outward" : L"big drops run down", g_missedFrames);
+    plog(L"windscreen: %u drops, %u flakes on the glass at %.0f km/h (%s); %u cockpit frames drawn",
+         drops, flakes, g_kmh, g_kmh > g_cfg.moveAboveKmh ? L"air pushes them outward" : L"big drops run down", g_camFrames);
   }
 }
 
@@ -487,11 +488,7 @@ void rbrrtx_windscreen_emit(bool sweeping) {
   const int kind = rbrrtx_precip_state(&intensity);
   float M[16], lf[3], rf[3], fwd[3];
   const bool car = rbrrtx_car_model_frame(M, lf, rf, fwd);
-  if (g_pl.valid && !g_drawnThisFrame && car) {        // last frame had no car draw to place them on
-    ++g_missedFrames;
-    draw_drops(M);
-  }
-  g_pl.valid = false;
+  g_pl.valid = false;                                  // run 10 (user): drops only in cockpit views, not from the object
   if (kind != g_lastKind) {
     plog(L"windscreen: %s (%.0f %%)%s", kind == 2 ? L"snow" : kind == 1 ? L"rain" : L"dry", intensity,
          car ? L"" : L"; car model frame not known yet (needs one outside view): no drops until then");
@@ -578,40 +575,49 @@ void rbrrtx_windscreen_emit(bool sweeping) {
 }
 
 void rbrrtx_windscreen_car_drawn(const float M[16]) {
-  if (rbrrtx_car_body_visible() == 1) draw_drops(M);   // outside views; the cockpit uses the camera (below)
+  (void)M;                                             // run 10 (user): outside views get no drops at all
 }
 
 void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) {
-  if (!g_api || !g_cfg.enabled || rbrrtx_car_body_visible() != 0) { g_relLocked = false; return; }
+  if (!g_api || !g_cfg.enabled || rbrrtx_car_body_visible() != 0) return;   // links are kept as they are
   float M[16], lf[3], rf[3], fwd[3], O[16];
-  if (!rbrrtx_car_model_frame(M, lf, rf, fwd) || !rbrrtx_car_object_frame(O)) { g_relKnown = g_relLocked = false; return; }
-  // Run 8 (user): after stage/car changes and view toggles the plane sat wrong. The link is now measured from RBR's
-  // object without the drift (stale in the cockpit), measured again whenever the car stands, and dropped for another
-  // car (lamp nodes) or another cockpit view (fov).
-  const bool otherCar = std::fabs(lf[0] - g_relCar[0]) + std::fabs(lf[1] - g_relCar[1]) + std::fabs(lf[2] - g_relCar[2]) > 1e-3f;
-  if (g_relKnown && (otherCar || std::fabs(fovY - g_relFov) > 0.5f)) g_relKnown = g_relLocked = false;
-  float inv[16], sample[16];
-  inverse_rigid(camToWorld, inv);
-  mul4(O, inv, sample);                                // model root in the camera's frame, from RBR's object
-  const bool still = g_kmh < 1.0f;
-  if (!g_relKnown) {
-    std::memcpy(g_rel, sample, sizeof(g_rel));
-    std::memcpy(g_relCar, lf, sizeof(g_relCar));
-    g_relKnown = true;
-    g_relFov = fovY;
-    g_relStill = 0;
-  } else if (still || !g_relLocked) {
-    g_relStill = still ? g_relStill + 1 : 0;
-    const float k = still ? 0.2f : 0.01f;              // standing: settle fast; moving, not locked yet: a slow average
-    for (int i = 0; i < 16; ++i) g_rel[i] += (sample[i] - g_rel[i]) * k;
-    if (g_relStill == 30 && !g_relLocked) {
-      g_relLocked = true;
-      plog(L"windscreen: cockpit view (fov %.1f): drops fixed to the camera, car root at (%.2f %.2f %.2f) in camera space",
-           fovY, g_rel[12], g_rel[13], g_rel[14]);
+  if (!rbrrtx_car_model_frame(M, lf, rf, fwd)) return;
+  Link* L = nullptr;
+  for (Link& l : g_links)
+    if (std::fabs(l.fov - fovY) < 0.5f && std::fabs(l.car[0] - lf[0]) + std::fabs(l.car[1] - lf[1]) + std::fabs(l.car[2] - lf[2]) < 1e-3f) {
+      L = &l;
+      break;
+    }
+  if (!L) {
+    Link l = {};
+    std::memcpy(l.car, lf, sizeof(l.car));
+    l.fov = fovY;
+    g_links.push_back(l);
+    L = &g_links.back();
+  }
+  float sample[16];
+  bool have = false, drawn = false;
+  if (rbrrtx_cockpit_link_sample(sample)) {
+    have = drawn = true;
+  } else if (!L->drawn && g_kmh < 1.0f && rbrrtx_car_object_frame(O)) {   // standing: RBR's object = the drawn car
+    float inv[16];
+    inverse_rigid(camToWorld, inv);
+    mul4(O, inv, sample);
+    have = true;
+  }
+  if (have && drawn && !L->drawn) { L->n = 0; L->locked = false; L->drawn = true; }   // the drawn interior wins once
+  if (have && !L->locked && (drawn || !L->drawn)) {
+    const float k = 1.0f / static_cast<float>(L->n + 1);   // plain mean of the samples
+    for (int i = 0; i < 16; ++i) L->m[i] += (sample[i] - L->m[i]) * (L->n ? k : 1.0f);
+    if (++L->n >= 30) {
+      L->locked = true;
+      plog(L"windscreen: cockpit view (fov %.1f) kept: car root at (%.2f %.2f %.2f) in camera space, from %s",
+           fovY, L->m[12], L->m[13], L->m[14], L->drawn ? L"the interior as drawn" : L"RBR's car object while standing");
     }
   }
+  if (L->n < 10) return;
   float W[16];
-  mul4(g_rel, camToWorld, W);
+  mul4(L->m, camToWorld, W);
   for (int r = 0; r < 3; ++r) {                        // keep the axes unit length after the averaging
     const float l = std::sqrt(W[r * 4] * W[r * 4] + W[r * 4 + 1] * W[r * 4 + 1] + W[r * 4 + 2] * W[r * 4 + 2]);
     if (l > 1e-4f) for (int c = 0; c < 3; ++c) W[r * 4 + c] /= l;

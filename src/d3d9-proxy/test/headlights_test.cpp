@@ -238,6 +238,51 @@ int wmain(int argc, wchar_t** argv) {
       ++noGlass;
       wprintf(L"%-30s camera in the cabin test wrong (%d of 2) BAD\n", e.path().filename().c_str(), camBad);
     }
+    // Cockpit anchor (run 10): camera in the cabin of the car drawn at C3 (0.4 m ahead of RBR's object C2, moving);
+    // interior parts drawn with their node matrices: the vote gives link = C3 * inverse(camera) exactly.
+    int linkBad = 0;
+    if (windscreen_plane(&pb, &pt, &pn)) {
+      if (dot(pn, g_car.forward) < 0.0f) pn = pn * -1.0f;
+      const V3 eye = to_world(C3, (pb + pt) * 0.5f - pn * 0.45f - V3{ 0, 0.15f, 0 });
+      float cam[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, eye.x, eye.y, eye.z, 1 };
+      physics_at(C3);                                  // inside test against the drawn car's place
+      rbrrtx_headlights_camera(cam);
+      physics_at(C2);
+      g_insideFrame = ~0u;
+      g_wmats.clear();
+      g_linkFrame = ~0u;
+      for (size_t k = 0, added = 0; k < g_car.parts.size() && added < 5; ++k) {
+        float Lp[16];
+        local_to_root(g_car.parts[k], Lp);
+        WMat w;
+        mul(Lp, C3, w.m);
+        w.blended = false;
+        bool dup = false;
+        for (const WMat& o : g_wmats) if (same_matrix(o.m, w.m)) dup = true;
+        if (dup) continue;
+        g_wmats.push_back(w);
+        ++added;
+      }
+      g_insideFrame = ~0u;
+      physics_at(C3);
+      const bool inside = camera_inside();
+      physics_at(C2);
+      g_insideFrame = g_frameNo;
+      g_insideCached = inside;
+      cockpit_root_vote();
+      float link[16], back[16];
+      if (!inside || !rbrrtx_cockpit_link_sample(link)) linkBad = 1;
+      else {
+        mul(link, cam, back);
+        for (int i = 0; i < 15; ++i) if (std::fabs(back[i] - C3[i]) > 0.01f) linkBad = 2;
+      }
+      g_wmats.clear();
+    }
+    if (linkBad) {
+      ++noGlass;
+      wprintf(L"%-30s cockpit anchor from the drawn interior %s BAD\n", e.path().filename().c_str(),
+              linkBad == 1 ? L"not found" : L"wrong");
+    }
     g_bodyFrames = 0;
     g_track = -1;
     g_groups.clear();

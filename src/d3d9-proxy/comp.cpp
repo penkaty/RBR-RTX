@@ -1016,14 +1016,17 @@ void atmo_frame() {
   if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
     const float range = (std::max)(10.0f, sw.fogEnd - sw.fogStart);
     const float sigma = 2.0f / range * stageFog * total.density;   // per metre
-    float ext[3], mean = 0.0f;
-    for (int i = 0; i < 3; ++i) { ext[i] = -std::log(col[i]); mean += ext[i] / 3.0f; }
+    // Grey (run 10, user: purple scene): the hue of the colour above as extinction weights gave (0.05 0.02 0.66) on
+    // Rosciszow HeavyRain HeavyCloud (FogEnd 51 m): blue light alone got through. Now the same extinction for all
+    // channels, tinted only by the weather factors' colour (a few %), and half of the game's fog hue in the albedo.
+    const float tm = (total.col[0] + total.col[1] + total.col[2]) / 3.0f;
     dist = g_atmoBase.dist;
-    for (int i = 0; i < 3; ++i) col[i] = std::clamp(std::exp(-sigma * dist * (mean > 1e-4f ? ext[i] / mean : 1.0f)), 0.02f, 0.999f);
+    for (int i = 0; i < 3; ++i)
+      col[i] = std::clamp(std::exp(-sigma * dist) * (tm > 1e-3f ? total.col[i] / tm : 1.0f), 0.02f, 0.999f);
     if (sw.fogCol[0] >= 0.0f && sw.fogCol[1] >= 0.0f && sw.fogCol[2] >= 0.0f) {
       const float m = (std::max)({ sw.fogCol[0], sw.fogCol[1], sw.fogCol[2], 0.01f });
       const float a = albedo >= 0.0f ? albedo : (g_atmoBase.albedo[0] + g_atmoBase.albedo[1] + g_atmoBase.albedo[2]) / 3.0f;
-      for (int i = 0; i < 3; ++i) alb[i] = std::clamp(a * sw.fogCol[i] / m, 0.0f, 0.999f);
+      for (int i = 0; i < 3; ++i) alb[i] = std::clamp(a * (0.5f + 0.5f * sw.fogCol[i] / m), 0.0f, 0.999f);
     }
     swprintf_s(fogNote, L"; stage fog %.0f..%.0f m x%.2f: 13 %% of the light left at %.0f m", sw.fogStart, sw.fogEnd,
                stageFog * total.density, 2.0f / sigma);
