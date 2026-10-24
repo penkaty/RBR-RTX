@@ -1273,12 +1273,21 @@ float rbrrtx_car_internal_fov() {
     fov = 0.0f;
     const size_t dot = g_car.file.find_last_of(L'.');
     const std::wstring base = dot == std::wstring::npos ? g_car.file : g_car.file.substr(0, dot);
-    for (const wchar_t* sfx : { L"_personal.ini", L".ini" }) {
-      wchar_t v[64] = {};
-      if (GetPrivateProfileStringW(L"Cam_internal", L"FOV", L"", v, 64, (base + sfx).c_str()) && (fov = static_cast<float>(_wtof(v))) > 0.0f)
-        break;
-    }
-    hlog(L"headlights: driving camera FOV %.3f rad from %s(_personal).ini [Cam_internal]", fov, base.c_str());
+    // The player's setting first (run 17, user): NGPCarMenu's cockpit FOV override (Plugins\NGPCarMenu.ini,
+    // CockpitOverrideFOV = 1, CockpitOverrideFOVValue in radians) replaces every car's [Cam_internal] FOV; the test
+    // install has 0.85, which is why the Mini (ini 1.1) was drawn at 36.5 deg like the rest.
+    const size_t carsDir = base.rfind(L"\\Cars\\");
+    const std::wstring ngp = (carsDir == std::wstring::npos ? std::wstring() : base.substr(0, carsDir)) + L"\\Plugins\\NGPCarMenu.ini";
+    const wchar_t* from = L"[Cam_internal]";
+    wchar_t v[64] = {};
+    if (GetPrivateProfileIntW(L"Default", L"CockpitOverrideFOV", 0, ngp.c_str()) == 1 &&
+        GetPrivateProfileStringW(L"Default", L"CockpitOverrideFOVValue", L"", v, 64, ngp.c_str()) && (fov = static_cast<float>(_wtof(v))) > 0.0f)
+      from = L"NGPCarMenu CockpitOverrideFOVValue";
+    else
+      for (const wchar_t* sfx : { L"_personal.ini", L".ini" })
+        if (GetPrivateProfileStringW(L"Cam_internal", L"FOV", L"", v, 64, (base + sfx).c_str()) && (fov = static_cast<float>(_wtof(v))) > 0.0f)
+          break;
+    hlog(L"headlights: driving camera FOV %.3f rad (%s; car %s)", fov, from, base.c_str());
   }
   return fov;
 }

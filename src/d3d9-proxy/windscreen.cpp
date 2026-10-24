@@ -606,9 +606,12 @@ void rbrrtx_windscreen_car_drawn(const float M[16]) {
 // car ini's [Cam_internal] FOV (0.85 rad = 36.5 deg vertical at 16:9); the quad is defined for that camera.
 void rbrrtx_windscreen_camera(const float camToWorld[16], float fovY) {
   if (!g_api || !g_cfg.enabled || !g_pl.valid || g_drawnThisFrame || !rbrrtx_camera_in_cabin()) return;
-  // Run 17: the ini's FOV is not what the game uses (Mini: ini 1.1 rad, drawn at 36.5 deg like every car; RSF sets it),
-  // so any cabin camera narrower than 50 deg (bonnet / bumper cameras are ~56).
-  if (fovY > 50.0f) return;
+  // The player's driving camera FOV (radians; NGPCarMenu override, else the car's [Cam_internal]): 0.85 rad was drawn
+  // at 36.5 deg vertical (16:9), 1.309 at 56.3: vertical half tangent = 0.727 x tan(FOV / 2). Other cabin cameras
+  // (internal 2, bonnet) differ: the quad is defined for the driving camera only.
+  const float F = rbrrtx_car_internal_fov();
+  const float want = F > 0.0f ? 2.0f * std::atan(std::tan(F * 0.5f) * 0.727f) * 57.29578f : 36.5f;
+  if (std::fabs(fovY - want) > 3.0f) return;
   float c[4][3];
   if (!rbrrtx_car_cockpit_quad(c)) return;
   const V cr = norm({ camToWorld[0], camToWorld[1], camToWorld[2] }), cu = norm({ camToWorld[4], camToWorld[5], camToWorld[6] }),
