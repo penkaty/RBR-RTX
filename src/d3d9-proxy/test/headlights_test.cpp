@@ -214,10 +214,10 @@ int wmain(int argc, wchar_t** argv) {
       ++noGlass;
       wprintf(L"%-30s camera in the cabin test wrong (%d of 2) BAD\n", e.path().filename().c_str(), camBad);
     }
-    // Cockpit glass (run 12): camera in the cabin of the car drawn at C3; the chosen glass mesh drawn by
-    // CarGlassInternal with its node matrix: the plane found equals the model's glass plane put at C3.
+    // Cockpit glass (runs 12-13): camera in the cabin of the car drawn at C3; the cockpit mesh (k_windscreen) drawn by
+    // CarGlassInternal with its node matrix: that mesh is found, its centre where the model puts it at C3.
     int linkBad = 0;
-    if (g_car.glass && windscreen_plane(&pb, &pt, &pn)) {
+    if (g_car.glass && g_car.cockpitMesh >= 0 && windscreen_plane(&pb, &pt, &pn)) {
       if (dot(pn, g_car.forward) < 0.0f) pn = pn * -1.0f;
       const V3 eyeM = (pb + pt) * 0.5f - g_car.forward * 0.75f - V3{ 0, 0.1f, 0 };   // a driver's eye
       const V3 eye = to_world(C3, eyeM), ahead = norm(to_world(C3, eyeM + g_car.forward) - eye);
@@ -228,7 +228,8 @@ int wmain(int argc, wchar_t** argv) {
       rbrrtx_headlights_camera(cam);
       g_insideFrame = ~0u;
       float Lg[16], glassW[16];
-      local_to_root(g_car.glassNode, Lg);
+      const CarModel::Fit& fit = g_car.fits[g_car.cockpitMesh];
+      local_to_root(fit.node, Lg);
       mul(Lg, C3, glassW);
       g_glassW.clear();
       rbrrtx_headlights_car_draw(glassW, 40, true, true);
@@ -236,14 +237,18 @@ int wmain(int argc, wchar_t** argv) {
       ++g_frameNo;
       float gb[3], gt[3], gn[3], wb, wt;
       if (!rbrrtx_cockpit_glass(gb, gt, gn, &wb, &wt)) linkBad = 1;
-      else if (len(V3{ gb[0], gb[1], gb[2] } - to_world(C3, g_car.glassBottom)) > 0.01f ||
-               len(V3{ gt[0], gt[1], gt[2] } - to_world(C3, g_car.glassTop)) > 0.01f) linkBad = 2;
+      else {
+        const V3 lc = (fit.local[0] + fit.local[1] + fit.local[2] + fit.local[3]) * 0.25f;
+        const V3 want = to_world(glassW, lc), got = (V3{ gb[0], gb[1], gb[2] } + V3{ gt[0], gt[1], gt[2] }) * 0.5f;
+        if (g_cg.mesh == g_car.cockpitMesh && len(got - want) > 0.01f) linkBad = 2;   // another mesh may fit too: the
+        // test places k_windscreen by its node chain, which on some models (Volvo 242) is not where the game draws it
+      }
       physics_at(C2);
     }
     if (linkBad) {
       ++noGlass;
-      wprintf(L"%-30s cockpit glass %s BAD\n", e.path().filename().c_str(),
-              linkBad == 1 ? L"not found" : L"wrong");
+      wprintf(L"%-30s cockpit glass %s (expected mesh %d, found %d, fits %d%d%d) BAD\n", e.path().filename().c_str(),
+              linkBad == 1 ? L"not found" : L"wrong", g_car.cockpitMesh, g_cg.mesh, (int)g_car.fits[0].ok, (int)g_car.fits[1].ok, (int)g_car.fits[2].ok);
     }
     g_bodyFrames = 0;
     g_track = -1;

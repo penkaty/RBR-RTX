@@ -230,9 +230,12 @@ struct CarModel {
   bool glassRejected = false;                          // found but implausible (glass_plausible): lamp-based plane
   bool glassMesh = false;                              // windscreen mesh read (plausible or not)
   std::string glassName;                               // i_window_f (interior) or e_window_f
-  // Both glass meshes' corners in their own node frame (bottom left/right, top left/right), plausible or not: the
-  // cockpit glass search (cockpit_glass_find) puts them through this frame's CarGlassInternal draws.
-  struct Fit { bool ok = false; V3 local[4] = {}; } fits[2];
+  // The glass meshes' corners in their own node frame (bottom left/right, top left/right), plausible or not:
+  // i_window_f, e_window_f, k_windscreen. The cockpit glass search (cockpit_glass_find) puts them through this frame's
+  // CarGlassInternal draws. k_windscreen (run 13) is a 4-vertex quad in every model (E30 1.6 x 0.88 m), textured
+  // <car>_internal_kwindscreen.dds: RBR's own windscreen plane for the cockpit, the mesh CarGlassInternal draws.
+  struct Fit { bool ok = false; V3 local[4] = {}; Placed node = {}; } fits[3];
+  int cockpitMesh = -1;                                // which fit the cockpit draw is expected to be
   Placed glassNode = {};                               // model root -> e_window_f node local (its node chain)
 } g_car;
 
@@ -377,10 +380,10 @@ void load_windscreen(const std::vector<char>& d, const std::unordered_map<unsign
                      const std::unordered_map<std::string, unsigned>& byName) {
   const CarModel base = g_car;
   CarModel chosen = base;
-  CarModel::Fit fits[2];
+  CarModel::Fit fits[3];
   bool haveChosen = false, rejected = false;
-  for (int k = 0; k < 2; ++k) {
-    const char* name = k == 0 ? "i_window_f" : "e_window_f";
+  for (int k = 0; k < 3; ++k) {
+    const char* name = k == 0 ? "i_window_f" : k == 1 ? "e_window_f" : "k_windscreen";
     g_car = base;
     const bool ok = fit_windscreen(d, nodes, byName, name);
     if (g_car.glassMesh) {                             // corners, root frame -> the mesh's node frame
@@ -394,15 +397,16 @@ void load_windscreen(const std::vector<char>& d, const std::unordered_map<unsign
                              p.x * a.A[0][1] + p.y * a.A[1][1] + p.z * a.A[2][1] + a.A[3][1],
                              p.x * a.A[0][2] + p.y * a.A[1][2] + p.z * a.A[2][2] + a.A[3][2] };
       }
+      fits[k].node = g_car.glassNode;
       fits[k].ok = true;
     }
-    if (ok && !haveChosen) { chosen = g_car; chosen.glassName = name; haveChosen = true; }
+    if (ok && !haveChosen && k < 2) { chosen = g_car; chosen.glassName = name; haveChosen = true; }
     rejected |= g_car.glassRejected;
   }
   g_car = chosen;
   if (!haveChosen) g_car.glassRejected = rejected;
-  g_car.fits[0] = fits[0];
-  g_car.fits[1] = fits[1];
+  for (int k = 0; k < 3; ++k) g_car.fits[k] = fits[k];
+  g_car.cockpitMesh = fits[2].ok ? 2 : g_car.glassName == "e_window_f" ? 1 : 0;
 }
 
 void load_car_model(const std::wstring& file) {
@@ -986,10 +990,10 @@ void cockpit_glass_find() {
   if (g_camFrameNo != g_frameNo || !camera_inside()) { g_glassW.clear(); return; }
   const V3 right = norm(row(g_camM, 0)), up = norm(row(g_camM, 1)), fwd = norm(row(g_camM, 2)), cam = row(g_camM, 3);
   const bool prev = g_cgFrame != ~0u && g_cgFrame + 2 >= g_frameNo;
-  float bestScore = 1e9f;
-  CockpitGlass best = {};
+  float bestScore = 1e9f, nearRejected = 1e9f;
+  CockpitGlass best = {}, rejected = {};
   for (const WMat& w : g_glassW)
-    for (int k = 0; k < 2; ++k) {
+    for (int k = 0; k < 3; ++k) {
       if (!g_car.fits[k].ok) continue;
       V3 p[4];
       for (int i = 0; i < 4; ++i) p[i] = to_world(w.m, g_car.fits[k].local[i]);
@@ -1006,20 +1010,32 @@ void cockpit_glass_find() {
       c.camRel = { dot(mid, right), dot(mid, up), dot(mid, fwd) };
       c.mesh = k;
       if (c.camRel.z < 0.2f || c.camRel.z > 2.0f || std::fabs(c.camRel.x) > 0.9f || c.camRel.y < -1.0f || c.camRel.y > 0.8f ||
-          c.wb < 0.5f || c.wb > 2.2f || len(slope) < 0.2f || len(slope) > 1.4f || dot(slope, up) < 0.05f || dot(c.n, fwd) < 0.3f)
+          c.wb < 0.5f || c.wb > 2.2f || len(slope) < 0.2f || len(slope) > 1.4f || dot(slope, up) < 0.05f || dot(c.n, fwd) < 0.3f) {
+        if (k == g_car.cockpitMesh && std::fabs(c.camRel.x) < nearRejected) { nearRejected = std::fabs(c.camRel.x); rejected = c; }
         continue;
-      const float score = std::fabs(c.camRel.x) + (k != (g_car.glassName == "e_window_f" ? 1 : 0) ? 0.3f : 0.0f) + (prev ? 2.0f * len(c.camRel - g_cg.camRel) : 0.0f);
+      }
+      const float score = std::fabs(c.camRel.x) + (k != g_car.cockpitMesh ? 0.3f : 0.0f) + (prev ? 2.0f * len(c.camRel - g_cg.camRel) : 0.0f);
       if (score < bestScore) { bestScore = score; best = c; }
     }
+  const size_t draws = g_glassW.size();
   g_glassW.clear();
-  if (bestScore > 1e8f) { ++g_cgMissed; return; }
+  if (bestScore > 1e8f) {
+    if (draws && ++g_cgMissed == 120) {                 // the windscreen is drawn but no mesh fits it: say why once
+      const V3 sl = rejected.t - rejected.b;
+      hlog(L"headlights: cockpit glass NOT matched (%zu CarGlassInternal draws, mesh %d): nearest %s: %.2f ahead, %+.2f right, "
+           L"%+.2f up, %.2f wide, %.2f long, slope up %.2f, facing %.2f", draws, g_car.cockpitMesh,
+           nearRejected < 1e8f ? L"candidate" : L"none", rejected.camRel.z, rejected.camRel.x, rejected.camRel.y, rejected.wb,
+           len(sl), dot(sl, up), dot(rejected.n, fwd));
+    }
+    return;
+  }
   g_cg = best;
   g_cgFrame = g_frameNo;
   ++g_cgFound;
   if (!g_cgLogged) {
     g_cgLogged = true;
     hlog(L"headlights: cockpit glass (CarGlassInternal x %S): %.2f m ahead of the camera, %+.2f right, %+.2f up, %.2f/%.2f "
-         L"wide, %.2f long", best.mesh == 0 ? "i_window_f" : "e_window_f", best.camRel.z, best.camRel.x, best.camRel.y, best.wb,
+         L"wide, %.2f long", best.mesh == 0 ? "i_window_f" : best.mesh == 1 ? "e_window_f" : "k_windscreen", best.camRel.z, best.camRel.x, best.camRel.y, best.wb,
          best.wt, len(best.t - best.b));
   }
 }
