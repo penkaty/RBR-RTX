@@ -32,6 +32,7 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)** through NVIDIA's [
 1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) (`.7z` opens with [7-Zip](https://www.7-zip.org/)) and unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`.
 2. RSF launcher settings: **Cubic env maps off**, **Render car shadows off**, **Particles off** (Remix uses its own particle renderer). Normal or windowed 'Fullscreen mode' in the launcher is recommended.
 3. Start the game. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
+
 ~~4. Optional: [RBR-RTX-base-mod](https://github.com/penkaty/RBR-RTX-base-mod) adds PBR materials for the original Warthog stages. Install it after RBR-RTX, the same way.~~
 
 **Updating from 0.2 or older:** unpack over the old files, then delete `user.conf` in the RBR folder (and an edited
