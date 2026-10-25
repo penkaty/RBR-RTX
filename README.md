@@ -10,7 +10,7 @@
 
 Path tracing for **Richard Burns Rally + RallySimFans (RSF)** through NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 
-<img src=".github/img/onboard_e30_02.jpg" alt="BMW M3 E30, onboard view, path traced" width="90%">
+<img src=".github/img/aston_030.webp" alt="Aston Martin, path traced, 0.3.0" width="90%">
 
 **This is not a remaster.** The mod only makes RBR readable for RTX Remix. 
 
@@ -104,7 +104,8 @@ the full list is in [Keybinds](docs/keybinds.md).
 - **A pure add-on.** It does not modify or overwrite any game files, it adds `d3d9.dll` and an `rbr-rtx\` folder and uninstalls cleanly.
 
 <div align="center">
-<img src=".github/img/driftdust_e30_02.jpg" alt="BMW M3 E30 drifting with path-traced dust" width="90%">
+<img src=".github/img/bmw_030.webp" alt="BMW, path traced, 0.3.0" width="90%">
+<img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
 </div>
 
 Known issues are listed in [docs/known-issues.md](docs/known-issues.md). Unusual weather (snow, fog, rain, night),
