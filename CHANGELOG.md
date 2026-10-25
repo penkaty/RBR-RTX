@@ -3,7 +3,7 @@
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
 RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing within 0.1 ms.
 
-## 0.3 (candidate, 2026-10-24)
+## 0.3.0 (2026-10-25)
 
 ### Particles, rain, snow and weather on the Remix API
 The game's particles are stacked flat sprites that path tracing renders slowly and wrongly lit. In 0.3 the game makes
