@@ -38,6 +38,10 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)** through NVIDIA's [
 `rbr-rtx\config\keys.ini`). Old saved settings override the new defaults.
 **Uninstall:** run `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added; no game file was ever changed.
 
+<div align="center">
+<img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
+  </div>
+  
 ## Help wanted: sky, sun and weather
 
 So far I have focused on much needed performance fixes and on cutting the unused vertex calls and draws. Still ahead
@@ -105,7 +109,6 @@ the full list is in [Keybinds](docs/keybinds.md).
 
 <div align="center">
 <img src=".github/img/bmw_030.webp" alt="BMW, path traced, 0.3.0" width="90%">
-<img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
 </div>
 
 Known issues are listed in [docs/known-issues.md](docs/known-issues.md). Unusual weather (snow, fog, rain, night),
