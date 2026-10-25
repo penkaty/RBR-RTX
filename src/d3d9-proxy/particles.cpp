@@ -1435,7 +1435,7 @@ void rbrrtx_rain_toggle() {
 void rbrrtx_particles_init(const remixapi_Interface* api) {
   g_api = api;
   g_probe = rbrrtx_env_flag(L"RBRRTX_EMIT_PROBE", false);
-  g_test = rbrrtx_env_flag(L"RBRRTX_PARTICLE_TEST", false);
+  g_test = rbrrtx_env_flag(L"RBRRTX_PARTICLE_TEST", true);   // on in a release; the env var 0 turns it off (user 2026-10-25: release had no particles)
   rbrrtx_config_path(L"RBRRTX_PARTICLES", L"particles.ini", g_cfgPath, MAX_PATH * 2);
   load_cfg();
   if (!api) g_test = false;
@@ -1445,7 +1445,7 @@ void rbrrtx_particles_init(const remixapi_Interface* api) {
   plog(L"particles: Remix dust %s (key %s)%s", g_test ? L"ON" : L"off", rbrrtx_key_name(RBRKEY_DUST),
        api ? L"" : L"; no Remix API");
   g_rainProbe = rbrrtx_env_flag(L"RBRRTX_RAIN_PROBE", false);
-  g_precip = api && rbrrtx_env_flag(L"RBRRTX_PRECIP", false);
+  g_precip = api && rbrrtx_env_flag(L"RBRRTX_PRECIP", true);   // likewise on by default (rain, snow, windscreen drops need it)
   g_replace = g_precip;
   if ((g_rainProbe || g_precip) && !g_rainHooked) install_rain_hook();
   plog(L"rain: Remix rain/snow %s (key %s: Remix <-> game's own)%s", g_precip ? L"ON, game's cut" : L"off",
