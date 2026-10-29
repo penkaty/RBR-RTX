@@ -88,6 +88,7 @@ struct Settings {
   float forward = 0.08f;                               // lamp moved this far ahead of its node (in front of the lens glass)
   float volumetric = 1.0f;                             // volumetricRadianceScale (beams in fog / dust)
   bool fallbackOn = true;                              // keep Remix's fallback light while the lights are on at night
+  float historyFrames = 0.0f;                          // NUMOS froxel history while car lamps are lit (0 = leave NUMOS's)
   V3 fallback = { 0.6f, 0.5f, -1.8f };                 // model offset of the left lamp when the model has none
   // Rear lamps (cone and aim after gta4-rtx: cone 0.6 x + 5; aimed back, 0.2 down). RBR's own lamp sprites are pure
   // red (Cars\*\*_settings.ini Red 255 Green 0 Blue 0). Brightness (user 2026-10-23 tuning, replacing gta4-rtx's
@@ -184,6 +185,14 @@ void load_settings() {
     if (tex[0]) s.popTexture = wcstoull(tex, nullptr, 16);
     s.gameLamps = ini_float(path, L"game_lamps", 1.0f) != 0.0f;
     s.followDrawn = ini_float(path, L"follow_drawn_car", 1.0f) != 0.0f;
+    // Remix Plus + NUMOS (user 2026-10-29): head, brake, tail and reverse lamps x remixplus_intensity (0.5 = half);
+    // the backfire flash is left alone. numos_history_frames: see rbrrtx_headlights_history_frames.
+    if (rbrrtx_remix_plus()) {
+      const float k = std::clamp(ini_float(path, L"remixplus_intensity", 1.0f), 0.0f, 10.0f);
+      for (float* rgb : { s.radiance, s.brightsRadiance, s.brakeRadiance, s.tailRadiance, s.reverseRadiance })
+        for (int i = 0; i < 3; ++i) rgb[i] *= k;
+      s.historyFrames = std::clamp(ini_float(path, L"numos_history_frames", 0.0f), 0.0f, 255.0f);
+    }
     s.outsideForward = std::clamp(ini_float(path, L"outside_view_forward", s.outsideForward), -1.0f, 5.0f);
     s.cockpitForward = std::clamp(ini_float(path, L"cockpit_view_forward", s.cockpitForward), -1.0f, 5.0f);
   }
@@ -815,6 +824,7 @@ bool g_manual = false;                                 // the key was used on th
 bool g_dark = false;                                   // sun below auto_below_sun (last frame)
 int g_track = -1, g_carSlot = -1;
 bool g_emitted = false;
+unsigned g_lampFrame = 0;                              // last frame a car lamp was sent
 struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; float rad[3] = {}; };
 // RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire)
 Lamp g_lamps[8] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
@@ -1173,6 +1183,7 @@ void rbrrtx_headlights_emit() {
   const bool tail = g_cfg.rear && g_mode != kOff;
   if (g_mode == kOff && !braking && !pop && !reversing) return;
   g_emitted = true;
+  g_lampFrame = g_frameNo;
   float C[16];
   if (!place_frame(C)) {
     if (++g_failed <= 5 || g_failed % 600 == 0)
@@ -1373,6 +1384,13 @@ void rbrrtx_headlights_pop_drawn() {
   ++g_popDraws;
   g_popSeen = true;
   g_lastPop = std::chrono::steady_clock::now();
+}
+
+// NUMOS's lamp glow in fog is a froxel grid with 32 frames of history reprojected with the camera only: a lamp that
+// moves with the car leaves a trail (user 2026-10-29). Lamps sent within the last 90 frames (no flapping with brake
+// pulses): the shorter history to ask for, else 0.
+int rbrrtx_headlights_history_frames() {
+  return g_cfg.historyFrames >= 1.0f && g_lampFrame != 0 && g_frameNo - g_lampFrame < 90 ? static_cast<int>(g_cfg.historyFrames) : 0;
 }
 
 bool rbrrtx_headlights_keep_fallback() { return g_mode != kOff && g_cfg.enabled && g_cfg.fallbackOn; }

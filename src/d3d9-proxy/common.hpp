@@ -125,6 +125,7 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
 void rbrrtx_headlights_emit();                                 // once per frame at the first BeginScene (with the sun)
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
 void rbrrtx_headlights_destroy();
+int rbrrtx_headlights_history_frames();                          // NUMOS froxel history while car lamps are lit (0 = none)
 bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
 unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of the backfire sprite to watch for (0 = none now)
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash

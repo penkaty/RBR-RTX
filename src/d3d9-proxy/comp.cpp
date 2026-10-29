@@ -672,6 +672,7 @@ float g_numosSentEl = -1000.0f, g_numosSentAz = -1000.0f, g_numosSentI = -1.0f, 
 bool g_numosGroundCar = true, g_numosGroundManual = false;
 float g_numosGroundOffset = 0.5f, g_numosGround = 0.0f, g_numosGroundSent = -1.0e9f;
 bool g_numosFogAlbedo = true;                          // [numos] fog_albedo_from_game: albedo from the stage's fog colour
+float g_numosFogExtra = 20.0f;                         // [numos] fog_extra: metres added to every fog visibility (user 2026-10-29)
 
 void numos_sun(const float d[3], float elev) {
   if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
@@ -998,6 +999,8 @@ void atmo_load() {
     g_numosGroundOffset = static_cast<float>(_wtof(v));
     g_numosGroundSent = -1.0e9f;                       // send the ground again
     g_numosFogAlbedo = GetPrivateProfileIntW(L"numos", L"fog_albedo_from_game", 1, path) != 0;
+    GetPrivateProfileStringW(L"numos", L"fog_extra", L"20", v, 32, path);
+    g_numosFogExtra = (std::max)(0.0f, static_cast<float>(_wtof(v)));
     clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f; ground %s; "
          L"fog albedo %s", g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity,
          conf_float("rtx.atmosphere.aerosolDensity", 1.1f), g_numosGroundCar ? L"from the car" : L"NUMOS's own (auto)",
@@ -1079,6 +1082,10 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
   } else if (total.fogVis >= 0.0f) {
     vis = total.fogVis > 0.0f ? total.fogVis / dens : 0.0f;
     swprintf_s(fogNote, L"fog_visibility %.0f m / density %.2f", total.fogVis, dens);
+  }
+  if (vis > 0.0f) {                                    // every fog a little clearer (user 2026-10-29: +20 m); 0 stays no fog
+    vis += g_numosFogExtra;
+    swprintf_s(fogNote + wcslen(fogNote), 128 - wcslen(fogNote), L" + %.0f m", g_numosFogExtra);
   }
   atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(vis), fmt1(confFog));
   // The game's fog colour as NUMOS's fog albedo: RBR's night fog is near black (Peklo Snow R 0.01 0.02 0.03), its day fog
@@ -2708,6 +2715,23 @@ void end_frame(IDirect3DDevice9* dev) {
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
   numos_ground();                                      // NUMOS: ground level from the car (no-op without NUMOS)
+  if (g_numos && g_apiOk) {
+    // NUMOS's lamp glow in fog lives in a froxel grid whose history is reprojected with the camera only (aerial-
+    // perspective-v2.md section 2, 32 frames): a lamp that moves with the car leaves a trail that catches up when the car
+    // stops (user 2026-10-29). While any car lamp is lit the history is shortened (headlights.ini numos_history_frames).
+    static float histBase = -1.0f;
+    static int histSent = -1;
+    if (histBase < 0.0f) histBase = conf_float("rtx.atmosphere.aerialPerspectiveHistoryFrames", 32.0f);
+    const int lit = rbrrtx_headlights_history_frames();   // 0 = lamps off / not asked
+    const int want = lit > 0 ? lit : static_cast<int>(histBase);
+    if (want != histSent) {
+      if (histSent >= 0 || lit > 0) {
+        remix_set("rtx.atmosphere.aerialPerspectiveHistoryFrames", std::to_string(want).c_str());
+        clog(L"NUMOS: froxel history %d frames (%s)", want, lit > 0 ? L"car lamps lit: lamp glow follows the car" : L"back to your setting");
+      }
+      histSent = want;
+    }
+  }
   if (g_enabled && g_apiOk && !g_sweep) rbrrtx_windscreen_frame_end();   // drops on the windscreen RBR drew this frame
   rbrrtx_particles_frame_end();                       // particle test key, emit probe report
   {
