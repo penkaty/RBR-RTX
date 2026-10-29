@@ -21,6 +21,10 @@
 // Lights: Remix 1.5.2 keys API lights by hash; re-creating one overwrites it (its RTXDI index resets either way,
 // rtx_lights.cpp copyFrom), and through the bridge every CreateLight takes a new handle, so a moved lamp is
 // destroyed and created again (as the sun) and drawn every frame (DrawLightInstance is per frame).
+// Remix Plus (2026-10-29): re-creating a live hash keeps the light's buffer slot and identity, so there a moved lamp is
+// only created again (one light for its life, no destroy). Cost: the bridge server keeps one ~40-byte handle entry per
+// update until DestroyLight (bridge util_remixapi.h Handle), about 50 MB an hour with four lamps moving every frame,
+// until the bridge forwards UpdateLightDefinition (a stub in Remix Plus 2.0.0's bridge client).
 //
 // Rear (user 2026-10-23): two red spots at Point_light_brake_lb / _rb (on all 109 models; Point_light_lb is broken on
 // some, Fabia R5 evo x = 0), aimed backwards. Tail lights while the headlights are on; brake lights, brighter, whenever
@@ -853,7 +857,10 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
   const bool moved = !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone ||
                      rad[0] != l.rad[0] || rad[1] != l.rad[1] || rad[2] != l.rad[2];
   if (moved) {
-    destroy_lamp(l);
+    // Remix Plus: the same hash again UPDATES the live lamp and keeps its RTXDI/denoiser history (remixplus_api.cpp
+    // header), so the lamp is one light for its whole life. 1.5.2 resets that history on any re-create and the
+    // bridge keeps a handle per create until DestroyLight, so there it is destroyed first (KB headlights.md section 5).
+    if (!rbrrtx_remix_plus()) destroy_lamp(l);
     remixapi_LightInfoSphereEXT sphere = {};
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
     sphere.position = { pos.x, pos.y, pos.z };
@@ -869,9 +876,11 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
     info.pNext = &sphere;
     info.hash = l.hash;
     info.radiance = { rad[0], rad[1], rad[2] };
+    const remixapi_LightHandle old = l.h;
     const remixapi_ErrorCode err = g_api->CreateLight(&info, &l.h);
     if (err != REMIXAPI_ERROR_CODE_SUCCESS) {
-      l.h = nullptr;
+      l.h = old;
+      destroy_lamp(l);                                 // a failed in-place update must not leave the old lamp lit
       if (++g_creates <= 20) hlog(L"headlights: CreateLight failed, error %d", static_cast<int>(err));
       return;
     }

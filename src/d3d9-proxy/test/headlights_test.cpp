@@ -21,6 +21,7 @@ void rbrrtx_log_to(const wchar_t*, const wchar_t* fmt, ...) {
 }
 void rbrrtx_config_path(const wchar_t*, const wchar_t* file, wchar_t* out, size_t size) { swprintf_s(out, size, L"none\\%s", file); }
 bool rbrrtx_key_pressed(int) { return false; }
+bool rbrrtx_remix_plus() { return false; }
 const wchar_t* rbrrtx_key_name(int) { return L"L"; }
 void rbrrtx_report_event(const wchar_t*) {}
 bool rbrrtx_stage_info(RbrStageInfo*) { return false; }

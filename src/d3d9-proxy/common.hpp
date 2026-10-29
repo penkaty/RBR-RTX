@@ -112,6 +112,9 @@ void rbrrtx_exception_trace_install();
 // Fills `nvTable` (a remixapi_Interface, `size` bytes); returns the remixapi_ErrorCode (0 = success).
 int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size);
 unsigned rbrrtx_remixplus_converted();                         // pNext chains rebuilt for Remix Plus so far
+void rbrrtx_remixplus_frame();                                 // after each Present: a new frame for the light hashes
+unsigned rbrrtx_remixplus_renames();                           // light creates renamed (their hash destroyed that frame)
+bool rbrrtx_remix_plus();                                      // comp.cpp: the API runs through remixplus_api.cpp
 
 // headlights.cpp: car headlights as Remix API spot lights (headlights key: two lamps -> brights -> off;
 // on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.

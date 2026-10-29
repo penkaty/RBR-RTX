@@ -13,17 +13,21 @@
 // library as 1.0.0 and fills the caller's NVIDIA-layout table: calls whose input differs go through a converter here,
 // the others are the runtime's own pointers. The rest of the proxy stays on the NVIDIA header, so 1.5.2 still works.
 //
-// Lights: Remix Plus drops a CreateLight whose hash was destroyed in the same frame ("Do not destroy and re-create a
-// light hash within one frame", migration guide section 3, Lights). The sun and every moving lamp are destroyed and
-// created again under one hash (headlights.cpp header: the bridge has no UpdateLightDefinition, it is a stub there), so
-// on Remix Plus they vanished. Each create here gets its own hash (the caller's hash mixed with a counter) and
-// isDynamic = 1 (a light that moves).
+// Lights (2026-10-29 evening): a CreateLight of a hash that is live UPDATES that light in place and keeps its buffer
+// slot and stable identity, so RTXDI and the denoiser keep its history (rtx_light_manager.cpp addExternalLight; NVIDIA's
+// advice too, research/2026-10-22-headlights.md). On Remix Plus the proxy therefore moves a lamp by creating it again
+// under the same hash, without DestroyLight (headlights.cpp draw_lamp, comp.cpp update_sun). Hashes pass unchanged.
+// Remix Plus drops a create whose hash was destroyed in the same frame (migration guide section 3, Lights): only then
+// the create gets another hash (the caller's mixed with a counter), and the caller's later creates follow it.
+// rbrrtx_remixplus_frame (each Present) ends a frame. isDynamic = 1 on every light (they move or change).
 #define REMIX_ALLOW_X86
 #include "common.hpp"
 #include "third_party/remixplus/remix_c.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -48,8 +52,12 @@ struct NvLightInfo {
 constexpr int kNvParticleSystem = 25, kNvGpuInstancing = 26, kNvCameraMedium = 27;
 
 remixapi_Interface g_rp = {};
-uint32_t g_lightCreates = 0;
+uint32_t g_renames = 0;                                // creates that needed another hash (destroyed this frame)
 unsigned g_converted = 0;                              // chains rebuilt (logged once)
+std::unordered_map<uint64_t, uint64_t> g_liveHash;     // caller's hash -> hash of its live light in the runtime
+std::unordered_map<uintptr_t, uint64_t> g_handleHash;  // latest bridge handle of a caller's light -> caller's hash
+std::unordered_map<uint64_t, uintptr_t> g_callerHandle;   // caller's hash -> that latest handle
+std::unordered_set<uint64_t> g_destroyedThisFrame;     // runtime hashes destroyed since the last Present
 
 bool in_module(const void* p, HMODULE module) {
   HMODULE m = nullptr;
@@ -133,13 +141,34 @@ remixapi_ErrorCode REMIXAPI_CALL rp_CreateLight(const remixapi_LightInfo* info, 
   l.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
   Chain c;
   l.pNext = convert_chain(nv->pNext, c);
-  // Never the hash of a light destroyed this frame (the caller's hash mixed with a create counter); never 0.
-  l.hash = nv->hash ^ (static_cast<uint64_t>(++g_lightCreates) * 0x9E3779B97F4A7C15ULL);
-  if (!l.hash) l.hash = 1;
+  const uint64_t caller = nv->hash;
+  const auto live = g_liveHash.find(caller);
+  uint64_t h = live != g_liveHash.end() ? live->second : caller;   // live: update that light in place
+  while (!h || g_destroyedThisFrame.count(h)) h = caller ^ (static_cast<uint64_t>(++g_renames) * 0x9E3779B97F4A7C15ULL);
+  l.hash = h;
   l.radiance = nv->radiance;
   l.isDynamic = 1;
   l.ignoreViewModel = 0;
-  return g_rp.CreateLight(&l, out);
+  const remixapi_ErrorCode err = g_rp.CreateLight(&l, out);
+  if (err != REMIXAPI_ERROR_CODE_SUCCESS || !out) return err;
+  g_liveHash[caller] = h;
+  const auto prev = g_callerHandle.find(caller);       // the caller keeps only its newest handle
+  if (prev != g_callerHandle.end()) g_handleHash.erase(prev->second);
+  g_callerHandle[caller] = reinterpret_cast<uintptr_t>(*out);
+  g_handleHash[reinterpret_cast<uintptr_t>(*out)] = caller;
+  return err;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL rp_DestroyLight(remixapi_LightHandle handle) {
+  const auto it = g_handleHash.find(reinterpret_cast<uintptr_t>(handle));
+  if (it != g_handleHash.end()) {
+    const uint64_t caller = it->second;
+    const auto live = g_liveHash.find(caller);
+    if (live != g_liveHash.end()) { g_destroyedThisFrame.insert(live->second); g_liveHash.erase(live); }
+    g_callerHandle.erase(caller);
+    g_handleHash.erase(it);
+  }
+  return g_rp.DestroyLight(handle);
 }
 
 }  // namespace
@@ -167,7 +196,7 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
   t.DestroyMesh = reinterpret_cast<void*>(g_rp.DestroyMesh);
   t.DrawInstance = g_rp.DrawInstance ? reinterpret_cast<void*>(&rp_DrawInstance) : nullptr;
   t.CreateLight = reinterpret_cast<void*>(&rp_CreateLight);
-  t.DestroyLight = reinterpret_cast<void*>(g_rp.DestroyLight);
+  t.DestroyLight = reinterpret_cast<void*>(&rp_DestroyLight);
   t.DrawLightInstance = reinterpret_cast<void*>(g_rp.DrawLightInstance);
   t.SetConfigVariable = reinterpret_cast<void*>(g_rp.SetConfigVariable);
   // SetupCamera, the dxvk_ and pick_ calls, Startup, Present: null through the bridge, and the proxy calls none of them.
@@ -176,3 +205,7 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
 }
 
 unsigned rbrrtx_remixplus_converted() { return g_converted; }
+
+void rbrrtx_remixplus_frame() { g_destroyedThisFrame.clear(); }
+
+unsigned rbrrtx_remixplus_renames() { return g_renames; }

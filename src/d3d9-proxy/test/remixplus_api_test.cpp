@@ -1,5 +1,6 @@
 // remixplus_api_test.cpp - remixplus_api.cpp against a fake Remix Plus runtime in this exe: the NVIDIA-layout table it
-// fills, lights (own hash per create, isDynamic), particle sType 25 -> 26, the opaque material's bigger struct.
+// fills, lights (stable hash = in-place update, renamed only after a destroy in the same frame, isDynamic), particle
+// sType 25 -> 26, the opaque material's bigger struct.
 // Build (x86 cl, from src\d3d9-proxy):
 //   cl /nologo /EHsc /std:c++17 /DUNICODE /D_UNICODE test\remixplus_api_test.cpp remixplus_api.cpp /Fe:test\remixplus_api_test.exe /Fo:obj\
 // Run: test\remixplus_api_test.exe
@@ -24,10 +25,11 @@ int g_particleSType = 0;
 remixapi_MaterialInfoOpaqueEXT g_opaque = {};
 int g_destroyed = 0;
 
+uintptr_t g_nextHandle = 0x100;                        // the bridge client gives every create a new uid
 remixapi_ErrorCode REMIXAPI_CALL fake_CreateLight(const remixapi_LightInfo* info, remixapi_LightHandle* out) {
   g_light = *info;
   if (info->pNext) g_sphere = *static_cast<const remixapi_LightInfoSphereEXT*>(info->pNext);
-  *out = reinterpret_cast<remixapi_LightHandle>(static_cast<uintptr_t>(0x100));
+  *out = reinterpret_cast<remixapi_LightHandle>(g_nextHandle++);
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 remixapi_ErrorCode REMIXAPI_CALL fake_DestroyLight(remixapi_LightHandle) { ++g_destroyed; return REMIXAPI_ERROR_CODE_SUCCESS; }
@@ -59,7 +61,7 @@ extern "C" remixapi_ErrorCode REMIXAPI_CALL fake_init(const remixapi_InitializeL
 int main() {
   void* table[22] = {};
   CHECK(rbrrtx_remixplus_init(GetModuleHandleW(nullptr), table, sizeof(table)) == 0);
-  CHECK(table[7] != nullptr && table[8] == reinterpret_cast<void*>(&fake_DestroyLight));   // NVIDIA slots 7, 8, 9
+  CHECK(table[7] != nullptr && table[8] != nullptr);   // NVIDIA slots 7, 8, 9 (create and destroy go through the adapter)
   CHECK(table[9] == reinterpret_cast<void*>(&fake_DrawLightInstance));
   CHECK(table[5] == nullptr);                                                               // SetupCamera: none
 
@@ -76,12 +78,26 @@ int main() {
   auto createLight = reinterpret_cast<PFN_remixapi_CreateLight>(table[7]);
   remixapi_LightHandle h = nullptr;
   CHECK(createLight(reinterpret_cast<const remixapi_LightInfo*>(&nv), &h) == REMIXAPI_ERROR_CODE_SUCCESS);
-  const uint64_t first = g_light.hash;
   CHECK(g_light.isDynamic == 1 && g_light.ignoreViewModel == 0);
   CHECK(g_light.radiance.z == 3.0f && g_sphere.radius == 0.05f);
-  CHECK(first != 0 && first != nv.hash);
+  CHECK(g_light.hash == nv.hash);                      // the caller's hash passes unchanged
   createLight(reinterpret_cast<const remixapi_LightInfo*>(&nv), &h);
-  CHECK(g_light.hash != first);                        // same caller hash, re-created: a new hash each time
+  CHECK(g_light.hash == nv.hash);                      // moved: the same hash again = an in-place update
+
+  // Destroyed and created again in one frame: Remix Plus would drop the create, so it gets another hash, and the
+  // caller's next create (in place) keeps that one. After a Present the caller's own hash is free again.
+  auto destroyLight = reinterpret_cast<PFN_remixapi_DestroyLight>(table[8]);
+  CHECK(destroyLight(h) == REMIXAPI_ERROR_CODE_SUCCESS && g_destroyed == 1);
+  createLight(reinterpret_cast<const remixapi_LightInfo*>(&nv), &h);
+  const uint64_t renamed = g_light.hash;
+  CHECK(renamed != nv.hash && renamed != 0 && rbrrtx_remixplus_renames() == 1);
+  createLight(reinterpret_cast<const remixapi_LightInfo*>(&nv), &h);
+  CHECK(g_light.hash == renamed);
+  rbrrtx_remixplus_frame();
+  destroyLight(h);
+  rbrrtx_remixplus_frame();
+  createLight(reinterpret_cast<const remixapi_LightInfo*>(&nv), &h);
+  CHECK(g_light.hash == nv.hash && rbrrtx_remixplus_renames() == 1);
 
   // Particle system: NVIDIA sType 25 -> Remix Plus 26 (TEXTURE_INFO took 25).
   remixapi_InstanceInfoParticleSystemEXT ps = {};

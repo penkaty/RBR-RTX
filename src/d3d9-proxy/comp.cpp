@@ -655,6 +655,15 @@ float g_numosAzOffset = 0.0f, g_numosAzSign = 1.0f;
 float g_numosSunIntensity = 1.09f, g_numosLightScale = 1.0f;   // the conf's rtx.atmosphere.sunIntensity / directionalLightRadianceScale
 float g_numosSunWeather = 1.0f;                        // atmosphere.ini "sun" factors (per-stage softer sun)
 float g_numosSentEl = -1000.0f, g_numosSentAz = -1000.0f, g_numosSentI = -1.0f, g_numosSentL = -1.0f;
+// NUMOS ground level (run 20261029-045150, marks on Witoszow and Peklo, sweep on Legazpi: a grey wall over the whole
+// view, the dashboard included, on forest stages; open Gestel was fine). NUMOS's automatic ground level comes from
+// rays cast down from 4 km above the camera, smoothed over 4 km (numos renderer.cpp updateGroundLevel); over forest
+// they land on the canopy, so "ground" sits above the road and the camera underground, where the height fog and the
+// atmosphere no longer hold. [numos] ground = car (default): groundLevelAuto off and groundLevelWorldUnits = the car's
+// height - ground_offset, low-passed over 3 s (jumps at a new stage), sent when it moved 1 m. ground = auto: NUMOS's own.
+bool g_numosGroundCar = true, g_numosGroundManual = false;
+float g_numosGroundOffset = 0.5f, g_numosGround = 0.0f, g_numosGroundSent = -1.0e9f;
+bool g_numosFogAlbedo = true;                          // [numos] fog_albedo_from_game: albedo from the stage's fog colour
 
 void numos_sun(const float d[3], float elev) {
   if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
@@ -686,6 +695,41 @@ void numos_sun(const float d[3], float elev) {
   }
 }
 
+void numos_ground() {
+  if (!g_numos || !g_apiOk || !g_enabled) return;
+  if (!g_numosGroundCar || g_inMenu || !g_haveCar) {   // menu or ground = auto: NUMOS measures again
+    if (g_numosGroundManual) {
+      remix_set("rtx.atmosphere.groundLevelAuto", "True");
+      g_numosGroundManual = false;
+      g_numosGroundSent = -1.0e9f;
+      clog(L"NUMOS ground: automatic again (%s)", g_numosGroundCar ? L"no stage" : L"[numos] ground = auto");
+    }
+    return;
+  }
+  static ULONGLONG last = 0;
+  static int track = -1;
+  const ULONGLONG now = GetTickCount64();
+  const float dt = last ? (std::min)(static_cast<float>(now - last) * 0.001f, 0.5f) : 0.0f;
+  last = now;
+  const float target = g_carPos[1] - g_numosGroundOffset;
+  if (!g_numosGroundManual || track != g_atmoStage.trackId) g_numosGround = target;   // a new stage: jump there
+  else g_numosGround += (target - g_numosGround) * (std::min)(1.0f, dt / 3.0f);
+  char v[32];
+  if (!g_numosGroundManual) {
+    remix_set("rtx.atmosphere.groundLevelAuto", "False");
+    g_numosGroundManual = true;
+  }
+  if (track != g_atmoStage.trackId || std::fabs(g_numosGround - g_numosGroundSent) >= 1.0f) {
+    if (track != g_atmoStage.trackId)
+      clog(L"NUMOS ground: from the car, %.1f (car height %.1f - %.2f m); stage %d", g_numosGround, g_carPos[1],
+           g_numosGroundOffset, g_atmoStage.trackId);
+    track = g_atmoStage.trackId;
+    sprintf_s(v, "%.2f", g_numosGround);
+    remix_set("rtx.atmosphere.groundLevelWorldUnits", v);
+    g_numosGroundSent = g_numosGround;
+  }
+}
+
 void update_sun() {
   if (!g_cset[41] && !g_sunManual) return;
   float d[3] = { g_c[41][0], g_c[41][1], g_c[41][2] };  // direction the light travels: y < 0 = sun above the horizon
@@ -713,7 +757,9 @@ void update_sun() {
   const float cosDelta = d[0] * g_sunDir[0] + d[1] * g_sunDir[1] + d[2] * g_sunDir[2];
   if (!g_sun || cosDelta < 0.99999f || std::fabs(fade - g_sunFade) > 0.02f) {   // ~0.25 degrees: lights are immutable, so recreate
     g_sunFade = fade;
-    if (g_sun) g_api.DestroyLight(g_sun);
+    // Remix Plus: the same hash again updates the live sun in place (remixplus_api.cpp header): no destroy.
+    const remixapi_LightHandle oldSun = g_sun;
+    if (g_sun && !g_remixPlus) g_api.DestroyLight(g_sun);
     g_sun = nullptr;
     remixapi_LightInfoDistantEXT distant = {};
     distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
@@ -732,7 +778,11 @@ void update_sun() {
       clog(L"sun: %s light, direction (%.3f, %.3f, %.3f), radiance (%.2f, %.2f, %.2f), error %d",
            g_sunCreates == 1 ? L"created" : L"re-created", d[0], d[1], d[2],
            g_sunRadiance[0] * k, g_sunRadiance[1] * k, g_sunRadiance[2] * k, static_cast<int>(err));
-    if (err != REMIXAPI_ERROR_CODE_SUCCESS) { g_sun = nullptr; return; }
+    if (err != REMIXAPI_ERROR_CODE_SUCCESS) {
+      if (oldSun && g_remixPlus) g_api.DestroyLight(oldSun);   // a failed in-place update: the old sun goes
+      g_sun = nullptr;
+      return;
+    }
   }
   g_api.DrawLightInstance(g_sun);
 }
@@ -920,8 +970,16 @@ void atmo_load() {
     g_numosSunIntensity = conf_float("rtx.atmosphere.sunIntensity", 1.09f);
     g_numosLightScale = conf_float("rtx.atmosphere.directionalLightRadianceScale", 1.0f);
     g_numosSentEl = g_numosSentAz = -1000.0f;          // send the sun again (the [numos] corrections may have changed)
-    clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f",
-         g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity, conf_float("rtx.atmosphere.aerosolDensity", 1.1f));
+    GetPrivateProfileStringW(L"numos", L"ground", L"car", v, 32, path);
+    g_numosGroundCar = _wcsicmp(v, L"auto") != 0;
+    GetPrivateProfileStringW(L"numos", L"ground_offset", L"0.5", v, 32, path);
+    g_numosGroundOffset = static_cast<float>(_wtof(v));
+    g_numosGroundSent = -1.0e9f;                       // send the ground again
+    g_numosFogAlbedo = GetPrivateProfileIntW(L"numos", L"fog_albedo_from_game", 1, path) != 0;
+    clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f; ground %s; "
+         L"fog albedo %s", g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity,
+         conf_float("rtx.atmosphere.aerosolDensity", 1.1f), g_numosGroundCar ? L"from the car" : L"NUMOS's own (auto)",
+         g_numosFogAlbedo ? L"from the stage's fog colour" : L"presets / conf");
   }
   clog(L"atmosphere: %s, %zu regions, %zu weather sections from %s; base haze %.0f m colour (%.2f %.2f %.2f) sky %.2f",
        g_atmoEnabled ? L"on" : L"off (enable = 0)", g_atmoRegions.size(), g_atmoSections.size(), path, g_atmoBase.dist,
@@ -1001,13 +1059,20 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
     swprintf_s(fogNote, L"fog_visibility %.0f m / density %.2f", total.fogVis, dens);
   }
   atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(vis), fmt1(confFog));
+  // The game's fog colour as NUMOS's fog albedo: RBR's night fog is near black (Peklo Snow R 0.01 0.02 0.03), its day fog
+  // near white. NUMOS's own 0.9 lit a night fog into a bright wall. Only when the stage's fog is on.
+  const float confAlbedo = conf_float("rtx.atmosphere.fogAlbedo", 0.9f);
+  float albedo = confAlbedo;
+  if (g_numosFogAlbedo && sw.found && sw.useFog && sw.fogCol[0] >= 0.0f && sw.fogCol[1] >= 0.0f && sw.fogCol[2] >= 0.0f)
+    albedo = std::clamp(0.95f * (std::max)({ sw.fogCol[0], sw.fogCol[1], sw.fogCol[2] }), 0.03f, 0.95f);
+  atmo_send("rtx.atmosphere.fogAlbedo", fmt1(albedo), fmt1(confAlbedo));
   g_numosSunWeather = total.sun;
-  wchar_t line[640];
+  wchar_t line[1024];
   swprintf_s(line, L"NUMOS: stage %d %s (%S, region %s), sky %s, clouds %s, %s%s -> weather ids \"%S\"; fog visibility %.0f m (%s), "
-                   L"aerosol x%.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
+                   L"fog albedo %.2f, aerosol x%.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
              si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region, sky.c_str(), clouds.c_str(),
-             tod.c_str(), g_stageWxNamed ? L" (from the stage's description)" : L"", ids.c_str(), vis, fogNote, total.aerosol,
-             total.sun, g_sunFallbackAz, g_sunFallbackEl, sunFrom);
+             tod.c_str(), g_stageWxNamed ? L" (from the stage's description)" : L"", ids.c_str(), vis, fogNote, albedo,
+             total.aerosol, total.sun, g_sunFallbackAz, g_sunFallbackEl, sunFrom);
   g_atmoLine = line;
   clog(L"atmosphere: %s", line);
 }
@@ -2619,6 +2684,7 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
+  numos_ground();                                      // NUMOS: ground level from the car (no-op without NUMOS)
   if (g_enabled && g_apiOk && !g_sweep) rbrrtx_windscreen_frame_end();   // drops on the windscreen RBR drew this frame
   rbrrtx_particles_frame_end();                       // particle test key, emit probe report
   {
@@ -2940,7 +3006,9 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
 
 HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* src, const RECT* dst, HWND wnd, const RGNDATA* dirty) {
   end_frame(dev);
-  return o.Present(dev, src, dst, wnd, dirty);
+  const HRESULT hr = o.Present(dev, src, dst, wnd, dirty);
+  if (g_remixPlus) rbrrtx_remixplus_frame();           // light destroys before this Present no longer block their hash
+  return hr;
 }
 
 void remember_backbuffer(IDirect3DDevice9* dev) {
@@ -4110,3 +4178,5 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
   patch(&d3d->lpVtbl->CreateDevice, &hk_CreateDevice, o.CreateDevice);
   clog(L"comp installed on IDirect3D9 %p", d3d9);
 }
+
+bool rbrrtx_remix_plus() { return g_remixPlus; }
