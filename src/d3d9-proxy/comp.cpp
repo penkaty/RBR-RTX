@@ -288,6 +288,7 @@ bool g_haveCam = false, g_frameCam = false;
 D3DMATRIX g_V = {}, g_P = {};
 float g_carPos[3] = {};                               // last car draw's world position (culling keep radius)
 bool g_haveCar = false;
+unsigned g_carDraws = 0;                               // car draws seen (NUMOS ground: a fresh position after a load)
 DMat g_VPinv = {};
 void* g_curVS = nullptr;
 const ShaderInfo* g_curInfo = nullptr;
@@ -554,6 +555,7 @@ void load_vso_hashes() {
 // ---------------------------------------------------------------- sun light (Remix API)
 
 float conf_float(const char* name, float dflt);
+void remix_set(const char* key, const char* value);
 
 void init_remix_api() {
   if (!g_sunWanted || !g_backend) return;
@@ -572,6 +574,12 @@ void init_remix_api() {
     g_apiOk = g_remixPlus = err == REMIXAPI_ERROR_CODE_SUCCESS;
     if (g_apiOk) {
       g_numos = conf_float("rtx.skyMode", 0.0f) >= 0.5f && rbrrtx_env_flag(L"RBRRTX_NUMOS", true);
+      // Only NUMOS fogs (user 2026-10-29). rtx.enableFog is Remix's composite of the GAME's D3D9 fog states (RBR's fog
+      // shaders, and the FF scenery draws with D3DRS_FOGENABLE): on Remix Plus its colour is scaled by the renderer's
+      // pre-exposure (rtx_composite.cpp), so a few % of linear fog at the dashboard became a grey wall over the whole
+      // view (run 20261029-053643: Witoszow, Legazpi, Peklo; NUMOS settings changed nothing). The stage's fog reaches
+      // NUMOS instead (numos_weather). Also off in config-remixplus\rtx.conf; sent here so no saved layer brings it back.
+      if (g_numos) remix_set("rtx.enableFog", "False");
       clog(L"sun: Remix API ready (Remix Plus, API 1.0.0 through remixplus_api.cpp); NUMOS sky %s", g_numos
            ? L"on: the sun, weather and fog go to rtx.atmosphere.* / rtx.weather.*, no proxy sun light"
            : L"off (rtx.skyMode is not 1): the proxy's own sun and haze as on Remix 1.5.2");
@@ -697,8 +705,19 @@ void numos_sun(const float d[3], float elev) {
 
 void numos_ground() {
   if (!g_numos || !g_apiOk || !g_enabled) return;
+  // Run 20261029-053643: pauses, replays and loads flip g_inMenu for a moment, and the first value of a stage was the
+  // car of the loading screen (-1.5 on every stage). So: auto again only after 3 s out of a stage, and a stage's first
+  // value only after 30 fresh car draws.
+  static ULONGLONG last = 0, outSince = 0;
+  static unsigned enterDraws = 0;
+  static bool waiting = true;
+  static int track = -1, pendingTrack = -1;
+  const ULONGLONG now = GetTickCount64();
   if (!g_numosGroundCar || g_inMenu || !g_haveCar) {   // menu or ground = auto: NUMOS measures again
-    if (g_numosGroundManual) {
+    if (!outSince) outSince = now;
+    waiting = true;
+    pendingTrack = -1;
+    if (g_numosGroundManual && (!g_numosGroundCar || now - outSince > 3000)) {
       remix_set("rtx.atmosphere.groundLevelAuto", "True");
       g_numosGroundManual = false;
       g_numosGroundSent = -1.0e9f;
@@ -706,9 +725,12 @@ void numos_ground() {
     }
     return;
   }
-  static ULONGLONG last = 0;
-  static int track = -1;
-  const ULONGLONG now = GetTickCount64();
+  outSince = 0;
+  if (waiting || track != g_atmoStage.trackId) {
+    if (!waiting || pendingTrack != g_atmoStage.trackId) { waiting = true; pendingTrack = g_atmoStage.trackId; enterDraws = g_carDraws; }
+    if (g_carDraws - enterDraws < 30) return;
+    waiting = false;
+  }
   const float dt = last ? (std::min)(static_cast<float>(now - last) * 0.001f, 0.5f) : 0.0f;
   last = now;
   const float target = g_carPos[1] - g_numosGroundOffset;
@@ -2133,6 +2155,7 @@ bool before_draw(IDirect3DDevice9* dev) {
   if (g_curInfo && (g_curInfo->flags & SH_CAR)) {      // the car's position: centre of the culling keep radius
     g_carPos[0] = world._41; g_carPos[1] = world._42; g_carPos[2] = world._43;
     g_haveCar = true;
+    ++g_carDraws;
     DWORD blend = FALSE;                               // the ghost car is drawn blended (opacity 0.4)
     dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
     rbrrtx_headlights_car_draw(&world._11, g_pendingPrims, blend != FALSE, (g_curInfo->flags & SH_GLASS) != 0);
