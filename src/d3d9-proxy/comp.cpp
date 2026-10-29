@@ -351,6 +351,11 @@ unsigned g_frame = 0, g_detailFrames = 0;
 
 remixapi_Interface g_api = {};
 bool g_apiOk = false, g_sunWanted = true, g_sunOn = true, g_sunDrawn = false;
+// Remix Plus (remixplus_api.cpp) and its NUMOS sky (rtx.skyMode = 1 in the conf Remix reads; RBRRTX_NUMOS=0 turns the
+// NUMOS handling off). NUMOS draws the sky, clouds and fog and lights the scene with its own sun and moon
+// (tools/ref/remixplus/docs/RemixSkyAPI.md), so with it the proxy creates no sun light: the sun's direction, the
+// weather and the stage fog go to NUMOS as options (numos_sun, atmo_frame). Config: rbr-rtx\config-remixplus\.
+bool g_remixPlus = false, g_numos = false;
 remixapi_LightHandle g_sun = nullptr;
 float g_sunDir[3] = {}, g_sunRadiance[3] = { 6.0f, 5.7f, 5.2f };
 unsigned g_sunCreates = 0;
@@ -548,6 +553,8 @@ void load_vso_hashes() {
 
 // ---------------------------------------------------------------- sun light (Remix API)
 
+float conf_float(const char* name, float dflt);
+
 void init_remix_api() {
   if (!g_sunWanted || !g_backend) return;
   auto init = reinterpret_cast<PFN_remixapi_InitializeLibrary>(GetProcAddress(g_backend, "remixapi_InitializeLibrary"));
@@ -555,12 +562,23 @@ void init_remix_api() {
   remixapi_InitializeLibraryInfo info = {};
   info.sType = REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
   info.version = REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR, REMIXAPI_VERSION_MINOR, REMIXAPI_VERSION_PATCH);
-  const remixapi_ErrorCode err = init(&info, &g_api);
+  remixapi_ErrorCode err = init(&info, &g_api);
   g_apiOk = err == REMIXAPI_ERROR_CODE_SUCCESS && in_backend(reinterpret_cast<const void*>(g_api.CreateLight)) &&
             in_backend(reinterpret_cast<const void*>(g_api.DestroyLight)) &&
             in_backend(reinterpret_cast<const void*>(g_api.DrawLightInstance));
-  if (g_apiOk) clog(L"sun: Remix API ready");
-  else if (err == REMIXAPI_ERROR_CODE_NOT_INITIALIZED) clog(L"sun: Remix API refused; set exposeRemixApi = True in .trex\\bridge.conf");
+  if (err == REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION) {   // Remix Plus (API 1.x): through remixplus_api.cpp
+    g_api = {};
+    err = static_cast<remixapi_ErrorCode>(rbrrtx_remixplus_init(g_backend, &g_api, sizeof(g_api)));
+    g_apiOk = g_remixPlus = err == REMIXAPI_ERROR_CODE_SUCCESS;
+    if (g_apiOk) {
+      g_numos = conf_float("rtx.skyMode", 0.0f) >= 0.5f && rbrrtx_env_flag(L"RBRRTX_NUMOS", true);
+      clog(L"sun: Remix API ready (Remix Plus, API 1.0.0 through remixplus_api.cpp); NUMOS sky %s", g_numos
+           ? L"on: the sun, weather and fog go to rtx.atmosphere.* / rtx.weather.*, no proxy sun light"
+           : L"off (rtx.skyMode is not 1): the proxy's own sun and haze as on Remix 1.5.2");
+    }
+  } else if (g_apiOk) clog(L"sun: Remix API ready");
+  if (g_apiOk) return;
+  if (err == REMIXAPI_ERROR_CODE_NOT_INITIALIZED) clog(L"sun: Remix API refused; set exposeRemixApi = True in .trex\\bridge.conf");
   else clog(L"sun: Remix API unavailable (error %d)", static_cast<int>(err));
 }
 
@@ -627,6 +645,47 @@ void sun_rule(float d[3]) {
   }
 }
 
+void remix_set(const char* key, const char* value);
+
+// NUMOS sun (g_numos): the direction the proxy would light with (sun_rule, debug sun) as NUMOS angles. NUMOS's sun points
+// to (cos e sin a, sin e, cos e cos a) in Remix's world (Y up, numos renderer.cpp updateCelestial), so a = atan2(x, z)
+// of the vector to the sun, -d. config-remixplus\atmosphere.ini [numos] azimuth_offset / azimuth_sign correct it if
+// the shadows turn out mirrored or rotated against the stage's baked ones. Sent when it moved 0.05 degrees.
+float g_numosAzOffset = 0.0f, g_numosAzSign = 1.0f;
+float g_numosSunIntensity = 1.09f, g_numosLightScale = 1.0f;   // the conf's rtx.atmosphere.sunIntensity / directionalLightRadianceScale
+float g_numosSunWeather = 1.0f;                        // atmosphere.ini "sun" factors (per-stage softer sun)
+float g_numosSentEl = -1000.0f, g_numosSentAz = -1000.0f, g_numosSentI = -1.0f, g_numosSentL = -1.0f;
+
+void numos_sun(const float d[3], float elev) {
+  if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
+  if (!g_apiOk || !g_enabled) return;
+  float az = std::atan2(-d[0], -d[2]) * 57.2958f * g_numosAzSign + g_numosAzOffset;
+  az = std::fmod(az + 720.0f, 360.0f);
+  char v[32];
+  const float dAz = std::fabs(std::remainder(az - g_numosSentAz, 360.0f));
+  if (std::fabs(elev - g_numosSentEl) >= 0.05f || dAz >= 0.05f) {
+    sprintf_s(v, "%.3f", elev);
+    remix_set("rtx.atmosphere.sunElevation", v);
+    sprintf_s(v, "%.3f", az);
+    remix_set("rtx.atmosphere.sunRotation", v);
+    if (g_numosSentEl < -999.0f) clog(L"NUMOS sun: elevation %.1f, rotation %.1f (proxy direction %.3f %.3f %.3f)", elev, az, d[0], d[1], d[2]);
+    g_numosSentEl = elev;
+    g_numosSentAz = az;
+  }
+  const float k = g_numosSunIntensity * g_sunScale * g_numosSunWeather;   // sun_brighter / sun_dimmer keys, stage factor
+  if (std::fabs(k - g_numosSentI) > 0.001f) {
+    sprintf_s(v, "%.4f", k);
+    remix_set("rtx.atmosphere.sunIntensity", v);
+    g_numosSentI = k;
+  }
+  const float l = g_sunOn ? g_numosLightScale : 0.0f;  // sun key: NUMOS's sun and moon light off, the sky stays
+  if (l != g_numosSentL) {
+    sprintf_s(v, "%.3f", l);
+    remix_set("rtx.atmosphere.directionalLightRadianceScale", v);
+    g_numosSentL = l;
+  }
+}
+
 void update_sun() {
   if (!g_cset[41] && !g_sunManual) return;
   float d[3] = { g_c[41][0], g_c[41][1], g_c[41][2] };  // direction the light travels: y < 0 = sun above the horizon
@@ -643,6 +702,7 @@ void update_sun() {
   for (float& v : d) v /= len;
   const float elev = std::asin(std::clamp(-d[1], -1.0f, 1.0f)) * 57.2958f;
   g_sunShownEl = elev;                                 // also with the sun key off: the headlights' automatic switch
+  if (g_numos) { numos_sun(d, elev); return; }
   if (!g_apiOk || !g_enabled || !g_sunOn) return;
   const float fade = std::clamp((elev + 4.0f) / 6.0f, 0.0f, 1.0f);   // twilight: full at +2, gone at -4 degrees
   if (fade <= 0.0f) {                                  // night: no sun light at all
@@ -711,7 +771,8 @@ float conf_float(const char* name, float dflt) {
 void debug_sky() {
   static float evMinBase = 0.0f, evMax = 4.0f, evMinSet = -100.0f;
   static bool confRead = false;
-  if (!g_apiOk || !g_api.SetConfigVariable) return;
+  // Remix Plus: NUMOS dims its own sky; its rebuilt auto exposure has no evMinValue.
+  if (!g_apiOk || !g_api.SetConfigVariable || g_remixPlus) return;
   if (!confRead) {                                     // g_skyBase may already come from the stage atmosphere
     confRead = true;
     if (g_skyBase < 0.0f) g_skyBase = conf_float("rtx.skyBrightness", 1.0f);
@@ -760,6 +821,8 @@ struct AtmoFactors {
   float albedo = -1.0f, aniso = -1000.0f;              // absolute values when set
   float sunMaxElev = -1.0f;                            // absolute when set: fallback sun cap (deg)
   float fbAz = -1000.0f, fbEl = -1.0f;                 // absolute when set: fallback sun "azimuth, elevation" (deg)
+  float aerosol = 1.0f;                                // NUMOS: x rtx.atmosphere.aerosolDensity (region haze)
+  float fogVis = -1.0f;                                // NUMOS, absolute when set: fog visibility (m) without stage fog
 };
 struct AtmoRegion { std::wstring name; std::vector<std::wstring> countries; AtmoFactors f; };
 bool g_atmoEnabled = true, g_atmoLoaded = false;
@@ -796,6 +859,8 @@ AtmoFactors atmo_read(const wchar_t* path, const wchar_t* sec) {
   if (GetPrivateProfileStringW(sec, L"fallback_sun", L"", v, 128, path)) swscanf_s(v, L"%f , %f", &f.fbAz, &f.fbEl);
   if (GetPrivateProfileStringW(sec, L"density", L"", v, 128, path)) f.density = static_cast<float>(_wtof(v));
   if (GetPrivateProfileStringW(sec, L"stage_fog", L"", v, 128, path)) f.stageFog = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"aerosol", L"", v, 128, path)) f.aerosol = static_cast<float>(_wtof(v));
+  if (GetPrivateProfileStringW(sec, L"fog_visibility", L"", v, 128, path)) f.fogVis = static_cast<float>(_wtof(v));
   return f;
 }
 
@@ -846,6 +911,18 @@ void atmo_load() {
   conf_vec3("rtx.volumetrics.singleScatteringAlbedo", g_atmoBase.albedo, 0.999f);
   g_atmoBase.aniso = conf_float("rtx.volumetrics.anisotropy", 0.0f);
   g_atmoBase.sky = conf_float("rtx.skyBrightness", 1.0f);
+  if (g_numos) {
+    wchar_t v[32] = {};
+    GetPrivateProfileStringW(L"numos", L"azimuth_offset", L"0", v, 32, path);
+    g_numosAzOffset = static_cast<float>(_wtof(v));
+    GetPrivateProfileStringW(L"numos", L"azimuth_sign", L"1", v, 32, path);
+    g_numosAzSign = _wtof(v) < 0.0 ? -1.0f : 1.0f;
+    g_numosSunIntensity = conf_float("rtx.atmosphere.sunIntensity", 1.09f);
+    g_numosLightScale = conf_float("rtx.atmosphere.directionalLightRadianceScale", 1.0f);
+    g_numosSentEl = g_numosSentAz = -1000.0f;          // send the sun again (the [numos] corrections may have changed)
+    clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f",
+         g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity, conf_float("rtx.atmosphere.aerosolDensity", 1.1f));
+  }
   clog(L"atmosphere: %s, %zu regions, %zu weather sections from %s; base haze %.0f m colour (%.2f %.2f %.2f) sky %.2f",
        g_atmoEnabled ? L"on" : L"off (enable = 0)", g_atmoRegions.size(), g_atmoSections.size(), path, g_atmoBase.dist,
        g_atmoBase.col[0], g_atmoBase.col[1], g_atmoBase.col[2], g_atmoBase.sky);
@@ -885,6 +962,55 @@ std::wstring car_desc(int carId) {
 StageWeather g_stageWx;
 WeatherText g_stageWxText;
 bool g_stageWxNamed = false;
+
+// NUMOS weather (g_numos, user 2026-10-29: the game's chosen weather and conditions, through NUMOS). Per stage/weather:
+//  - rtx.weather.gameWeather = the ids below, most specific first; the first one a preset binds wins (RemixSkyAPI.md
+//    section 2). Presets: config-remixplus\weather\rbr-*.conf (weather.bindings = HeavyRain, LightFog_HeavyCloud, ...),
+//    edited in Alt+X > Sky > Weather. They leave the fog out, so the stage's own fog below shows.
+//  - rtx.atmosphere.fogVisibilityMeters from the stage's FogEnd (stage_fog = s: FogEnd / s, all fogged at FogEnd as
+//    on the raster image) or fog_visibility = m (0 = none) of the atmosphere.ini sections; density divides it.
+//  - rtx.atmosphere.aerosolDensity = the conf value x the sections' aerosol factors (region haze); presets written
+//    "aerosolDensity = x<v>" multiply this.
+//  - rtx.skyProvider.worldChangeCount: bumped for every new stage, so NUMOS measures the ground level again.
+// The sun stays the proxy's (update_sun -> numos_sun); the "sun" factors scale NUMOS's sunIntensity (softer per stage).
+void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::wstring& clouds, const std::wstring& tod,
+                   const wchar_t* region, const AtmoFactors& total, float stageFog, const wchar_t* sunFrom) {
+  auto narrow = [](const std::wstring& w) { std::string r; for (wchar_t ch : w) r += static_cast<char>(ch); return r; };
+  const std::string s = narrow(sky), c = narrow(clouds), t = narrow(tod);   // ASCII names (game_state.cpp)
+  const std::string st = "stage" + std::to_string(si.trackId);
+  const std::string ids = st + "_" + s + "_" + c + ", " + st + "_" + s + ", " + st + ", " + s + "_" + c + "_" + t + ", " +
+                          s + "_" + c + ", " + s + ", " + c + ", RBR";
+  atmo_send("rtx.weather.gameWeather", ids, "");
+  static int lastTrack = -1, worldChanges = 0;
+  if (si.trackId != lastTrack) {
+    lastTrack = si.trackId;
+    remix_set("rtx.skyProvider.worldChangeCount", std::to_string(++worldChanges).c_str());
+  }
+  const float confAerosol = conf_float("rtx.atmosphere.aerosolDensity", 1.1f);
+  atmo_send("rtx.atmosphere.aerosolDensity", fmt1(confAerosol * total.aerosol), fmt1(confAerosol));
+  const float confFog = conf_float("rtx.atmosphere.fogVisibilityMeters", 0.0f);
+  const StageWeather& sw = g_stageWx;
+  const float dens = (std::max)(0.01f, total.density);
+  float vis = confFog;
+  wchar_t fogNote[128] = L"conf value";
+  if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
+    vis = sw.fogEnd / stageFog / dens;
+    swprintf_s(fogNote, L"stage fog %.0f..%.0f m / %.2f / density %.2f", sw.fogStart, sw.fogEnd, stageFog, dens);
+  } else if (total.fogVis >= 0.0f) {
+    vis = total.fogVis > 0.0f ? total.fogVis / dens : 0.0f;
+    swprintf_s(fogNote, L"fog_visibility %.0f m / density %.2f", total.fogVis, dens);
+  }
+  atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(vis), fmt1(confFog));
+  g_numosSunWeather = total.sun;
+  wchar_t line[640];
+  swprintf_s(line, L"NUMOS: stage %d %s (%S, region %s), sky %s, clouds %s, %s%s -> weather ids \"%S\"; fog visibility %.0f m (%s), "
+                   L"aerosol x%.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
+             si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region, sky.c_str(), clouds.c_str(),
+             tod.c_str(), g_stageWxNamed ? L" (from the stage's description)" : L"", ids.c_str(), vis, fogNote, total.aerosol,
+             total.sun, g_sunFallbackAz, g_sunFallbackEl, sunFrom);
+  g_atmoLine = line;
+  clog(L"atmosphere: %s", line);
+}
 
 void atmo_frame() {
   if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
@@ -964,6 +1090,8 @@ void atmo_frame() {
     if (f->fbAz > -999.0f && f->fbEl >= 0.0f) { fbAz = f->fbAz; fbEl = f->fbEl; }
     total.density *= f->density;
     if (f->stageFog >= 0.0f) stageFog = f->stageFog;
+    total.aerosol *= f->aerosol;
+    if (f->fogVis >= 0.0f) total.fogVis = f->fogVis;
   };
   auto sec = [&](const wchar_t* prefix, const std::wstring& name) -> const AtmoFactors* {
     auto it = g_atmoSections.find(std::wstring(prefix) + name);
@@ -999,6 +1127,10 @@ void atmo_frame() {
     if (!g_sunOverride) sunFrom = L"from the game";
   }
   g_sunRuleLogged = -1;                                // log the rule again for the new stage / time
+  if (g_numos) {
+    numos_weather(si, skyName, cloudName, timeName, region ? region->name.c_str() : L"none", total, stageFog, sunFrom);
+    return;
+  }
   float col[3], alb[3];
   for (int i = 0; i < 3; ++i) {
     col[i] = std::clamp(g_atmoBase.col[i] * total.col[i], 0.05f, 0.999f);

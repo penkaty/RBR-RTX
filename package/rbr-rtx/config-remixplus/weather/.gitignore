@@ -1,0 +1,5 @@
+# Remix Plus writes NUMOS's own presets (Clear.conf, Fog.conf, ...) and its marker files into this folder on first
+# use. Only RBR-RTX's presets are kept in git.
+*
+!.gitignore
+!rbr-*.conf

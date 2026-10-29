@@ -108,6 +108,11 @@ bool rbrrtx_screenshot(HWND wnd, const wchar_t* png_path, double* mean_luma);
 // exception_trace.cpp
 void rbrrtx_exception_trace_install();
 
+// remixplus_api.cpp: the Remix API on Remix Plus (API 1.0.0) behind NVIDIA's table layout (third_party/remix_c.h).
+// Fills `nvTable` (a remixapi_Interface, `size` bytes); returns the remixapi_ErrorCode (0 = success).
+int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size);
+unsigned rbrrtx_remixplus_converted();                         // pNext chains rebuilt for Remix Plus so far
+
 // headlights.cpp: car headlights as Remix API spot lights (headlights key: two lamps -> brights -> off;
 // on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
 struct remixapi_Interface;

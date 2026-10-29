@@ -3,6 +3,21 @@
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
 RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing within 0.1 ms.
 
+## Unreleased (branch remixplus-2): Remix Plus 2.0.0, not tested in game yet
+
+### Remix Plus support
+- **The Remix API works on Remix Plus.** Remix Plus refused the API version RBR-RTX was built with, so the sun,
+  headlights, dust, rain, snow and windscreen drops were all off there. RBR-RTX now talks to it in its own API version
+  (1.0.0) and converts what differs. Lights that move get a new id every time they are re-created, because Remix Plus
+  drops a light re-created under the id it had in the same frame (that is why the headlights did not show).
+  Remix 1.5.2 is used exactly as before.
+- **NUMOS sky follows the game's weather.** With Remix Plus's NUMOS sky (`rtx.skyMode = 1`), the stage's sun (with all
+  RBR-RTX's per-stage fixes), its weather and its own fog distances drive NUMOS's sun, clouds and fog. Weather presets
+  for every RBR sky and cloud type are in `config-remixplus\weather`. NUMOS lights the scene itself, so RBR-RTX's own
+  sun light and Remix's global volumetric haze are off there.
+- **Separate settings.** Everything for Remix Plus lives in `rbr-rtx\config-remixplus\`; the Remix 1.5.2 settings in
+  `config\` are not read or changed by it.
+
 ## 0.3.0 (2026-10-25)
 
 ### Particles, rain, snow and weather on the Remix API
