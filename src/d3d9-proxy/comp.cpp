@@ -2830,6 +2830,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexShader(IDirect3DDevice9* dev, const DWO
     }
     else { info.name = L"(not an RBR .vso)"; ++g_vsUnknown; }
     g_vs[*out] = info;
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_vs(*out, fn, name ? name->c_str() : nullptr);
     clog(L"VS %p = %s (%zu bytes, hash %016llx%s)", static_cast<void*>(*out), info.name.c_str(), size, h, how);
     if (info.flags & SH_BTB)
       clog(L"  BTB constants: worldviewproj c%d/%d, worldMatrix c%d/%d, viewproj c%d/%d (%s); table: %s", info.wvp.reg,
@@ -3018,6 +3019,7 @@ bool is_primary_rt(IDirect3DSurface9* s) {
 
 HRESULT STDMETHODCALLTYPE hk_SetRenderTarget(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9* rt) {
   if (index == 0) g_primaryRT = is_primary_rt(rt);
+  if (rbrrtx_gauge_probe_on && index == 0) rbrrtx_gauge_probe_rt(rt);
   return o.SetRenderTarget(dev, index, rt);
 }
 
@@ -3052,6 +3054,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* src, const RECT* dst, HWND wnd, const RGNDATA* dirty) {
+  if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_frame();
   end_frame(dev);
   const HRESULT hr = o.Present(dev, src, dst, wnd, dirty);
   if (g_remixPlus) rbrrtx_remixplus_frame();           // light destroys before this Present no longer block their hash
@@ -3086,6 +3089,7 @@ HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS*
     g_lighting = TRUE;
     remember_backbuffer(dev);
     clog(L"device Reset");
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_event(L"device Reset");
   }
   return hr;
 }
@@ -3898,19 +3902,21 @@ void layer_draw(IDirect3DDevice9* dev, Draw draw) {
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
+  if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_draw(g_curVS, g_primaryRT);
   const bool glassSkip = !g_glassOn && is_glass_draw();
   const bool sky = is_sky_draw();
   const bool midQuad = !glassSkip && !sky && is_midscene_quad(dev);
   const wchar_t* fate = glassSkip ? L"SKIPPED(glass)" : midQuad ? L"SKIPPED(mid-scene quad)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn";
   if (g_dumpFrames) dump_draw(dev, fate);
   if (g_sweepTsv) sweep_dump_draw(dev, exp_skip_draw() ? L"SKIPPED(step)" : fate);
-  if (glassSkip) { ++g_st.glassSkipped; return D3D_OK; }
+  if (glassSkip) { ++g_st.glassSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"glass"); return D3D_OK; }
   if (g_skipOffscreen && g_enabled && !g_primaryRT && g_curInfo && (g_curInfo->flags & (SH_SCENERY | SH_SKY))) {
     ++g_offSkipped;
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"off-screen scenery");
     return D3D_OK;
   }
-  if (midQuad) { ++g_midQuadSkipped; return D3D_OK; }
-  if (exp_skip_draw()) { ++g_expSkipped; return D3D_OK; }   // performance experiment (key K)
+  if (midQuad) { ++g_midQuadSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"mid-scene quad"); return D3D_OK; }
+  if (exp_skip_draw()) { ++g_expSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"experiment (key K)"); return D3D_OK; }   // performance experiment (key K)
   if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
   // Rain/snow replaced by Remix particles (particles.cpp): the game's drops are not drawn (pools are 0 as well).
   if (g_primaryRT && rbrrtx_rain_cutting() && (!g_curVS || (g_curInfo && (g_curInfo->flags & SH_PARTICLE)))) {
@@ -3920,7 +3926,10 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       if (rbrrtx_rain_skip_texture(rbrrtx_texture_hash(t))) return D3D_OK;
     }
   }
-  if (cull_draw(dev)) return D3D_OK;                         // distance culling (culling.ini, key M)
+  if (cull_draw(dev)) {                                      // distance culling (culling.ini, key M)
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"culling");
+    return D3D_OK;
+  }
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
     IDirect3DBaseTexture9* t = nullptr;
@@ -4164,6 +4173,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   patch(&v->CreateIndexBuffer, &hk_CreateIndexBuffer, o.CreateIndexBuffer);
   remember_backbuffer(dev);
   rbrrtx_harvest_install(dev);
+  if (rbrrtx_env_flag(L"RBRRTX_GAUGE_PROBE", false)) rbrrtx_gauge_probe_init(dev);
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);

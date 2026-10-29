@@ -46,6 +46,20 @@ bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]);
 // that is the client's copy, the bytes it sent). False if the type or format is not handled or the lock fails.
 bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path);
 
+// gaugeprobe.cpp: RBRHUD gauge / display probe (dev tool; RBRRTX_GAUGE_PROBE=1 / launcher -GaugeProbe). Every call site
+// checks rbrrtx_gauge_probe_on first, so nothing runs when it is off. Log: rbrrtx_gauge_probe.log in the run logs.
+extern bool rbrrtx_gauge_probe_on;
+void rbrrtx_gauge_probe_init(void* device);                   // patches SetTexture / SetPixelShaderConstantB / CreateRenderTarget
+void rbrrtx_gauge_probe_texture(void* tex, unsigned w, unsigned h, unsigned levels, DWORD usage, int format, int pool);   // CreateTexture result
+void rbrrtx_gauge_probe_update(void* src, void* dst);         // UpdateTexture(src, dst) succeeded
+void rbrrtx_gauge_probe_vs(void* vs, const void* bytecode, const wchar_t* gameName);   // CreateVertexShader result
+void rbrrtx_gauge_probe_rt(void* surface);                    // SetRenderTarget(0, surface)
+void rbrrtx_gauge_probe_draw(void* vs, bool primaryRT);       // top of every draw
+void rbrrtx_gauge_probe_skip(const wchar_t* why);             // the compat layer skipped the draw just announced
+void rbrrtx_gauge_probe_event(const wchar_t* text);
+void rbrrtx_gauge_probe_mark();                               // stage-report mark key (9): dump everything tracked
+void rbrrtx_gauge_probe_frame();                              // each Present
+
 // alphacut.cpp: alpha-card cut-outs (adr-001 tiers 2-3). For the current alpha-tested DrawIndexedPrimitive
 // (TRIANGLELIST), our copy of its cards clipped to the stage-0 texture's outline: draw `tris` triangles from
 // vb/ib (stream 0 at offset 0 with `stride`, base vertex 0), alpha test off when alphaTestOff. False = draw as is.

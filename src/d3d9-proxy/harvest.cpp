@@ -279,6 +279,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
   ++g_rbrrtxCreates;                                          // report.cpp: hitch causes
   if (SUCCEEDED(hr) && out && *out) {
     IDirect3DTexture9* t = *out;
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_texture(t, w, hgt, levels, usage, static_cast<int>(fmt), static_cast<int>(pool));
     {
       // A new object may sit at the address of a released one: forget that one's hash and min alpha until this
       // texture's own mip 0 is recorded (otherwise a see-through texture could inherit "opaque" and lose its test).
@@ -306,6 +307,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
 HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* src, IDirect3DBaseTexture9* dst) {
   const HRESULT hr = ho.UpdateTexture(dev, src, dst);
   if (SUCCEEDED(hr) && src && dst && src != dst) {
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_update(src, dst);
     std::lock_guard<std::mutex> g(g_mx);
     ++g_updates;
     auto h = g_texHash.find(src);
