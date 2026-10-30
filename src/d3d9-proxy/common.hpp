@@ -131,7 +131,7 @@ unsigned rbrrtx_remixplus_renames();                           // light creates 
 bool rbrrtx_remix_plus();                                      // comp.cpp: the API runs through remixplus_api.cpp
 
 // headlights.cpp: car headlights as Remix API spot lights (headlights key: two lamps -> brights -> off;
-// on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
+// day running lights, brights below brights_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
 struct remixapi_Interface;
 void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Remix API: headlights off
 // each car draw on the primary target (row-major W); cockpitGlass = CarGlassInternal.vso (the windscreen seen from the cockpit)
@@ -147,7 +147,9 @@ void rbrrtx_headlights_pop_drawn();                            // a draw with th
 void rbrrtx_headlights_write_lit_mod();                         // before Remix starts: lit lamp textures made emissive (genmod)
 int rbrrtx_headlights_game_lamps();                             // the game's lamp switch as last sent: 1 on, 0 off, -1 unknown
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
-bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS's clock (comp.cpp); false off the menu
+bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
+float rbrrtx_sun_shown_elevation();                             // the sun's height as lit now (comp.cpp; debug sun, night hold)
+bool rbrrtx_car_body_draw(float m[16]);                         // the matrix the car body was drawn with this frame (headlights.cpp)
 float rbrrtx_numos_lux_per_unit();                              // lux per unit of API light irradiance under NUMOS; 0 without
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
@@ -167,7 +169,7 @@ std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as
 // generated material is emissive. Settings: config\materials.ini [lit_parts].
 void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
-void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims);
+void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world);
 void rbrrtx_litparts_status(wchar_t* out, size_t n);
 void rbrrtx_litparts_destroy();
 // foliage.cpp: swaying foliage textures get Remix thin-opaque (subsurface) materials. Settings: materials.ini [foliage].

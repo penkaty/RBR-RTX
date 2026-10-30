@@ -43,13 +43,19 @@ namespace {
 #define llog(...) rbrrtx_log_to(L"rbrrtx_comp.log", __VA_ARGS__)
 
 constexpr unsigned kMaxPrims = 4000, kSettle = 12, kSwitchWindow = 60;
-// Signals, and the glow kinds (a fourth kind: tail = the unlit brake lens while the lamps are on).
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kKinds = 4 };
-const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail" };
+// Signals, and the glow kinds: tail = the unlit brake lens while the lamps are on; lamps by day = a lit head lamp lens
+// with the sun up (user 2026-10-30: "too dim to be noticed in the daytime, good at night").
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kKinds = 5 };
+const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day" };
 
 struct Cfg {
   bool enabled = true;
-  float glow[kKinds] = { 12.0f, 20.0f, 15.0f, 6.0f };
+  float glow[kKinds] = { 12.0f, 20.0f, 15.0f, 6.0f, 120.0f };
+  float dayAbove = 5.0f;                                 // sun height (degrees) from which lamp lenses use the day glow
+  // Brake discs (user 2026-10-30: "the emissives of the BRAKE DISCS ... seemed to glow constantly"): a brake part drawn
+  // with another matrix than the body's moves with a wheel - a disc - and glows only after the brake has been held
+  // this long. Brake lamp lenses (drawn with the body's matrix) light at once.
+  float discDelay = 1.5f;
 } g_cfg;
 
 // Evidence comes only from clean switches (switch_seen): one signal flips, the others stay settled the same, and the
@@ -66,11 +72,17 @@ struct Part {
   bool tail = false;                                     // unlit brake lens: glows as a tail lamp with the lamps on
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
+  unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
+  bool disc() const { return offBody > onBody; }         // moves with a wheel: a brake disc
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
 unsigned g_frame = 0;
 unsigned g_carDrawsThisFrame = 0;
 std::vector<uint64_t> g_drawn;                           // this frame's part keys
+struct DrawnAt { uint64_t key; float t[3]; };
+std::vector<DrawnAt> g_drawnAt;                          // this frame's lit-part draws and where (matrix row 3)
+ULONGLONG g_brakeSince = 0;                              // when the brake came on (0 = off)
+float g_sunEl = 90.0f;                                   // sun height at the last Present
 struct Side { bool valid = false; unsigned frame = 0; int st[kSignals] = {}; std::vector<uint64_t> keys; };
 Side g_side[kSignals];                                   // per signal: the last judged frame with it settled
 unsigned g_switches = 0, g_switchesRefused = 0;
@@ -137,6 +149,9 @@ void load_cfg() {
   c.glow[kLamps] = std::clamp(f(L"lamp_glow", c.glow[kLamps]), 0.0f, 10000.0f);
   c.glow[kReverse] = std::clamp(f(L"reverse_glow", c.glow[kReverse]), 0.0f, 10000.0f);
   c.glow[kTail] = std::clamp(f(L"tail_glow", c.glow[kTail]), 0.0f, 10000.0f);
+  c.glow[kLampsDay] = std::clamp(f(L"lamp_glow_day", c.glow[kLampsDay]), 0.0f, 10000.0f);
+  c.dayAbove = f(L"lamp_glow_day_above_sun", c.dayAbove);
+  c.discDelay = std::clamp(f(L"brake_disc_delay", c.discDelay), 0.0f, 60.0f);
   g_cfg = c;
 }
 
@@ -419,6 +434,7 @@ void judge_frame(const int st[kSignals]) {
 void forget_car() {
   g_parts.clear();
   g_drawn.clear();
+  g_drawnAt.clear();
   for (Side& s : g_side) s = Side();
 }
 
@@ -445,9 +461,10 @@ void rbrrtx_litparts_startup() {
   }
   if (!g_cfg.enabled) g_entries.clear();
   publish_locked();
-  llog(L"lit parts: %s, glow brake %.1f / lamps %.1f / reverse %.1f / tail (unlit brake lens, lamps on) %.1f; %zu known "
-       L"from earlier runs", g_cfg.enabled ? L"on" : L"OFF (materials.ini)", g_cfg.glow[kBrake], g_cfg.glow[kLamps],
-       g_cfg.glow[kReverse], g_cfg.glow[kTail], g_entries.size());
+  llog(L"lit parts: %s, glow brake %.1f (discs after %.1f s) / lamps %.1f, by day %.1f (sun from %.0f deg) / reverse %.1f / "
+       L"tail (unlit brake lens, lamps on) %.1f; %zu known from earlier runs", g_cfg.enabled ? L"on" : L"OFF (materials.ini)",
+       g_cfg.glow[kBrake], g_cfg.discDelay, g_cfg.glow[kLamps], g_cfg.glow[kLampsDay], g_cfg.dayAbove, g_cfg.glow[kReverse],
+       g_cfg.glow[kTail], g_entries.size());
 }
 
 // Per Present. carFile = the player's car model (.sgc) path, empty off a stage. lamps = the game's lamp switch as last
@@ -475,6 +492,23 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
   int st[kSignals];
   for (int i = 0; i < kSignals; ++i) st[i] = before[i] == g_state[i] ? g_state[i] : 0;
   judge_frame(st);
+  g_brakeSince = raw[kBrake] > 0 ? (g_brakeSince ? g_brakeSince : GetTickCount64()) : 0;
+  g_sunEl = rbrrtx_sun_shown_elevation();
+  float body[16];                                      // lens or disc: drawn with the body's matrix or not
+  if (!g_drawnAt.empty() && rbrrtx_car_body_draw(body))
+    for (const DrawnAt& d : g_drawnAt) {
+      auto it = g_parts.find(d.key);
+      if (it == g_parts.end()) continue;
+      const float dx = d.t[0] - body[12], dy = d.t[1] - body[13], dz = d.t[2] - body[14];
+      Part& p = it->second;
+      const bool wasDisc = p.disc();
+      if (dx * dx + dy * dy + dz * dz < 1e-6f) ++p.onBody; else ++p.offBody;
+      if (p.disc() != wasDisc && (p.mask & (1u << kBrake)))
+        llog(L"lit parts: a %u-triangle brake part is %s", p.prims, p.disc()
+             ? L"drawn off the body (moves with a wheel): a brake disc, it glows after the brake is held a while"
+             : L"drawn with the body: a brake lamp lens, it lights at once");
+    }
+  g_drawnAt.clear();
   ++g_frame;
   g_carDrawsThisFrame = 0;
   if (!g_workerBusy) {
@@ -492,7 +526,8 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
 
 // A car draw (DrawIndexedPrimitive, primary target, Remix on). Returns the texture to bind at stage 0 for it (a lit
 // part's twin), else nullptr.
-void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims) {
+void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims,
+                           const float* world) {
   if (!g_cfg.enabled || g_carFile.empty()) return nullptr;
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   ++g_carDrawsThisFrame;
@@ -509,12 +544,18 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
   p.prims = prims;
   g_drawn.push_back(key);
+  if (world && (p.mask & (1u << kBrake)) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
+    g_drawnAt.push_back({ key, { world[12], world[13], world[14] } });
   // Which glow: the signal that shows it now (the brake over the lamps on a shared tail lens), else the unlit brake
-  // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states.
+  // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states. A brake disc only once the brake
+  // has been held discDelay seconds (until then it is drawn as the game textures it).
+  const bool discHot = g_brakeSince && GetTickCount64() - g_brakeSince >= static_cast<ULONGLONG>(g_cfg.discDelay * 1000.0f);
+  if ((p.mask & (1u << kBrake)) && p.disc() && !discHot) return nullptr;
   int kind = -1;
   for (int i : { kBrake, kReverse, kLamps }) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] > 0) kind = i;
   if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0) kind = kTail;
+  if (kind == kLamps && g_sunEl >= g_cfg.dayAbove) kind = kLampsDay;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);

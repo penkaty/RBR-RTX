@@ -14,21 +14,21 @@ Change any key in `rbr-rtx\config\keys.ini` (restart the game); write `none` to 
 | 7 | Dust and tyre smoke (Remix particles) on/off |
 | 8 | Record everything drawn in the next frame (test builds with `diagnostics.txt`) |
 | **9** | **Mark a problem while driving:** beep, screenshot, frame times around that moment. The stage's report zip is kept and named `-marked`. |
-| I | Cockpit windscreen glass on/off |
-| J | Foliage: fuller cut-outs, with soft-edge pass, game original |
-| K | Faster scenery: default (static scenery, no sway), old slower mode, static only (everything sways) |
-| **L** | **Headlights:** off, two lamps, brights (four lamps). They also switch on by themselves when the sun is low (`headlights.ini`). |
-| O | RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on) |
-| P | Secondary ray bounces 2 (default) / 1. **1 is faster**, but on some heavily forested stages the first two rows of trees can get a black background behind them. Switch back with P if you see it. |
-| U | Distance culling on/off: far geometry outside the view is left out of path tracing (`culling.ini`) |
-| `/` | Debug sun on/off. It starts at the game's sun. |
+| Alt+I | Cockpit windscreen glass on/off |
+| Alt+J | Foliage: fuller cut-outs, with soft-edge pass, game original |
+| Alt+Comma | Faster scenery: default (static scenery, no sway), old slower mode, static only (everything sways) |
+| **L** | **Headlights:** off, two lamps, brights (four lamps). By default the two lamps run as daytime running lights and the brights come on by themselves below 4 degrees of sun (`headlights.ini`). |
+| Alt+O | RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on) |
+| Alt+0 | Secondary ray bounces 2 (default) / 1. **1 is faster**, but on some heavily forested stages the first two rows of trees can get a black background behind them. Switch back with Alt+0 if you see it. |
+| Alt+U | Distance culling on/off: far geometry outside the view is left out of path tracing (`culling.ini`) |
+| `/` | Debug sun on/off. It starts at the game's sun and switches off at the next stage. |
 | `[` / `]` | Turn the debug sun left / right (hold) |
 | `;` / `'` | Lower / raise the debug sun (hold). Below the horizon it becomes twilight and night. |
 | `\` | Keep the sun now shown for this stage and time of day (beep), saved to `rbr-rtx\config\sun-saved.ini` |
 | Alt+7 | Rain and snow: Remix particles or the game's own, to compare |
 | Alt+L | Remix sun on/off |
 | Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |
-| Alt+O | Experimental: foliage cards cut to the leaf outline |
+| Alt+9 | Experimental: foliage cards cut to the leaf outline |
 | Alt+P | Performance test: keep the view still about a minute; frame time per setting goes to `rbr-rtx\logs\rbrrtx_comp.log` |
 | Alt+Y | Ground second layer (sea, cliffs, road markings) on/off, off by default. Turn it on before loading a stage. |
 

@@ -7,6 +7,8 @@
 // Exception: a key written as Alt+<key> fires only while Alt is held (sun brightness Alt+N / Alt+M, user 2026-10-17).
 // Number row for toggles (0 ray tracing, 6 sky, 7 dust, 8 frame dump, 9 experiment; user 2026-10-22).
 // Backslash keeps the current sun for the stage (user 2026-10-22).
+// Letters (user 2026-10-30): every debug key on a letter is Alt+<letter> except L (headlights); where Alt+<letter> was
+// taken, the nearest free key: alpha_cut Alt+9, ff_scenery Alt+Comma, bounces Alt+0.
 //
 // keys.ini:  [keys]  <action> = <key>   key = a letter or digit, F1..F24, a name from kNames below, 0x<VK hex>,
 //            optionally with an Alt+ prefix, or none (action off). Missing file or entry = default.
@@ -22,11 +24,11 @@ constexpr int kAlt = 0x1000;                                 // in Action::vk: t
 // Order = RbrKey enum in common.hpp.
 Action g_actions[RBRKEY_COUNT] = {
   {L"frame_dump", '8', L"frame dump"},
-  {L"layer", 'O', L"RBR-RTX layer"},
+  {L"layer", kAlt | 'O', L"RBR-RTX layer"},
   {L"sun", kAlt | 'L', L"Remix sun"},                       // was L; L = headlights (user 2026-10-22)
-  {L"foliage", 'J', L"foliage mode"},
+  {L"foliage", kAlt | 'J', L"foliage mode"},
   {L"dust", '7', L"dust"},                                  // Remix API dust on/off (user 2026-10-23)
-  {L"windscreen", 'I', L"windscreen"},
+  {L"windscreen", kAlt | 'I', L"windscreen"},
   {L"sky", '6', L"sky mode"},
   {L"debug_sun", VK_OEM_2, L"debug sun"},                     // /  (was H until 2026-10-24, user)
   {L"debug_sun_left", VK_OEM_4, L"debug sun turn left"},     // [
@@ -34,21 +36,21 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
   {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
   {L"experiment", kAlt | 'P', L"performance experiment run"},
-  {L"culling", 'U', L"distance culling on/off"},
+  {L"culling", kAlt | 'U', L"distance culling on/off"},
   {L"sun_brighter", kAlt | 'N', L"sun brightness +10 %"},
   {L"sun_dimmer", kAlt | 'M', L"sun brightness -10 %"},
-  {L"ff_scenery", 'K', L"fixed-function scenery mode"},
+  {L"ff_scenery", kAlt | VK_OEM_COMMA, L"fixed-function scenery mode"},   // Alt+K = sweep
   {L"sweep", kAlt | 'K', L"stage sweep (screenshots, debug views, texture hashes, report)"},
   {L"raytracing", '0', L"ray tracing on/off (raster comparison)"},
   {L"opaque_alpha", 0, L"opaque cut-outs without alpha test on/off"},   // no key: ~0 ms with OMM on (adr-001)
-  {L"alpha_cut", kAlt | 'O', L"alpha-card cut-outs (clipped foliage cards) on/off"},
+  {L"alpha_cut", kAlt | '9', L"alpha-card cut-outs (clipped foliage cards) on/off"},
   {L"report_mark", '9', L"stage report: mark a problem now"},
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
   {L"ground_layer", kAlt | 'Y', L"ground second layer (two-texture blend decals) on/off"},
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},
   {L"foliage_normals", kAlt | 'R', L"radial foliage normals on/off (prototype, foliage-normals.ini)"},
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
-  {L"bounces", 'P', L"secondary ray bounces 2 <-> 1 (rtx.secondaryRayMaxInteractions)"},   // user 2026-10-24
+  {L"bounces", kAlt | '0', L"secondary ray bounces 2 <-> 1 (rtx.secondaryRayMaxInteractions)"},   // Alt+P = experiment
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};

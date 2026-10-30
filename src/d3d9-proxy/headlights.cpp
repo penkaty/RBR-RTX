@@ -5,7 +5,8 @@
 //   mode 2 = two spots at the model's own lamp nodes Point_light_lf / Point_light_rf
 //   mode 3 = brights (user 2026-10-23): mode 2 plus a tight high beam next to each lamp, toward the car's middle
 // The headlights key (L) steps off -> 2 -> 3 -> off (mode 1, one centre light, was dropped, user 2026-10-23).
-// Automatic: when the sun shown drops below auto_below_sun (10 degrees) the lights come on in auto_mode, above it they go off again; once the key is used on a stage the
+// Automatic (2026-10-30): daytime running lights (mode 2 all day) and the brights below brights_below_sun (4 degrees);
+// day_running = 0 is the old switch (lamps on below auto_below_sun in auto_mode). Once the key is used on a stage the
 // lights stay as set until the next stage. Settings: rbr-rtx\config\headlights.ini (env RBRRTX_HEADLIGHTS).
 //
 // Where the lamps are. The car model (Cars\Cars.ini [CarNN] FileName, a .sgc) holds a node tree; each node record
@@ -70,6 +71,10 @@ V3 norm(V3 a) { const float l = len(a); return l > 1e-6f ? a * (1.0f / l) : V3{ 
 
 struct Settings {
   bool enabled = true;
+  // Automatic (user 2026-10-30): daytime running lights, the low beams always on, and the brights by themselves with
+  // the sun below brightsBelow degrees. day_running = 0: the lamps come on only below autoBelow, in autoMode.
+  bool dayRunning = true;
+  float brightsBelow = 4.0f;
   float autoBelow = 10.0f;                             // sun elevation (degrees) below which the lights come on; -90 = never
   int autoMode = 2;                                    // mode the automatic switch uses
   // user 2026-10-23: x27 of the first build, +50 %, -20 %, then -15 %
@@ -282,8 +287,24 @@ void lamp_photometry(const wchar_t* path, Settings& s) {
       s.radiance[i] = rgb[i] * cd / (unitLux * area);
       s.brightsRadiance[i] = rgb[i] * bcd / (unitLux * area);
     }
-    swprintf_s(brightNote, L"%.0f cd, brights %.0f cd%s (NUMOS: 1 unit = %.0f lux)", cd, bcd,
-               capped ? L", capped at the sun's light 1 m away" : L"", unitLux);
+    // Rear lamps the same way (user 2026-10-30: "taillights do not seem to be affected by the correct headlight
+    // intensity"). Real lamps (UN ECE R7 / R23): a tail lamp 4-12 cd, a brake lamp 60-185 cd, a reversing lamp 80-600 cd;
+    // the old radiance keys were about 140 times a real tail lamp (a red pool on the road behind the car).
+    auto cdKey = [&](const wchar_t* k, float d) { return (std::max)(0.0f, ini_float(path, k, d)); };
+    float red[3] = { 1, 0, 0 }, white[3];
+    ini_rgb(path, L"rear_color", red);
+    float redLin[3];
+    srgb_rgb(red, redLin);
+    kelvin_rgb(ini_float(path, L"reverse_colour_temperature", 6500.0f), white);
+    const float tail = cdKey(L"tail_intensity", 10.0f), brake = cdKey(L"brake_intensity", 150.0f),
+                rev = cdKey(L"reverse_intensity", 300.0f);
+    for (int i = 0; i < 3; ++i) {
+      s.tailRadiance[i] = redLin[i] * (std::min)(tail, cap > 0.0f ? cap : tail) / (unitLux * area);
+      s.brakeRadiance[i] = redLin[i] * (std::min)(brake, cap > 0.0f ? cap : brake) / (unitLux * area);
+      s.reverseRadiance[i] = white[i] * (std::min)(rev, cap > 0.0f ? cap : rev) / (unitLux * area);
+    }
+    swprintf_s(brightNote, L"%.0f cd, brights %.0f cd%s; tail %.0f cd, brake %.0f cd, reverse %.0f cd (NUMOS: 1 unit = %.0f lux)",
+               cd, bcd, capped ? L", capped at the sun's light 1 m away" : L"", tail, brake, rev, unitLux);
   } else {                                             // 1.5.2: the colour only, brightness from the radiance keys
     const float l = luminance(s.radiance), bl = luminance(s.brightsRadiance);
     for (int i = 0; i < 3; ++i) { s.radiance[i] = rgb[i] * l; s.brightsRadiance[i] = rgb[i] * bl; }
@@ -304,6 +325,10 @@ void load_settings() {
     if (!_wcsicmp(v, L"none")) s.autoBelow = -90.0f;
     else if (v[0]) s.autoBelow = static_cast<float>(_wtof(v));
     s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 2, 3);   // 1 (centre light) is gone
+    s.dayRunning = ini_float(path, L"day_running", 1.0f) != 0.0f;
+    ini_str(L"brights_below_sun", v, 32, path);
+    if (!_wcsicmp(v, L"none")) s.brightsBelow = -90.0f;
+    else if (v[0]) s.brightsBelow = static_cast<float>(_wtof(v));
     ini_rgb(path, L"radiance", s.radiance);
     s.dayIntensity = std::clamp(ini_float(path, L"day_intensity", 1.0f), 0.0f, 1.0f);
     wchar_t fv[64] = {};
@@ -365,11 +390,13 @@ void load_settings() {
     const bool own = GetPrivateProfileSectionW(g_carSection.c_str(), keys, 16, path) > 0;
     hlog(L"headlights: car section [%s] %s", g_carSection.c_str(), own ? L"found: its keys override [headlights]" : L"not in the ini");
   }
-  hlog(L"headlights (%s): %s, auto below sun %.1f deg in mode %d, radiance %.0f/%.0f/%.0f, "
+  wchar_t autoNote[96];
+  if (s.dayRunning) swprintf_s(autoNote, L"day running lights, brights below sun %.1f deg", s.brightsBelow);
+  else swprintf_s(autoNote, L"auto below sun %.1f deg in mode %d", s.autoBelow, s.autoMode);
+  hlog(L"headlights (%s): %s, %s, radiance %.0f/%.0f/%.0f, "
        L"radius %.3f, cone %.1f, softness %.2f, focus %.2f, pitch %.1f, forward %.2f, volumetric %.2f, "
        L"keep fallback light %s; brights radiance %.0f cone %.1f softness %.3f pitch %.1f inset %.2f forward %.2f",
-       found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", s.autoBelow,
-       s.autoMode, s.radiance[0], s.radiance[1], s.radiance[2], s.radius, s.cone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
+       found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", autoNote, s.radiance[0], s.radiance[1], s.radiance[2], s.radius, s.cone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
        s.fallbackOn ? L"yes" : L"no", s.brightsRadiance[0], s.brightsCone, s.brightsSoftness, s.brightsPitch, s.brightsInset, s.brightsForward);
   hlog(L"headlights: daylight x%.2f with the sun at %.0f deg and above, full strength at %.0f deg and below "
        L"(backfire flash not dimmed)", s.dayIntensity, s.dayFade[1], s.dayFade[0]);
@@ -1126,7 +1153,12 @@ const remixapi_Interface* g_api = nullptr;
 int g_mode = kOff;
 bool g_manual = false;                                 // the key was used on this stage: no automatic switching
 float g_dayK = 1.0f;                                   // daylight dimming of the lamps (day_intensity)
-bool g_dark = false;                                   // sun below auto_below_sun (last frame)
+int g_autoWant = -1;                                   // the automatic switch's mode last frame (-1 = none yet)
+// The mode the automatic switch wants at this sun height.
+int auto_mode_for(float sunEl) {
+  if (g_cfg.dayRunning) return sunEl < g_cfg.brightsBelow ? kBrights : kPair;
+  return sunEl < g_cfg.autoBelow ? g_cfg.autoMode : kOff;
+}
 int g_track = -1;
 bool g_emitted = false;                                // first BeginScene of this frame seen (lamp states read)
 bool g_refined = false;                                // this frame's drawn body looked for (rbrrtx_headlights_refine)
@@ -1167,7 +1199,11 @@ const wchar_t* mode_name(int m) {
 void set_mode(int m, const wchar_t* why) {
   if (m == g_mode) return;
   g_mode = m;
-  destroy_all();                                       // the other mode's lamps must not stay drawn
+  // Only the lamps the new mode does not use (send_lamps also destroys every lamp it did not draw). Destroying all of
+  // them here re-created the low beams under the same hash in the same frame, and on Remix Plus the destroy won: OFF ->
+  // BRIGHTS showed the high beams alone until the car moved (run 20261030-072711, Gabiria marks 1-3).
+  if (m != kBrights) { destroy_lamp(g_lamps[3]); destroy_lamp(g_lamps[4]); }
+  if (m == kOff) { destroy_lamp(g_lamps[1]); destroy_lamp(g_lamps[2]); }
   g_creates = 0;                                       // log the first lamps of each switch
   hlog(L"headlights: %s (%s)", mode_name(m), why);
   wchar_t ev[96];
@@ -1237,8 +1273,8 @@ unsigned g_gameLampsLog = 0;
 constexpr unsigned kLampHoldCarFrames = 30;
 void* g_holdWorld = nullptr;
 unsigned g_worldCarFrames = 0;
-// Main menu car (user 2026-10-30: "the car in the main menu has lights when nighttime falls"). Under NUMOS the menu runs
-// NUMOS's clock (comp.cpp numos_menu); below auto_below_sun the lamps go on, placed on the car as drawn (menu_root),
+// Main menu car (user 2026-10-30: "the car in the main menu has lights when nighttime falls"). Under NUMOS the menu's sun
+// runs forward from a stage's time (comp.cpp numos_menu); below auto_below_sun the lamps go on, placed on the car as drawn (menu_root),
 // and the game's own lamp meshes switch with them (so its lit lenses glow, litparts.cpp).
 bool g_menuCar = false, g_menuDark = false;
 unsigned g_menuRootMissed = 0;
@@ -1787,6 +1823,21 @@ bool menu_root(const std::vector<Group>& groups, float out[16]) {
   }
   if (bestGroups < 2 || !best) return false;
   std::memcpy(out, best->C, sizeof(best->C));
+  // The body as drawn, as on a stage (match_body): draws with one matrix are one group, so the body (one matrix for
+  // ~20 meshes) is one vote against every wheel and suspension part, and those sit at the model's rest pose. The menu
+  // car's body rides higher than that: the lamps sat low on the Yaris and the Fabia (user 2026-10-30). So: the biggest
+  // group whose body-node root is near the vote's root with the same axes.
+  unsigned bodyPrims = 0;
+  for (const Group& g : groups) {
+    if (g.prims < 200 || g.prims <= bodyPrims) continue;
+    float C[16];
+    compose(g_car.body, g.m, C);
+    bool close = len(row(C, 3) - row(best->C, 3)) < 0.3f;
+    for (int r = 0; r < 3 && close; ++r) close = dot(norm(row(C, r)), norm(row(best->C, r))) > 0.985f;
+    if (!close) continue;
+    bodyPrims = g.prims;
+    std::memcpy(out, C, sizeof(C));
+  }
   return true;
 }
 
@@ -1807,17 +1858,19 @@ void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& g
     g_carSlot = si.carId;
     load_settings();
     load_car_model(model);
-    hlog(L"headlights: menu car %s (lamps on below %.1f deg of NUMOS's menu clock)", model.c_str(), g_cfg.autoBelow);
+    hlog(L"headlights: menu car %s (lamps on below sun %.1f deg)", model.c_str(), g_cfg.autoBelow);
   }
   {
     const float t = std::clamp((sunEl - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
     g_dayK = std::round((1.0f + (g_cfg.dayIntensity - 1.0f) * t) * 50.0f) / 50.0f;
   }
+  // The parked menu car: no day running lights, its lamps on below auto_below_sun (brights below brights_below_sun).
   const bool dark = sunEl < g_cfg.autoBelow;
-  if (dark != g_menuDark) {
+  const int want = !dark ? kOff : g_cfg.dayRunning ? auto_mode_for(sunEl) : g_cfg.autoMode;
+  if (dark != g_menuDark || want != g_mode) {
     wchar_t why[64];
-    swprintf_s(why, L"menu, NUMOS clock sun %.1f deg", sunEl);
-    set_mode(dark ? g_cfg.autoMode : kOff, why);
+    swprintf_s(why, L"menu, sun %.1f deg", sunEl);
+    set_mode(want, why);
     g_menuDark = dark;
   }
   sync_game_lamps();                                   // the menu car's own lit lenses and glow sprites
@@ -1859,14 +1912,14 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   if (!stage || !layerOn) {
     if (g_mode != kOff && !stage) set_mode(kOff, L"left the stage");
     if (!layerOn) destroy_all();
-    if (!stage) { g_track = -1; g_manual = false; g_dark = false; g_gameLampsSent = -1; g_hhWorld = nullptr; }
+    if (!stage) { g_track = -1; g_manual = false; g_autoWant = -1; g_gameLampsSent = -1; g_hhWorld = nullptr; }
     return;
   }
   if (si.trackId != g_track || si.carId != g_carSlot) {  // new stage or car: read the model, automatic again
     g_track = si.trackId;
     g_carSlot = si.carId;
     g_manual = false;
-    g_dark = false;
+    g_autoWant = -1;
     g_solved = g_failed = 0;
     g_off = Offset();
     g_haveLastPhys = false;
@@ -1894,13 +1947,14 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     const float t = std::clamp((sunElevation - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
     g_dayK = std::round((1.0f + (g_cfg.dayIntensity - 1.0f) * t) * 50.0f) / 50.0f;
   }
-  const bool dark = sunElevation < g_cfg.autoBelow;
-  if (!g_manual && dark != g_dark) {
-    wchar_t why[64];
-    swprintf_s(why, L"sun %.1f deg, %s %.0f", sunElevation, dark ? L"below" : L"above", g_cfg.autoBelow);
-    set_mode(dark ? g_cfg.autoMode : kOff, why);
+  const int want = auto_mode_for(sunElevation);
+  if (!g_manual && want != g_autoWant) {
+    wchar_t why[96];
+    if (g_cfg.dayRunning) swprintf_s(why, L"day running lights; sun %.1f deg, brights below %.0f", sunElevation, g_cfg.brightsBelow);
+    else swprintf_s(why, L"sun %.1f deg, lamps below %.0f", sunElevation, g_cfg.autoBelow);
+    set_mode(want, why);
   }
-  g_dark = dark;
+  g_autoWant = want;
   sync_game_lamps();
 }
 
@@ -2030,6 +2084,17 @@ void rbrrtx_headlights_write_lit_mod() {
 // switch not found, not on a stage).
 int rbrrtx_headlights_game_lamps() {
   return g_cfg.enabled && g_cfg.gameLamps && (g_track >= 0 || g_menuCar) && g_hhWorld && g_gameLampsSent >= 0 ? g_gameLampsSent : -1;
+}
+
+// The matrix the car's body was drawn with this frame (the car draw group with the most triangles: the body node
+// draws ~20 meshes with one matrix), for litparts.cpp to tell lamp lenses (on the body) from brake discs (on the
+// wheels). Valid until this frame's headlights_frame_end.
+bool rbrrtx_car_body_draw(float m[16]) {
+  const Group* best = nullptr;
+  for (const Group& g : g_groups) if (!best || g.prims > best->prims) best = &g;
+  if (!best || best->prims < 200) return false;
+  std::memcpy(m, best->m, sizeof(best->m));
+  return true;
 }
 
 const wchar_t* rbrrtx_car_model_path() { return g_track >= 0 || g_menuCar ? g_car.file.c_str() : L""; }

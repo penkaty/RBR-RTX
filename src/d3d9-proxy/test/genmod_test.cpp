@@ -23,6 +23,8 @@ unsigned long long rbrrtx_xxh3(const void* data, size_t size) { return XXH3_64bi
 unsigned long long rbrrtx_texture_hash(void* t) { return t == reinterpret_cast<void*>(0x1000) ? 0x1234567890ABCDEFULL : 0; }
 bool rbrrtx_texture_avg_rgb(void*, float rgb[3]) { rgb[0] = 0.2f; rgb[1] = 0.4f; rgb[2] = 0.1f; return true; }
 bool rbrrtx_player_car_brake(float* b) { *b = 0.0f; return true; }
+float rbrrtx_sun_shown_elevation() { return 30.0f; }
+bool rbrrtx_car_body_draw(float*) { return false; }
 bool rbrrtx_player_car_gear(int* g) { *g = 2; return true; }
 
 int wmain() {

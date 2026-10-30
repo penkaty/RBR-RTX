@@ -151,9 +151,45 @@ int wmain(int argc, wchar_t** argv) {
     const bool menuOk = menu_root(g_groups, Mm);
     const float menuErr = menuOk ? len(to_world(Mm, g_car.lf) - to_world(C, g_car.lf)) : 99.0f;
     const bool menuPass = g_car.parts.size() < 2 || menuErr < 0.01f;
+    bool menuPassRaised = true;
     if (!menuPass) {
       ++menuFails;
       wprintf(L"%-30s menu car root: %s, lamp %.3f m off\n", e.path().filename().c_str(), menuOk ? L"found" : L"NOT found", menuErr);
+    }
+    // The menu car's body rides 5 cm above the parts' rest pose (user 2026-10-30: lamps low on the Yaris and the Fabia):
+    // the lamps must sit on the body as drawn, not on the pose the other parts agree on.
+    {
+      std::vector<Group> mg;
+      float Lb[16], Cr[16];
+      local_to_root(g_car.body, Lb);
+      std::memcpy(Cr, C, sizeof(Cr));
+      const V3 upv = norm(row(C, 1)) * 0.05f;
+      Cr[12] += upv.x; Cr[13] += upv.y; Cr[14] += upv.z;
+      Group b;
+      mul(Lb, Cr, b.m);
+      b.prims = 9000;
+      mg.push_back(b);
+      for (size_t k = 0, added = 0; k < g_car.parts.size() && added < 4; ++k) {
+        float Lp[16];
+        local_to_root(g_car.parts[k], Lp);
+        Group part;
+        mul(Lp, C, part.m);
+        float Lpr[16];
+        mul(Lp, Cr, Lpr);
+        if (same_matrix(Lpr, b.m)) continue;           // the body node itself
+        part.prims = 400 + static_cast<unsigned>(k);
+        mg.push_back(part);
+        ++added;
+      }
+      float Mr[16];
+      const bool ok2 = menu_root(mg, Mr);
+      const float err2 = ok2 ? len(to_world(Mr, g_car.lf) - to_world(Cr, g_car.lf)) : 99.0f;
+      if (mg.size() >= 3 && err2 >= 0.01f) {
+        ++menuFails;
+        menuPassRaised = false;
+        wprintf(L"%-30s menu car, body raised 5 cm: %s, lamp %.3f m off the body\n", e.path().filename().c_str(),
+                ok2 ? L"found" : L"NOT found", err2);
+      }
     }
     // The car drives on (20 m, turned 50 deg), nothing of it drawn: the lamps from RBR's car object alone.
     float C2[16];
@@ -328,7 +364,7 @@ int wmain(int argc, wchar_t** argv) {
     wprintf(L"%-30s glass %s: %.2f m behind the lamps, %.2f up, %.2f/%.2f wide, %.2f long, normal (%.2f %.2f %.2f), flat %.3f\n",
             e.path().filename().c_str(), g_car.glass ? L"ok" : g_car.glassRejected ? L"rejected (lamp plane)" : L"BAD", glassBack, gc.y - lampMid.y, g_car.glassWb, g_car.glassWt,
             glassLen, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassFlat);
-    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f && lagOk && menuPass;
+    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f && lagOk && menuPass && menuPassRaised;
     if (!ok) ++fails;
     if (g_car.bodyName[0] == '(') ++noBody;
     wprintf(L"%-30s lf (%5.2f %5.2f %5.2f) rf (%5.2f %5.2f %5.2f) fwd %+.0fz | body %-18S err %.4f drift %.4f | rear (%5.2f %5.2f %5.2f) "
