@@ -290,6 +290,7 @@ float g_carPos[3] = {};                               // last car draw's world p
 bool g_haveCar = false;
 unsigned g_carDraws = 0;                               // car draws seen (NUMOS ground: a fresh position after a load)
 DMat g_VPinv = {};
+DMat g_VPd = {};                                       // this frame's view*projection (c0 of the first world-space draw)
 void* g_curVS = nullptr;
 const ShaderInfo* g_curInfo = nullptr;
 bool g_primaryRT = true;
@@ -378,6 +379,8 @@ struct Stats {
   unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, their copies
   unsigned btbRebuilt, btbCamRejected;                 // merged instance buffers built this frame; camera candidates refused
   float worldErr, rlDev, recErr;
+  float worldDerivErr;                                 // c8 vs the derived W (grows with distance from the map origin)
+  unsigned c8Used, c8Refused;                          // car draws given RBR's exact world matrix / refused it
   float skyErr, skyCamOff;                              // sky VP split error; sky camera distance from the dome centre
 } g_st = {};
 
@@ -2156,7 +2159,7 @@ bool before_draw(IDirect3DDevice9* dev) {
     double rec = 0;
     const DMat vp = to_d(wvp);
     if (decompose_vp(vp, V, P, rec) && inverse_d(vp, vpinv)) {
-      g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv;
+      g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv; g_VPd = vp;
       g_haveCam = true;
       g_frameCam = true;
       g_st.recErr = static_cast<float>(rec);
@@ -2178,9 +2181,33 @@ bool before_draw(IDirect3DDevice9* dev) {
   if (g_curInfo && (g_curInfo->flags & SH_USES_C8) && all_set(8, 4)) {
     // The shader also gets the exact world matrix in c8-c11: use it when it agrees with the derived one.
     const D3DMATRIX exact = from_rows(&g_c[8]);
-    const float err = max_diff(world, exact);
-    if (!btbFrame) g_st.worldErr = (std::max)(g_st.worldErr, err);
-    if (err < 0.05f || btbFrame) world = exact;
+    // Checked FORWARD: c8 x VP must put the model's origin and its three unit axes where c0 does on screen (NDC). The
+    // old check compared c8 with the derived W = c0 x VP^-1, but that inverse is ill-conditioned (RBR's P._33 ~ 1.0001)
+    // and its error grows with the distance from the map origin: 0.2-2 m on Legazpi (~2 km out), 2.9 on Peklo (~3 km),
+    // so c8 was refused there and the car (and the lamps on it) got the noisy derived matrix: lamps jumping around
+    // the car in the Peklo replay, roaming while driving (runs 20261030-051950, -053456).
+    const DMat fwd = mul_d(to_d(exact), g_VPd), c0 = to_d(wvp);
+    double scr = 0.0;
+    for (int k = 0; k < 4; ++k) {                      // points 0, x, y, z of the model: row 3 (+ row k)
+      double a[4], b[4];
+      for (int j = 0; j < 4; ++j) {
+        a[j] = fwd.m[12 + j] + (k < 3 ? fwd.m[k * 4 + j] : 0.0);
+        b[j] = c0.m[12 + j] + (k < 3 ? c0.m[k * 4 + j] : 0.0);
+      }
+      if (a[3] < 1e-3 || b[3] < 1e-3) {               // behind the camera: compare clip space relative to its size
+        const double m = (std::max)({ 1.0, std::fabs(b[0]), std::fabs(b[1]), std::fabs(b[3]) });
+        scr = (std::max)(scr, (std::max)({ std::fabs(a[0] - b[0]), std::fabs(a[1] - b[1]), std::fabs(a[3] - b[3]) }) / m);
+        continue;
+      }
+      scr = (std::max)(scr, (std::max)(std::fabs(a[0] / a[3] - b[0] / b[3]), std::fabs(a[1] / a[3] - b[1] / b[3])));
+    }
+    const float err = static_cast<float>(scr);
+    if (!btbFrame) {
+      g_st.worldErr = (std::max)(g_st.worldErr, err);
+      g_st.worldDerivErr = (std::max)(g_st.worldDerivErr, max_diff(world, exact));
+    }
+    if (err < 2e-3f || btbFrame) { world = exact; ++g_st.c8Used; }   // 2e-3 NDC: about a pixel at 1080p
+    else ++g_st.c8Refused;
     DMat winv;
     if (btbFrame && inverse_d(to_d(exact), winv) && inverse_d(mul_d(winv, to_d(wvp)), g_rbrVPinv)) g_rbrVPvalid = true;
   } else if (btbFrame && g_rbrVPvalid && !worldSpace) {
@@ -2214,10 +2241,10 @@ void log_frame(const wchar_t* why) {
   const bool okInv = g_haveCam && inverse(g_V, vinv);
   const float fovY = g_haveCam && g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f;
   clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed, %u instanced = %u copies merged, %u rebuilt, %u camera candidates refused, shift (%.1f %.1f %.1f))], transformed %u, no-camera %u, "
-       L"scenes %u, world-check max err %.5f, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
+       L"scenes %u, world-check (c8 x VP vs c0 on screen) max err %.5f, c8 used %u / refused %u, derived W err %.3f, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
        L"UI trigger %s at draw %u (occlusion queries open then %u, now %d), %s",
        g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.btbInstanced, g_st.btbCopies, g_st.btbRebuilt, g_st.btbCamRejected, g_btbShift[0], g_btbShift[1], g_btbShift[2], g_st.xformed, g_st.noCamera,
-       g_st.scenes, g_st.worldErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
+       g_st.scenes, g_st.worldErr, g_st.c8Used, g_st.c8Refused, g_st.worldDerivErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
        g_st.skyDraws, g_st.skyErr, g_st.skyCamOff, g_glassOn ? L"on" : L"off", g_st.glassSkipped, g_st.screenSpace, g_uiTriggerOn ? L"on" : L"off",
        g_st.uiTriggerAt, g_st.oqAtUi, g_oqActive, kTestModes[g_testMode]);
   clog(L"  foliage mode %d (cut-out ALPHAREF %lu): %u draws with lowered ALPHAREF, %u soft passes skipped; %u mid-scene screen quads skipped; off-screen scenery %s (%.0f draws skipped per frame) since last line",

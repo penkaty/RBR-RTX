@@ -7,15 +7,19 @@
 // shader's comment blocks stripped and a moved camera (shader recognition without comments). A fourth frame draws
 // with a BTB-style shader (HLSL compiled at run time like rbr_rx's D3DX effects: worldviewproj / worldMatrix found by
 // name in the constant table, column_major registers) and a moved camera. Needs d3dcompiler_47.dll (Windows has it).
+// A seventh frame moves camera, terrain and car ~3 km from the origin (Peklo Snow R): the world matrix derived from
+// c0 x VP^-1 is off by metres there, RBR's own c8 must be used (2026-10-30: lamps jumping around the car).
 #define WIN32_LEAN_AND_MEAN
 #define CINTERFACE
 #include <windows.h>
 #include <d3d9.h>
 #include <d3dcommon.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 static D3DMATRIX mul(const D3DMATRIX& a, const D3DMATRIX& b) {
@@ -149,16 +153,25 @@ int main() {
     { {0,0,0}, {0,1,0}, 0xffffffff, {0,0}, {0,0} }, { {1,0,0}, {0,1,0}, 0xffffffff, {1,0}, {1,0} },
     { {0,1,0}, {0,1,0}, 0xffffffff, {0,1}, {0,1} } };
 
-  float eye[3] = { 120, 35, -260 }; const float at[3] = { 100, 30, -200 }, up[3] = { 0, 1, 0 };
+  float eye[3] = { 120, 35, -260 }, at[3] = { 100, 30, -200 }; const float up[3] = { 0, 1, 0 };
   D3DMATRIX view = look_at_lh(eye, at, up);
-  const D3DMATRIX proj = perspective_lh(1.05f, 16.0f / 9.0f, 0.5f, 6000.0f);
+  D3DMATRIX proj = perspective_lh(1.05f, 16.0f / 9.0f, 0.5f, 6000.0f);
   D3DMATRIX world = {};                       // car: rotated 30 degrees about Y, placed near the camera target
   world._11 = std::cos(0.52f); world._13 = -std::sin(0.52f); world._22 = 1; world._31 = std::sin(0.52f); world._33 = std::cos(0.52f);
   world._41 = 101; world._42 = 29.5f; world._43 = -198; world._44 = 1;
   float rows[4][4];
 
   int failures = 0;
-  for (int frame = 0; frame < 5; ++frame) {
+  for (int frame = 0; frame < 7; ++frame) {
+    if (frame == 6) {                         // far from the origin like Peklo Snow R (-2900, 195, 3100), TV camera;
+                                              // frame 5 is a plain one: right after BTB the proxy takes c8 anyway
+      const float shift[3] = { -3020.0f, 165.0f, 3290.0f };   // 80 m from the car, near plane 0.11 (P._43 -0.110)
+      world._41 += shift[0]; world._42 += shift[1]; world._43 += shift[2];
+      for (int i = 0; i < 3; ++i) at[i] = (&world._41)[i];
+      eye[0] = at[0] - 60.0f; eye[1] = at[1] + 12.0f; eye[2] = at[2] - 52.0f;
+      view = look_at_lh(eye, at, up);
+      proj = perspective_lh(0.637f, 16.0f / 9.0f, 0.11f, 100000.0f);
+    }
     if (frame == 4) {                         // BTB instanced: 2 copies, the proxy splits the draw per copy
       D3DVERTEXELEMENT9 ie[] = {
         { 0, 0, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_POSITION, 0 }, { 1, 0, D3DDECLTYPE_FLOAT4, 0, D3DDECLUSAGE_TEXCOORD, 1 },
@@ -264,7 +277,36 @@ int main() {
     // car: c0-c3 = World * View * Projection, c8-c11 = World
     if (!stripped) {
     dev->lpVtbl->SetVertexShader(dev, car);
-    to_rows(mul(mul(world, view), proj), rows); dev->lpVtbl->SetVertexShaderConstantF(dev, 0, &rows[0][0], 4);
+    to_rows(mul(mul(world, view), proj), rows);
+    // Frame 6: RBR's float W*V*P rounds differently from ours; 2-3 ulps on c0 (relative 3e-7) are what its ~10^4
+    // ill-conditioned depth row (P._33 ~ 1.0001) turns into metres in c0 x VP^-1 (in game 2.3-2.9 at 3 km).
+    if (frame == 6)
+      for (int i = 0; i < 4; ++i) for (int k = 0; k < 4; ++k) rows[i][k] *= 1.0f + (((i + k) & 1) ? 3e-7f : -3e-7f);
+    dev->lpVtbl->SetVertexShaderConstantF(dev, 0, &rows[0][0], 4);
+    if (frame == 6) {                       // what the derived W = c0 x VP^-1 would be off by here (double inverse)
+      float c0[4][4], vpr[4][4];
+      memcpy(c0, rows, sizeof(c0));
+      to_rows(mul(view, proj), vpr);
+      double a[4][8];                         // [VP^T | I] -> [I | (VP^T)^-1] (to_rows writes the transpose)
+      for (int i = 0; i < 4; ++i) for (int k = 0; k < 8; ++k) a[i][k] = k < 4 ? vpr[i][k] : (k - 4 == i);
+      for (int c = 0; c < 4; ++c) {
+        int piv = c;
+        for (int r = c + 1; r < 4; ++r) if (std::fabs(a[r][c]) > std::fabs(a[piv][c])) piv = r;
+        for (int k = 0; k < 8; ++k) std::swap(a[c][k], a[piv][k]);
+        const double d = a[c][c];
+        for (int k = 0; k < 8; ++k) a[c][k] /= d;
+        for (int r = 0; r < 4; ++r) if (r != c) { const double m = a[r][c]; for (int k = 0; k < 8; ++k) a[r][k] -= m * a[c][k]; }
+      }
+      float wr[4][4];
+      to_rows(world, wr);
+      double e = 0;
+      for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) {
+        double s = 0;
+        for (int k = 0; k < 4; ++k) s += a[i][4 + k] * c0[k][j];   // registers hold transposes: W^T = (VP^T)^-1 c0^T
+        e = (std::max)(e, std::fabs(s - wr[i][j]));
+      }
+      printf("frame 6: c0 x VP^-1 is off by %.3f from the car's world matrix (the proxy must use c8)\n", e);
+    }
     to_rows(world, rows); dev->lpVtbl->SetVertexShaderConstantF(dev, 8, &rows[0][0], 4);
     dev->lpVtbl->DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
     }

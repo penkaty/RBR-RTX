@@ -54,6 +54,7 @@ struct Part {
   bool offSeen[kSignals] = {};
   unsigned lastFrame = ~0u;
   int lit = -1;                                          // signal it is the lit part of
+  bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
@@ -290,6 +291,46 @@ std::wstring car_dir() {
   return slash == std::wstring::npos ? std::wstring() : g_carFile.substr(0, slash);
 }
 
+// Every part drawn in the frame that just ended, against that frame's signal states (+1 on, -1 off, 0 not settled).
+// A lit part is dropped only when drawn with ALL signals clearly off: RBR's tail lamp lenses show with the lamps AND
+// with the brake, so "drawn with the lamps off" while braking is no reason (the same run unlearnt them as lamp
+// parts and learnt them again as brake parts, with another glow).
+void judge_frame(const int st[kSignals]) {
+  if (g_carDrawsThisFrame < 8) return;                 // no car this frame (menus, loading)
+  bool allOff = true;
+  for (int i = 0; i < kSignals; ++i) {
+    allOff = allOff && st[i] < 0;
+    if (st[i] < 0) ++g_offFrames[i];
+  }
+  for (auto it = g_parts.begin(); it != g_parts.end();) {
+    Part& p = it->second;
+    if (p.lastFrame != g_frame) {                       // not drawn for a minute and not lit: forget (dynamic buffers)
+      if (p.lit < 0 && g_frame - p.lastFrame > 3600) it = g_parts.erase(it); else ++it;
+      continue;
+    }
+    ++it;
+    for (int i = 0; i < kSignals; ++i) {
+      if (st[i] < 0) p.offSeen[i] = true;
+      else if (st[i] > 0) ++p.onFrames[i];
+    }
+    if (p.lit >= 0 && allOff) {
+      llog(L"lit parts: a %u-triangle %s part was drawn with brake, lamps and reverse all off: no longer treated as lit",
+           p.prims, kSignalName[p.lit]);
+      p.lit = -1;
+      p.never = true;
+    }
+    if (p.lit < 0 && !p.never && p.prims <= kMaxPrims)
+      for (int i = 0; i < kSignals; ++i)
+        if (!p.offSeen[i] && p.onFrames[i] >= kOnFrames && g_offFrames[i] >= kOffFrames) {
+          p.lit = i;
+          ++g_learnt;
+          llog(L"lit parts: a %u-triangle car part is drawn only with the %s on (%u frames on, none of %u off): lit part",
+               p.prims, kSignalName[i], p.onFrames[i], g_offFrames[i]);
+          break;
+        }
+  }
+}
+
 void forget_car() {
   g_parts.clear();
   for (unsigned& n : g_offFrames) n = 0;
@@ -328,20 +369,27 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
   if (!g_cfg.enabled) return;
   if (!carFile || !carFile[0]) { if (!g_carFile.empty()) { g_carFile.clear(); forget_car(); } return; }
   if (g_carFile != carFile) { g_carFile = carFile; forget_car(); }
-  for (int i = 0; i < kSignals; ++i)
-    if (g_state[i] < 0 && g_carDrawsThisFrame >= 8) ++g_offFrames[i];
-  ++g_frame;
-  g_carDrawsThisFrame = 0;
   float brake = 0.0f;
   int gear = 1;
   const bool br = rbrrtx_player_car_brake(&brake), gr = rbrrtx_player_car_gear(&gear);
   const int raw[kSignals] = { !br ? 0 : brake > 0.3f ? 1 : brake < 0.01f ? -1 : 0, lamps > 0 ? 1 : lamps == 0 ? -1 : 0,
                               !gr ? 0 : gear == 0 ? 1 : -1 };
+  int before[kSignals];
   for (int i = 0; i < kSignals; ++i) {
+    before[i] = g_state[i];
     g_same[i] = raw[i] == g_raw[i] ? g_same[i] + 1 : 0;
     g_raw[i] = raw[i];
     g_state[i] = g_same[i] >= kSettle ? raw[i] : 0;
   }
+  // The frame that just ended, judged now: a signal counts only if it was settled the same way at both of its ends.
+  // The lamp key is handled after this call in the same Present (comp.cpp end_frame), so the game drew the lit lenses
+  // one frame before the state said "on": judged from the frame's start alone, toggling L unlearnt the head lamp lenses
+  // (run 20261030-051950, 05:24:27).
+  int st[kSignals];
+  for (int i = 0; i < kSignals; ++i) st[i] = before[i] == g_state[i] ? g_state[i] : 0;
+  judge_frame(st);
+  ++g_frame;
+  g_carDrawsThisFrame = 0;
   if (!g_workerBusy) {
     bool work;
     {
@@ -371,28 +419,8 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (vb) vb->lpVtbl->Release(vb);
   if (ib) ib->lpVtbl->Release(ib);
   Part& p = g_parts[key];
-  if (p.lastFrame != g_frame) {
-    p.lastFrame = g_frame;
-    p.prims = prims;
-    for (int i = 0; i < kSignals; ++i) {
-      if (g_state[i] < 0) p.offSeen[i] = true;
-      else if (g_state[i] > 0) ++p.onFrames[i];
-    }
-    if (p.lit >= 0 && p.offSeen[p.lit]) {              // turned out to be drawn with the signal off after all
-      llog(L"lit parts: a %u-triangle %s part was drawn with the %s off: no longer treated as lit", prims,
-           kSignalName[p.lit], kSignalName[p.lit]);
-      p.lit = -1;
-    }
-    if (p.lit < 0 && prims <= kMaxPrims)
-      for (int i = 0; i < kSignals; ++i)
-        if (!p.offSeen[i] && p.onFrames[i] >= kOnFrames && g_offFrames[i] >= kOffFrames) {
-          p.lit = i;
-          ++g_learnt;
-          llog(L"lit parts: a %u-triangle car part is drawn only with the %s on (%u frames on, none of %u off): lit part",
-               prims, kSignalName[i], p.onFrames[i], g_offFrames[i]);
-          break;
-        }
-  }
+  p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
+  p.prims = prims;
   if (p.lit < 0) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
