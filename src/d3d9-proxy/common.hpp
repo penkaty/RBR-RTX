@@ -137,16 +137,42 @@ void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Re
 // each car draw on the primary target (row-major W); cockpitGlass = CarGlassInternal.vso (the windscreen seen from the cockpit)
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended, bool cockpitGlass);
 void rbrrtx_headlights_emit();                                 // once per frame at the first BeginScene (with the sun)
+void rbrrtx_headlights_refine();                               // before Remix takes the frame's lights (UI trigger, else Present)
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
 void rbrrtx_headlights_destroy();
 int rbrrtx_headlights_history_frames();                          // NUMOS froxel history while car lamps are lit (0 = none)
 bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
 unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of the backfire sprite to watch for (0 = none now)
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
-void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir);  // before Remix starts: lit lamp textures made emissive
+void rbrrtx_headlights_write_lit_mod();                         // before Remix starts: lit lamp textures made emissive (genmod)
+int rbrrtx_headlights_game_lamps();                             // the game's lamp switch as last sent: 1 on, 0 off, -1 unknown
+const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
 void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this frame's camera (cockpit = camera in the cabin)
+
+// genmod.cpp: the generated Remix mod <mods>\rbr_rtx_lit\mod.usda (sections "lit", "litparts", "foliage"); Remix reloads
+// it when it changes. init before the backend loads; flush writes now; tick (per Present) writes a change at most
+// every few seconds.
+void rbrrtx_genmod_init(const wchar_t* modsDir);
+const wchar_t* rbrrtx_genmod_dir();                            // <mods>\rbr_rtx_lit ("" before init)
+void rbrrtx_genmod_set(const char* section, const std::string& materials);
+void rbrrtx_genmod_flush(const wchar_t* why);
+void rbrrtx_genmod_tick();
+std::string rbrrtx_genmod_material(unsigned long long hash, const std::string& comment, const std::string& inputs);
+std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as a USD asset path (UTF-8, forward slashes)
+// litparts.cpp: lit car parts (hot brake discs, lit lamp lenses) glow: learnt per car, drawn with a twin texture whose
+// generated material is emissive. Settings: config\materials.ini [lit_parts].
+void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
+void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
+void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims);
+void rbrrtx_litparts_status(wchar_t* out, size_t n);
+void rbrrtx_litparts_destroy();
+// foliage.cpp: swaying foliage textures get Remix thin-opaque (subsurface) materials. Settings: materials.ini [foliage].
+void rbrrtx_foliage_startup();                                 // before the backend loads, after rbrrtx_genmod_init
+void rbrrtx_foliage_draw(void* texture);                       // a swaying foliage draw's stage-0 texture
+void rbrrtx_foliage_frame();                                   // per Present
+void rbrrtx_foliage_status(wchar_t* out, size_t n);
 
 // particles.cpp: Remix particles test build (docs/research/particles-remix.md): RBRRTX_EMIT_PROBE logs RBR's
 // CEmitter_Emit calls, RBRRTX_PARTICLE_TEST = Remix dust at the wheels (key dust = 7) and the game's dust never spawned.

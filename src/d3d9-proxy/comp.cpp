@@ -673,6 +673,7 @@ bool g_numosGroundCar = true, g_numosGroundManual = false;
 float g_numosGroundOffset = 0.5f, g_numosGround = 0.0f, g_numosGroundSent = -1.0e9f;
 bool g_numosFogAlbedo = true;                          // [numos] fog_albedo_from_game: albedo from the stage's fog colour
 float g_numosFogExtra = 20.0f;                         // [numos] fog_extra: metres added to every fog visibility (user 2026-10-29)
+bool g_numosFogHalfway = true;                         // [numos] stage_fog_match = halfway (else end)
 
 void numos_sun(const float d[3], float elev) {
   if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
@@ -1001,6 +1002,8 @@ void atmo_load() {
     g_numosFogAlbedo = GetPrivateProfileIntW(L"numos", L"fog_albedo_from_game", 1, path) != 0;
     GetPrivateProfileStringW(L"numos", L"fog_extra", L"20", v, 32, path);
     g_numosFogExtra = (std::max)(0.0f, static_cast<float>(_wtof(v)));
+    GetPrivateProfileStringW(L"numos", L"stage_fog_match", L"halfway", v, 32, path);
+    g_numosFogHalfway = _wcsicmp(v, L"end") != 0;
     clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f; ground %s; "
          L"fog albedo %s", g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity,
          conf_float("rtx.atmosphere.aerosolDensity", 1.1f), g_numosGroundCar ? L"from the car" : L"NUMOS's own (auto)",
@@ -1077,8 +1080,14 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
   float vis = confFog;
   wchar_t fogNote[128] = L"conf value";
   if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
-    vis = sw.fogEnd / stageFog / dens;
-    swprintf_s(fogNote, L"stage fog %.0f..%.0f m / %.2f / density %.2f", sw.fogStart, sw.fogEnd, stageFog, dens);
+    // RBR's raster fog is linear, FogStart..FogEnd; NUMOS's visibility is where contrast falls to 2 % (transmittance
+    // exp(-3.912 d / V)). visibility = FogEnd (until 2026-10-30) made NUMOS's fog far thicker on the way: 32 % at a
+    // tenth of FogEnd where RBR has 10 %, 86 % at half where RBR has 50 % (user: haze too close to the camera, objects
+    // grey and flat). halfway: half fogged where RBR is half fogged, V = 3.912 / ln 2 x (FogStart + FogEnd) / 2.
+    const float end = g_numosFogHalfway ? 2.822f * (std::max)(1.0f, sw.fogStart + sw.fogEnd) : sw.fogEnd;
+    vis = end / stageFog / dens;
+    swprintf_s(fogNote, L"stage fog %.0f..%.0f m%s / %.2f / density %.2f", sw.fogStart, sw.fogEnd,
+               g_numosFogHalfway ? L" matched halfway" : L"", stageFog, dens);
   } else if (total.fogVis >= 0.0f) {
     vis = total.fogVis > 0.0f ? total.fogVis / dens : 0.0f;
     swprintf_s(fogNote, L"fog_visibility %.0f m / density %.2f", total.fogVis, dens);
@@ -1136,6 +1145,24 @@ void atmo_frame() {
       g_stageWxNamed = !g_stageWx.description.empty() &&
                        rbrrtx_weather_from_text(g_stageWx.description, si.skyType, &g_stageWxText);
       if (!g_stageWxNamed) g_stageWxText = WeatherText();
+      // A section that names no time: the stage's own name can ("Sardian Night": section [126O_E_heavyrain_heavycloud]
+      // without a description sent the game's 44 deg day sun to NUMOS, run 20261030-043219). Only night is taken.
+      // Whole words only (the description parser's stems like "dark" or "yo" are too loose for stage names).
+      bool nightFromName = false;
+      if (g_stageWxText.time < 0) {
+        std::wstring word;
+        for (const wchar_t* p = si.name;; ++p) {
+          if (*p && iswalpha(*p)) { word += static_cast<wchar_t>(towlower(*p)); continue; }
+          for (const wchar_t* n : { L"night", L"noche", L"nocturne", L"nocturna", L"nuit", L"notte", L"nacht", L"noc", L"midnight" })
+            if (word == n) nightFromName = true;
+          word.clear();
+          if (!*p) break;
+        }
+        if (nightFromName) {
+          g_stageWxText.time = 3;
+          g_stageWxText.night = true;
+        }
+      }
       if (g_stageWx.found)
         clog(L"stage weather: section [%s], description \"%s\" -> %s%s%s%s%s%s; game fog %s %.0f..%.0f m, colour (%.2f %.2f %.2f)",
              g_stageWx.section.c_str(), g_stageWx.description.c_str(),
@@ -1149,7 +1176,8 @@ void atmo_frame() {
                 rbrrtx_sky_name(si.skyType), rbrrtx_cloud_name(si.clouds));
       g_night = g_stageWxText.night;
       g_sunRuleLogged = -1;
-      if (g_night) clog(L"night weather: section [%s] says night; sun elevation held in %.1f..%.1f deg%s", g_stageWx.section.c_str(),
+      if (g_night) clog(L"night weather: %s [%s] says night; sun elevation held in %.1f..%.1f deg%s",
+                        nightFromName ? L"the stage's name, section" : L"section", g_stageWx.section.c_str(),
                         g_nightMin, g_nightMax, g_nightOn ? L"" : L" (OFF: atmosphere.ini night_sun = none)");
     }
   } else {
@@ -1592,6 +1620,8 @@ bool apply_material_hint(IDirect3DDevice9* dev) {
 // zwrite off, all colour channels on (Remix ignores draws with colour write off), fog off. Transforms are identity
 // already (before_draw). Goes straight to the backend, not through our hooks; the game's states are restored.
 void trigger_ui(IDirect3DDevice9* dev) {
+  // Remix takes this frame's lights at this draw: the car lamps go out from the car as drawn so far (headlights.cpp).
+  if (g_enabled && g_apiOk) rbrrtx_headlights_refine();
   struct V { float x, y, z, rhw; D3DCOLOR c; };
   const V quad[4] = { { -0.5f, -0.5f, 0, 1, 0 }, { -0.49f, -0.5f, 0, 1, 0 }, { -0.5f, -0.495f, 0, 1, 0 },
                       { -0.49f, -0.495f, 0, 1, 0 } };
@@ -2570,6 +2600,12 @@ void exp_frame() {
 }
 
 void end_frame(IDirect3DDevice9* dev) {
+  if (g_enabled && g_apiOk) rbrrtx_headlights_refine();   // no UI trigger this frame: lamps before Present
+  if (g_apiOk) {                                            // generated mod: lit car parts, foliage (Remix reloads it)
+    rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps());
+    rbrrtx_foliage_frame();
+    rbrrtx_genmod_tick();
+  }
   if (g_sweepDumpFrames && --g_sweepDumpFrames == 0) sweep_dump_end();
   atmo_frame();
   exp_frame();
@@ -2723,7 +2759,8 @@ void end_frame(IDirect3DDevice9* dev) {
     static int histSent = -1;
     if (histBase < 0.0f) histBase = conf_float("rtx.atmosphere.aerialPerspectiveHistoryFrames", 32.0f);
     const int lit = rbrrtx_headlights_history_frames();   // 0 = lamps off / not asked
-    const int want = lit > 0 ? lit : static_cast<int>(histBase);
+    // Only ever shorter than the user's own setting (2026-10-30: conf 6, lamps lit made it 32 = a longer glow trail).
+    const int want = lit > 0 ? (std::min)(lit, static_cast<int>(histBase)) : static_cast<int>(histBase);
     if (want != histSent) {
       if (histSent >= 0 || lit > 0) {
         remix_set("rtx.atmosphere.aerialPerspectiveHistoryFrames", std::to_string(want).c_str());
@@ -3048,7 +3085,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
   if (g_apiOk) {
     const ULONG refs = o.AddRef(dev);
     o.Release(dev);
-    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); }
+    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); }
   }
   return o.Release(dev);
 }
@@ -3544,6 +3581,10 @@ void sweep_begin() {
   r += s;
   rbrrtx_headlights_status(s, 1024);
   r += s;
+  rbrrtx_litparts_status(s, 1024);
+  r += L"\n" + std::wstring(s);
+  rbrrtx_foliage_status(s, 1024);
+  r += L"\n" + std::wstring(s);
   r += L"\n";
   swprintf_s(s, L"proxy: comp %s, FF scenery mode %d (sway near %.0f m), foliage mode %d (ALPHAREF %lu), sky mode %d, "
                 L"windscreen %s, culling %s, transform mode %d\n",
@@ -4017,9 +4058,25 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
               SUCCEEDED(o.SetVertexDeclaration(dev, rd));
     }
   }
+  // Lit car parts (litparts.cpp): a hot brake disc or a lit lamp lens is drawn with its twin texture, which the generated
+  // mod makes emissive (albedo and glow from the car's atlas file). Swaying foliage: its texture becomes thin opaque.
+  IDirect3DBaseTexture9* litPrev = nullptr;
+  bool litSwap = false;
+  if (g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid) {
+    if (void* twin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count)) {
+      dev->lpVtbl->GetTexture(dev, 0, &litPrev);
+      litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(twin)));
+    }
+  }
+  if (g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_SWAY)) {
+    IDirect3DBaseTexture9* ft = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &ft)) && ft) { ft->lpVtbl->Release(ft); rbrrtx_foliage_draw(ft); }
+  }
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) hr = draw();
+  if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
+  if (litPrev) litPrev->lpVtbl->Release(litPrev);
   if (SUCCEEDED(hr)) { if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
   if (normalsOff || radOn) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
   if (radOn || radPrev) dev->lpVtbl->SetStreamSource(dev, kRadStream, radPrev, radPrevOff, radPrevStride);

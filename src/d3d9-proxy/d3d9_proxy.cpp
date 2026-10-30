@@ -151,11 +151,17 @@ void seed_user_conf(const wchar_t* addon) {
   if (CopyFileW(seed, L"user.conf", TRUE)) log(L"user.conf seeded from %s", seed);
 }
 
-// Before Remix starts (it reads its mods once, at start): the local mod that makes lit lamp textures emissive.
+// Before Remix starts (it opens the mods it finds then): the generated mod (genmod.cpp) with the lit lamp textures, the
+// lit car parts and the foliage known from earlier runs. Remix reloads it when the proxy changes it later.
 void write_lit_mod() {
   wchar_t mods[MAX_PATH * 2] = {};
   const DWORD m = GetEnvironmentVariableW(L"DEFAULT_MODS_DIR", mods, MAX_PATH * 2);
-  if (m > 0 && m < MAX_PATH * 2) rbrrtx_headlights_write_lit_mod(mods);
+  if (m == 0 || m >= MAX_PATH * 2) return;
+  rbrrtx_genmod_init(mods);
+  rbrrtx_headlights_write_lit_mod();
+  rbrrtx_litparts_startup();
+  rbrrtx_foliage_startup();
+  rbrrtx_genmod_flush(L"game start");
 }
 
 BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
