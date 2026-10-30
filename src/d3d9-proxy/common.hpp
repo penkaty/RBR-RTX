@@ -147,6 +147,8 @@ void rbrrtx_headlights_pop_drawn();                            // a draw with th
 void rbrrtx_headlights_write_lit_mod();                         // before Remix starts: lit lamp textures made emissive (genmod)
 int rbrrtx_headlights_game_lamps();                             // the game's lamp switch as last sent: 1 on, 0 off, -1 unknown
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
+bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS's clock (comp.cpp); false off the menu
+float rbrrtx_numos_lux_per_unit();                              // lux per unit of API light irradiance under NUMOS; 0 without
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
 void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this frame's camera (cockpit = camera in the cabin)

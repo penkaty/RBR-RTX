@@ -29,6 +29,8 @@ bool rbrrtx_remix_plus() { return false; }
 const wchar_t* rbrrtx_key_name(int) { return L"L"; }
 void rbrrtx_report_event(const wchar_t*) {}
 bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
+bool rbrrtx_menu_sun_elevation(float*) { return false; }
+float rbrrtx_numos_lux_per_unit() { return 0.0f; }
 float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
 bool g_testPhysOn = false;
 bool rbrrtx_player_car_brake(float*) { return false; }
@@ -80,7 +82,7 @@ int wmain(int argc, wchar_t** argv) {
   for (int r = 0; r < 3; ++r) { C[r * 4] = rows[r].x; C[r * 4 + 1] = rows[r].y; C[r * 4 + 2] = rows[r].z; }
   C[12] = 1234.5f; C[13] = 87.25f; C[14] = -4321.0f; C[15] = 1;
   int interiorGlass = 0;
-  int cars = 0, fails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0, noGlass = 0, glassFallback = 0;
+  int cars = 0, fails = 0, menuFails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0, noGlass = 0, glassFallback = 0;
   for (const auto& e : std::filesystem::recursive_directory_iterator(argv[1])) {
     if (_wcsicmp(e.path().extension().c_str(), L".sgc") != 0) continue;
     ++cars;
@@ -142,6 +144,16 @@ int wmain(int argc, wchar_t** argv) {
         g_groups.push_back(gr);
       }
       measure_frame();
+    }
+    // Main menu car (menu_root, no car object): the same draws must give the drawn car, not the wrong bigger body or
+    // the off-centre bonnet. Models with fewer than two distinct part frames cannot have two groups agree.
+    float Mm[16];
+    const bool menuOk = menu_root(g_groups, Mm);
+    const float menuErr = menuOk ? len(to_world(Mm, g_car.lf) - to_world(C, g_car.lf)) : 99.0f;
+    const bool menuPass = g_car.parts.size() < 2 || menuErr < 0.01f;
+    if (!menuPass) {
+      ++menuFails;
+      wprintf(L"%-30s menu car root: %s, lamp %.3f m off\n", e.path().filename().c_str(), menuOk ? L"found" : L"NOT found", menuErr);
     }
     // The car drives on (20 m, turned 50 deg), nothing of it drawn: the lamps from RBR's car object alone.
     float C2[16];
@@ -316,7 +328,7 @@ int wmain(int argc, wchar_t** argv) {
     wprintf(L"%-30s glass %s: %.2f m behind the lamps, %.2f up, %.2f/%.2f wide, %.2f long, normal (%.2f %.2f %.2f), flat %.3f\n",
             e.path().filename().c_str(), g_car.glass ? L"ok" : g_car.glassRejected ? L"rejected (lamp plane)" : L"BAD", glassBack, gc.y - lampMid.y, g_car.glassWb, g_car.glassWt,
             glassLen, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassFlat);
-    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f && lagOk;
+    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f && lagOk && menuPass;
     if (!ok) ++fails;
     if (g_car.bodyName[0] == '(') ++noBody;
     wprintf(L"%-30s lf (%5.2f %5.2f %5.2f) rf (%5.2f %5.2f %5.2f) fwd %+.0fz | body %-18S err %.4f drift %.4f | rear (%5.2f %5.2f %5.2f) "
@@ -341,7 +353,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!litOk) ++fails;
   }
   wprintf(L"%d cars use the interior glass (i_window_f)\n", interiorGlass);
-  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d bad windscreen glass (%d lamp-plane fallbacks), %d FAIL\n",
-          cars, noLamps, noBody, noRear, noExhaust, noGlass, glassFallback, fails);
+  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d bad windscreen glass (%d lamp-plane fallbacks), %d menu car misses, %d FAIL\n",
+          cars, noLamps, noBody, noRear, noExhaust, noGlass, glassFallback, menuFails, fails);
   return cars > 0 && fails == 0 ? 0 : 1;
 }

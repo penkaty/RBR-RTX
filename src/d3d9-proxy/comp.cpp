@@ -558,6 +558,7 @@ void load_vso_hashes() {
 // ---------------------------------------------------------------- sun light (Remix API)
 
 float conf_float(const char* name, float dflt);
+void conf_vec3(const char* name, float out[3], float dflt);
 void remix_set(const char* key, const char* value);
 
 void init_remix_api() {
@@ -583,6 +584,9 @@ void init_remix_api() {
       // view (run 20261029-053643: Witoszow, Legazpi, Peklo; NUMOS settings changed nothing). The stage's fog reaches
       // NUMOS instead (numos_weather). Also off in config-remixplus\rtx.conf; sent here so no saved layer brings it back.
       if (g_numos) remix_set("rtx.enableFog", "False");
+      // A stage's weather at once (user 2026-10-30: the stage started in the last weather and moved into its own):
+      // blend 1 = "the game blends itself, fully in the new one" (rtx_numos_weather.cpp), no 2-10 s transition.
+      if (g_numos) remix_set("rtx.weather.gameWeatherBlend", "1");
       clog(L"sun: Remix API ready (Remix Plus, API 1.0.0 through remixplus_api.cpp); NUMOS sky %s", g_numos
            ? L"on: the sun, weather and fog go to rtx.atmosphere.* / rtx.weather.*, no proxy sun light"
            : L"off (rtx.skyMode is not 1): the proxy's own sun and haze as on Remix 1.5.2");
@@ -677,6 +681,13 @@ float g_numosGroundOffset = 0.5f, g_numosGround = 0.0f, g_numosGroundSent = -1.0
 bool g_numosFogAlbedo = true;                          // [numos] fog_albedo_from_game: albedo from the stage's fog colour
 float g_numosFogExtra = 20.0f;                         // [numos] fog_extra: metres added to every fog visibility (user 2026-10-29)
 bool g_numosFogHalfway = true;                         // [numos] stage_fog_match = halfway (else end)
+// Main menu under NUMOS (user 2026-10-30): the base weather (no preset: "Menu, RBR" binds none unless a preset is made
+// for it) and NUMOS's own clock, a day in [menu] day_minutes (atmosphere.ini, default 2; 0 = the menu sun as before).
+// The proxy runs the same clock (NUMOS renderer.cpp computeTimeCycleSunAngles) and sends it as timeOfDayHours every
+// 30 frames, so it knows the sun's height: the menu car's lamps go on at night (headlights.cpp).
+float g_menuDayMinutes = 2.0f, g_menuStartHour = 10.0f, g_menuHour = -1.0f, g_menuSunEl = 90.0f;
+bool g_menuClock = false;                              // NUMOS's clock runs (menu, day_minutes > 0)
+ULONGLONG g_menuClockLast = 0;
 
 void numos_sun(const float d[3], float elev) {
   if (g_sun) { g_api.DestroyLight(g_sun); g_sun = nullptr; }
@@ -707,6 +718,28 @@ void numos_sun(const float d[3], float elev) {
     g_numosSentL = l;
   }
 }
+
+}  // namespace
+
+// Lux per unit of irradiance from an API light under NUMOS, 0 without NUMOS. NUMOS's sun (sunIlluminance x
+// sunIntensity, the conf values) is the real sun's 127,000 lux (numos renderer.cpp luxPerUnit), and Remix Plus scales
+// every API light by 2^rtx.hostCalibration.lightsEv on top (rtx_host_calibration.h).
+float rbrrtx_numos_lux_per_unit() {
+  if (!g_numos) return 0.0f;
+  float il[3];
+  conf_vec3("rtx.atmosphere.sunIlluminance", il, 15.0f);
+  const float sun = (0.2126f * il[0] + 0.7152f * il[1] + 0.0722f * il[2]) * conf_float("rtx.atmosphere.sunIntensity", 1.09f);
+  return sun > 0.0f ? 127000.0f / sun * std::exp2(conf_float("rtx.hostCalibration.lightsEv", 0.0f)) : 0.0f;
+}
+
+// The menu's sun height under NUMOS's clock (degrees), false when the clock does not run (stage, 1.5.2, day_minutes 0).
+bool rbrrtx_menu_sun_elevation(float* el) {
+  if (!g_menuClock || !g_inMenu) return false;
+  *el = g_menuSunEl;
+  return true;
+}
+
+namespace {
 
 void numos_ground() {
   if (!g_numos || !g_apiOk || !g_enabled) return;
@@ -1007,6 +1040,10 @@ void atmo_load() {
     g_numosFogExtra = (std::max)(0.0f, static_cast<float>(_wtof(v)));
     GetPrivateProfileStringW(L"numos", L"stage_fog_match", L"halfway", v, 32, path);
     g_numosFogHalfway = _wcsicmp(v, L"end") != 0;
+    GetPrivateProfileStringW(L"menu", L"day_minutes", L"2", v, 32, path);
+    g_menuDayMinutes = (std::max)(0.0f, static_cast<float>(_wtof(v)));
+    GetPrivateProfileStringW(L"menu", L"start_hour", L"10", v, 32, path);
+    g_menuStartHour = std::clamp(static_cast<float>(_wtof(v)), 0.0f, 24.0f);
     clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f; ground %s; "
          L"fog albedo %s", g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity,
          conf_float("rtx.atmosphere.aerosolDensity", 1.1f), g_numosGroundCar ? L"from the car" : L"NUMOS's own (auto)",
@@ -1118,6 +1155,65 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
   clog(L"atmosphere: %s", line);
 }
 
+// NUMOS's clock in the menu (numos renderer.cpp computeTimeCycleSunAngles, with the conf's latitude and day of year):
+// the sun's height at hour h, as NUMOS draws it.
+float numos_clock_elevation(float h) {
+  const float lat = conf_float("rtx.atmosphere.latitudeDegrees", 45.0f) * 0.0174533f;
+  const float doy = conf_float("rtx.atmosphere.dayOfYear", 80.0f);
+  const float dec = 23.44f * 0.0174533f * std::sin(2.0f * 3.14159265f * (284.0f + doy) / 365.0f);
+  const float ha = (h - 12.0f) * 15.0f * 0.0174533f;
+  const float s = std::clamp(std::sin(lat) * std::sin(dec) + std::cos(lat) * std::cos(dec) * std::cos(ha), -1.0f, 1.0f);
+  return std::asin(s) * 57.2958f;
+}
+
+// Menu <-> stage under NUMOS: the menu gets the base weather at once and NUMOS's clock; a stage stops the clock and
+// sends its own sun again (numos_weather then sends the stage's weather).
+void numos_menu(bool menu) {
+  if (!g_numos || !g_apiOk) return;
+  if (menu) {
+    atmo_send("rtx.weather.gameWeather", "Menu, RBR", "");
+    const std::string fog = fmt1(conf_float("rtx.atmosphere.fogVisibilityMeters", 0.0f));
+    const std::string aer = fmt1(conf_float("rtx.atmosphere.aerosolDensity", 1.1f));
+    const std::string alb = fmt1(conf_float("rtx.atmosphere.fogAlbedo", 0.9f));
+    atmo_send("rtx.atmosphere.fogVisibilityMeters", fog, fog);
+    atmo_send("rtx.atmosphere.aerosolDensity", aer, aer);
+    atmo_send("rtx.atmosphere.fogAlbedo", alb, alb);
+    g_numosSunWeather = 1.0f;
+    g_menuClock = g_menuDayMinutes > 0.0f;
+    if (g_menuClock) {
+      if (g_menuHour < 0.0f) g_menuHour = g_menuStartHour;
+      g_menuClockLast = GetTickCount64();
+      char v[32];
+      sprintf_s(v, "%.3f", g_menuDayMinutes);
+      remix_set("rtx.atmosphere.dayLengthMinutes", v);
+      sprintf_s(v, "%.3f", g_menuHour);
+      remix_set("rtx.atmosphere.timeOfDayHours", v);
+      remix_set("rtx.atmosphere.timeCycleEnable", "True");
+      g_menuSunEl = numos_clock_elevation(g_menuHour);
+    }
+    clog(L"atmosphere: menu: base weather (\"Menu, RBR\"), conf fog / haze; %s", g_menuClock
+         ? (L"NUMOS time cycle on, a day in " + std::to_wstring(g_menuDayMinutes).substr(0, 4) + L" min, at " +
+            std::to_wstring(g_menuHour).substr(0, 5) + L" h").c_str()
+         : L"time cycle off ([menu] day_minutes = 0): the menu sun");
+  } else {
+    if (g_menuClock) remix_set("rtx.atmosphere.timeCycleEnable", "False");
+    g_menuClock = false;
+    g_numosSentEl = g_numosSentAz = -1000.0f;          // the stage's sun again at once
+  }
+}
+
+void numos_menu_clock() {
+  if (!g_menuClock) return;
+  const ULONGLONG now = GetTickCount64();
+  const float dt = (std::min)(static_cast<float>(now - g_menuClockLast) * 0.001f, 1.0f);
+  g_menuClockLast = now;
+  g_menuHour = std::fmod(g_menuHour + dt / (g_menuDayMinutes * 60.0f) * 24.0f, 24.0f);
+  g_menuSunEl = numos_clock_elevation(g_menuHour);
+  char v[32];
+  sprintf_s(v, "%.3f", g_menuHour);                    // NUMOS runs its own clock in between: no step
+  remix_set("rtx.atmosphere.timeOfDayHours", v);
+}
+
 void atmo_frame() {
   if (g_frame % 30 != 0 || !g_apiOk || g_expStep >= 0) return;   // K / sweep runs keep their own values
   if (!g_atmoLoaded) atmo_load();
@@ -1131,13 +1227,25 @@ void atmo_frame() {
     }
   }
   RbrStageInfo si;
-  const bool inStage = rbrrtx_stage_info(&si) && si.trackId > 0 &&
+  const bool haveInfo = rbrrtx_stage_info(&si);
+  const bool inStage = haveInfo && si.trackId > 0 &&
                        (si.gameMode == 1 || si.gameMode == 2 || si.gameMode == 5 || si.gameMode == 8 || si.gameMode == 10);
-  if (inStage == g_inMenu) {                           // menu <-> stage: log the sun rule again
-    g_inMenu = !inStage;
+  // The menu only after two checks (60 frames) with the game in its menu (mode 3) or no stage: between "loading" and
+  // "pre-stage" RBR reports another mode for a moment, and the menu sun (day) went to NUMOS for half a second at every
+  // stage start (run 20261030-055723, Peklo 05:59:53.5: night -> day -> night; the user saw the sun move into place
+  // and a night stage start in daylight). Any other mode keeps the state it had.
+  static int menuChecks = 0;
+  static bool menuApplied = false;
+  menuChecks = inStage ? 0 : (!haveInfo || si.trackId <= 0 || si.gameMode == 3) ? menuChecks + 1 : menuChecks;
+  const bool menu = inStage ? false : menuChecks >= 2 ? true : g_inMenu;
+  if (menu != g_inMenu || !menuApplied) {              // menu <-> stage: log the sun rule again
+    g_inMenu = menu;
     g_sunRuleLogged = -1;
     if (g_inMenu) g_atmoKey.clear();                   // the next stage applies its look again
+    numos_menu(g_inMenu);
+    menuApplied = true;
   }
+  if (g_inMenu) numos_menu_clock();
   static std::wstring nightKey;
   if (inStage) {                                       // night weather: also with the atmosphere off
     wchar_t k[64];
@@ -1183,7 +1291,7 @@ void atmo_frame() {
                         nightFromName ? L"the stage's name, section" : L"section", g_stageWx.section.c_str(),
                         g_nightMin, g_nightMax, g_nightOn ? L"" : L" (OFF: atmosphere.ini night_sun = none)");
     }
-  } else {
+  } else if (g_inMenu) {                               // the loading glitch above keeps the stage's night
     nightKey.clear();
     g_night = false;
     g_stageWx = StageWeather();

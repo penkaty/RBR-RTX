@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -116,7 +117,12 @@ struct Settings {
   // < 0 = measured while driving (headlights.ini pose_lag = auto).
   float poseLag = -1.0f;
   bool poseLog = false;                                // per-frame CSV rbrrtx_lamp_pose.csv in the run's logs
+  // Lamp type (lamp_photometry): what the head lamps and brights are, for the log.
+  std::wstring lampNote = L"custom (radiance keys)";
 } g_cfg;
+
+// The player's car slot (headlights_frame_end), for the lamp type by year.
+int g_carSlot = -1;
 
 // Per-car tuning (experiment, user 2026-10-23): a section named after the car model file ([BMW_M3_E30] for
 // Cars\BMW_M3_E30\BMW_M3_E30.sgc) overrides any [headlights] key for that car.
@@ -139,6 +145,151 @@ void ini_rgb(const wchar_t* path, const wchar_t* key, float out[3]) {
   ini_str(key, v, 96, path);
   float r, g, b;
   if (v[0] && swscanf_s(v, L"%f , %f , %f", &r, &g, &b) == 3) { out[0] = r; out[1] = g; out[2] = b; }
+}
+
+// ---------------------------------------------------------------- lamp type and photometry (user 2026-10-30)
+// "Lights never brighter than the sun, a realistic scene; the hue easy to set; LED for cars from 2010, xenon 1998-2009,
+// halogen before". The head lamps and brights are given as a real lamp is: luminous intensity on the beam axis in
+// candela (cd = lux on a surface 1 m away) and a colour temperature in kelvin (or an sRGB colour). Under NUMOS they
+// become Remix radiance through NUMOS's own calibration (its sun, sunIlluminance x sunIntensity, is 127,000 lux;
+// numos renderer.cpp luxPerUnit), the sun cap keeps every lamp at or below the sun on a surface 1 m away, and the
+// radius no longer changes the brightness. On Remix 1.5.2 (no NUMOS) only the colour applies, the brightness stays
+// that of the radiance keys.
+
+// Kelvin -> linear Rec.709 / sRGB primaries (Remix's working space), luminance 1. Planckian locus after Kim et al.
+// (cubic fits of CIE 1931 x, y, 1667-25000 K), then XYZ -> linear sRGB (IEC 61966-2-1); negative channels clipped.
+void kelvin_rgb(float kelvin, float out[3]) {
+  const double T = std::clamp(static_cast<double>(kelvin), 1667.0, 25000.0);
+  const double x = T <= 4000.0 ? -0.2661239e9 / (T * T * T) - 0.2343589e6 / (T * T) + 0.8776956e3 / T + 0.179910
+                               : -3.0258469e9 / (T * T * T) + 2.1070379e6 / (T * T) + 0.2226347e3 / T + 0.240390;
+  const double y = T <= 2222.0 ? -1.1063814 * x * x * x - 1.34811020 * x * x + 2.18555832 * x - 0.20219683
+                 : T <= 4000.0 ? -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867
+                               : 3.0817580 * x * x * x - 5.87338670 * x * x + 3.75112997 * x - 0.37001483;
+  const double X = x / y, Y = 1.0, Z = (1.0 - x - y) / y;
+  double r = 3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z;
+  double g = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z;
+  double b = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z;
+  r = (std::max)(r, 0.0); g = (std::max)(g, 0.0); b = (std::max)(b, 0.0);
+  const double l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  out[0] = static_cast<float>(r / l); out[1] = static_cast<float>(g / l); out[2] = static_cast<float>(b / l);
+}
+
+// sRGB 0-255 (as a colour picker shows it) -> linear, luminance 1.
+void srgb_rgb(const float c[3], float out[3]) {
+  double v[3];
+  for (int i = 0; i < 3; ++i) {
+    const double u = std::clamp(c[i] / 255.0, 0.0, 1.0);
+    v[i] = u <= 0.04045 ? u / 12.92 : std::pow((u + 0.055) / 1.055, 2.4);
+  }
+  const double l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  for (int i = 0; i < 3; ++i) out[i] = l > 1e-6 ? static_cast<float>(v[i] / l) : 1.0f;
+}
+
+float luminance(const float c[3]) { return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]; }
+
+// The car's model year: Cars\Cars.ini [CarNN] RSFCarID -> <game>\rsfdata\cache\cars_data.json "year" (RSF's car
+// data: 102 of 103 cars have one). 0 = not known.
+int car_year(int carId, int* rsfId) {
+  *rsfId = 0;
+  if (carId < 0 || carId > 7) return 0;
+  wchar_t dir[MAX_PATH] = {};
+  DWORD n = GetModuleFileNameW(nullptr, dir, MAX_PATH);
+  wchar_t* slash = (n > 0 && n < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
+  if (!slash) return 0;
+  slash[1] = 0;
+  const std::wstring base(dir);
+  wchar_t sec[8];
+  swprintf_s(sec, L"Car%02d", carId);
+  *rsfId = static_cast<int>(GetPrivateProfileIntW(sec, L"RSFCarID", 0, (base + L"Cars\\Cars.ini").c_str()));
+  if (*rsfId <= 0) return 0;
+  static std::unordered_map<int, int> cache;
+  auto it = cache.find(*rsfId);
+  if (it != cache.end()) return it->second;
+  std::ifstream f(base + L"rsfdata\\cache\\cars_data.json", std::ios::binary);
+  const std::string d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  auto value = [&](size_t from, size_t to, const char* key) -> std::string {   // "key" : "value" inside [from, to)
+    const std::string k = std::string("\"") + key + "\"";
+    size_t p = d.find(k, from);
+    if (p == std::string::npos || p >= to) return "";
+    p = d.find(':', p + k.size());
+    if (p == std::string::npos || p >= to) return "";
+    p = d.find('"', p);
+    const size_t e = p == std::string::npos ? p : d.find('"', p + 1);
+    return e == std::string::npos || e >= to ? "" : d.substr(p + 1, e - p - 1);
+  };
+  int year = 0;
+  for (size_t o = d.find('{'); o != std::string::npos; o = d.find('{', o + 1)) {
+    const size_t end = d.find('}', o);
+    if (end == std::string::npos) break;
+    if (atoi(value(o, end, "car_id").c_str()) == *rsfId) { year = atoi(value(o, end, "year").c_str()); break; }
+  }
+  cache[*rsfId] = year;
+  return year;
+}
+
+void lamp_photometry(const wchar_t* path, Settings& s) {
+  wchar_t v[64] = {};
+  ini_str(L"lamp_type", v, 64, path);
+  std::wstring type = v[0] ? v : L"auto";
+  for (wchar_t& ch : type) ch = static_cast<wchar_t>(towlower(ch));
+  if (type == L"custom") { s.lampNote = L"custom (radiance keys)"; return; }
+  int rsf = 0;
+  const int year = car_year(g_carSlot, &rsf);
+  wchar_t why[96] = L"set in headlights.ini";
+  if (type == L"auto") {
+    const int led = static_cast<int>(ini_float(path, L"led_from_year", 2010.0f));
+    const int xenon = static_cast<int>(ini_float(path, L"xenon_from_year", 1998.0f));
+    type = !year ? L"xenon" : year >= led ? L"led" : year >= xenon ? L"xenon" : L"halogen";
+    if (year) swprintf_s(why, L"car from %d (RSF car %d)", year, rsf);
+    else swprintf_s(why, L"car year not known (RSF car %d): the middle one", rsf);
+  }
+  // A key of the car's own section wins, then the type's section [lamp.<type>].
+  const std::wstring sec = L"lamp." + type;
+  auto key = [&](const wchar_t* k, wchar_t* out, DWORD n) {
+    out[0] = 0;
+    if (!g_carSection.empty()) GetPrivateProfileStringW(g_carSection.c_str(), k, L"", out, n, path);
+    if (!out[0]) GetPrivateProfileStringW(sec.c_str(), k, L"", out, n, path);
+  };
+  float rgb[3] = { 1, 1, 1 };
+  wchar_t c[96] = {}, t[32] = {};
+  float cr, cg, cb;
+  key(L"color", c, 96);
+  key(L"colour_temperature", t, 32);
+  const float kelvin = t[0] ? static_cast<float>(_wtof(t)) : type == L"led" ? 6500.0f : type == L"halogen" ? 3200.0f : 5000.0f;
+  wchar_t colourNote[64];
+  if (c[0] && swscanf_s(c, L"%f , %f , %f", &cr, &cg, &cb) == 3) {
+    const float in[3] = { cr, cg, cb };
+    srgb_rgb(in, rgb);
+    swprintf_s(colourNote, L"colour %.0f, %.0f, %.0f", cr, cg, cb);
+  } else {
+    kelvin_rgb(kelvin, rgb);
+    swprintf_s(colourNote, L"%.0f K", kelvin);
+  }
+  wchar_t iv[32] = {}, bv[32] = {};
+  key(L"intensity", iv, 32);
+  key(L"brights_intensity", bv, 32);
+  float cd = iv[0] ? static_cast<float>(_wtof(iv)) : type == L"led" ? 80000.0f : type == L"halogen" ? 40000.0f : 60000.0f;
+  float bcd = bv[0] ? static_cast<float>(_wtof(bv)) : type == L"led" ? 127000.0f : type == L"halogen" ? 90000.0f : 110000.0f;
+  const float unitLux = rbrrtx_numos_lux_per_unit();
+  wchar_t brightNote[160];
+  if (unitLux > 0.0f) {
+    // Sun cap: on a surface 1 m from the lamp, no more light than the sun gives (127,000 lux x sun_cap).
+    const float cap = (std::max)(0.0f, ini_float(path, L"sun_cap", 1.0f)) * 127000.0f;
+    const bool capped = cap > 0.0f && (cd > cap || bcd > cap);
+    if (cap > 0.0f) { cd = (std::min)(cd, cap); bcd = (std::min)(bcd, cap); }
+    const float area = 3.14159265f * s.radius * s.radius;   // a sphere light's on-axis intensity = radiance x pi r^2
+    for (int i = 0; i < 3; ++i) {
+      s.radiance[i] = rgb[i] * cd / (unitLux * area);
+      s.brightsRadiance[i] = rgb[i] * bcd / (unitLux * area);
+    }
+    swprintf_s(brightNote, L"%.0f cd, brights %.0f cd%s (NUMOS: 1 unit = %.0f lux)", cd, bcd,
+               capped ? L", capped at the sun's light 1 m away" : L"", unitLux);
+  } else {                                             // 1.5.2: the colour only, brightness from the radiance keys
+    const float l = luminance(s.radiance), bl = luminance(s.brightsRadiance);
+    for (int i = 0; i < 3; ++i) { s.radiance[i] = rgb[i] * l; s.brightsRadiance[i] = rgb[i] * bl; }
+    swprintf_s(brightNote, L"brightness from the radiance keys (no NUMOS: no candela scale)");
+  }
+  s.lampNote = type + L" (" + why + L"): " + colourNote + L", " + brightNote;
 }
 
 void load_settings() {
@@ -205,8 +356,10 @@ void load_settings() {
         for (int i = 0; i < 3; ++i) rgb[i] *= k;
       s.historyFrames = std::clamp(ini_float(path, L"numos_history_frames", 0.0f), 0.0f, 255.0f);
     }
+    lamp_photometry(path, s);                          // head lamps and brights: type, colour, candela
   }
   g_cfg = s;
+  hlog(L"headlights: lamps %s", s.lampNote.c_str());
   if (!g_carSection.empty()) {
     wchar_t keys[16] = {};
     const bool own = GetPrivateProfileSectionW(g_carSection.c_str(), keys, 16, path) > 0;
@@ -974,7 +1127,7 @@ int g_mode = kOff;
 bool g_manual = false;                                 // the key was used on this stage: no automatic switching
 float g_dayK = 1.0f;                                   // daylight dimming of the lamps (day_intensity)
 bool g_dark = false;                                   // sun below auto_below_sun (last frame)
-int g_track = -1, g_carSlot = -1;
+int g_track = -1;
 bool g_emitted = false;                                // first BeginScene of this frame seen (lamp states read)
 bool g_refined = false;                                // this frame's drawn body looked for (rbrrtx_headlights_refine)
 bool g_sentThisFrame = false;                          // lamps sent this frame
@@ -1078,6 +1231,17 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float radIn[3], float 
 void* g_hhWorld = nullptr;
 int g_gameLampsSent = -1;                              // last state sent (-1 = none)
 unsigned g_gameLampsLog = 0;
+// A new world (stage, replay) keeps the game's lamps off for its first kLampHoldCarFrames frames with car draws, then
+// switches them on: litparts.cpp learns the lit lenses from that switch (night stages start with the lamps on, and
+// "drawn only while on" alone lit the whole car, run 20261030-055723). Our Remix lights are not held.
+constexpr unsigned kLampHoldCarFrames = 30;
+void* g_holdWorld = nullptr;
+unsigned g_worldCarFrames = 0;
+// Main menu car (user 2026-10-30: "the car in the main menu has lights when nighttime falls"). Under NUMOS the menu runs
+// NUMOS's clock (comp.cpp numos_menu); below auto_below_sun the lamps go on, placed on the car as drawn (menu_root),
+// and the game's own lamp meshes switch with them (so its lit lenses glow, litparts.cpp).
+bool g_menuCar = false, g_menuDark = false;
+unsigned g_menuRootMissed = 0;
 
 void* find_hh_world() {
   HMODULE hh = GetModuleHandleW(L"HedgeHog3D.dll");
@@ -1113,12 +1277,15 @@ void sync_game_lamps() {
   if (!g_cfg.gameLamps) return;
   if (g_frameNo % 30 != 0 && g_gameLampsSent == (g_mode != kOff ? 1 : 0)) return;
   void* world = find_hh_world();
-  const int want = g_mode != kOff ? 1 : 0;
+  int want = g_mode != kOff ? 1 : 0;
   if (!world) {
     if (g_gameLampsLog < 2 && g_gameLampsSent != -2) { ++g_gameLampsLog; hlog(L"headlights: game lamp switch not found (HedgeHog3D CSigCarLight connection)"); }
     g_gameLampsSent = -2;
     return;
   }
+  if (world != g_holdWorld) { g_holdWorld = world; g_worldCarFrames = 0; }
+  const bool held = want == 1 && g_worldCarFrames < kLampHoldCarFrames;
+  if (held) want = 0;
   if (world == g_hhWorld && want == g_gameLampsSent) return;
   // Headlights (type 1: light_lf, light_rf) and the tail lamps with them (type 3: index + 2 into the handler's suffix
   // table _lf _rf _lb _rb _m, prefix "light": light_lb, light_rb, light_m; HedgeHog3D.dll tables 0x101DA26C /
@@ -1127,8 +1294,8 @@ void sync_game_lamps() {
   for (int i = 0; ok && i < 3; ++i) ok = call_car_light(world, 3, i, want == 1);
   if (g_gameLampsLog < 12) {
     ++g_gameLampsLog;
-    hlog(L"headlights: game's own head and tail lamps (lit meshes, glow sprites) %s%s (world %p)", want ? L"ON" : L"off",
-         ok ? L"" : L" FAILED", world);
+    hlog(L"headlights: game's own head and tail lamps (lit meshes, glow sprites) %s%s (world %p)%s", want ? L"ON" : L"off",
+         ok ? L"" : L" FAILED", world, held ? L", held off for the first car frames (lit parts learn the switch)" : L"");
   }
   g_hhWorld = world;
   g_gameLampsSent = want;
@@ -1328,7 +1495,7 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
   // the cockpit view often shows just one, and the lamps then moved once, ~0.3 m, when the view changed).
   // On a stage always: the offset (until measured) and the drawn body (match_body) for every lamp, brake and backfire
   // lights included.
-  if (!g_cfg.enabled || g_track < 0 || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
+  if (!g_cfg.enabled || (g_track < 0 && !g_menuCar) || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
   for (Group& g : g_groups) if (same_matrix(g.m, world)) { g.prims += prims; return; }
   Group g;
   std::memcpy(g.m, world, sizeof(g.m));
@@ -1581,6 +1748,93 @@ const wchar_t* rbrrtx_car_model_name() {               // the model file's name 
   return name.c_str();
 }
 
+// The menu car's model root from its draws: every draw group (>= 200 triangles), for every drawn part of the model it
+// could be, gives a root; the root most groups agree on (within 1 mm) wins, two groups at least (as measure_frame).
+bool menu_root(const std::vector<Group>& groups, float out[16]) {
+  struct Cand { V3 p; int group; float C[16]; };
+  std::vector<Cand> c;
+  for (int j = 0; j < static_cast<int>(groups.size()); ++j) {
+    if (groups[j].prims < 200) continue;
+    for (const Placed& pl : g_car.parts) {
+      Cand k;
+      compose(pl, groups[j].m, k.C);
+      k.p = row(k.C, 3);
+      k.group = j;
+      c.push_back(k);
+    }
+  }
+  // Correctly placed parts give the same root to float precision; models with node frames a centimetre or two apart
+  // (124 Abarth, i20 R5) made 2 cm bins pick a neighbour. So: within 1 mm, swept along x.
+  std::sort(c.begin(), c.end(), [](const Cand& a, const Cand& b) { return a.p.x < b.p.x; });
+  int bestGroups = 0;
+  unsigned bestPrims = 0;
+  const Cand* best = nullptr;
+  std::vector<int> seen;
+  for (size_t i = 0; i < c.size(); ++i) {
+    seen.clear();
+    unsigned prims = 0;
+    size_t a = i;
+    while (a > 0 && c[i].p.x - c[a - 1].p.x < 0.001f) --a;
+    for (size_t k = a; k < c.size() && c[k].p.x - c[i].p.x < 0.001f; ++k) {
+      bool same = len(c[k].p - c[i].p) < 0.001f;     // and the same axes (impreza03: a rotated node at the root's origin)
+      for (int r = 0; r < 3 && same; ++r) same = len(row(c[k].C, r) - row(c[i].C, r)) < 0.001f * (1.0f + len(row(c[i].C, r)));
+      if (!same || std::find(seen.begin(), seen.end(), c[k].group) != seen.end()) continue;
+      seen.push_back(c[k].group);
+      prims += groups[c[k].group].prims;
+    }
+    const int n = static_cast<int>(seen.size());
+    if (n > bestGroups || (n == bestGroups && prims > bestPrims)) { bestGroups = n; bestPrims = prims; best = &c[i]; }
+  }
+  if (bestGroups < 2 || !best) return false;
+  std::memcpy(out, best->C, sizeof(best->C));
+  return true;
+}
+
+void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& groups) {
+  if (!g_menuCar) {
+    g_menuCar = true;
+    g_menuDark = false;
+    g_menuRootMissed = 0;
+    g_gameLampsSent = -1;
+    g_hhWorld = nullptr;
+    if (g_mode != kOff) set_mode(kOff, L"menu");
+  }
+  const std::wstring model = car_model_path(si.carId);
+  if (model.empty()) return;
+  if (model != g_car.file) {
+    const size_t slash = model.find_last_of(L"\\/"), dot = model.find_last_of(L'.');
+    g_carSection = model.substr(slash + 1, dot != std::wstring::npos && dot > slash ? dot - slash - 1 : std::wstring::npos);
+    g_carSlot = si.carId;
+    load_settings();
+    load_car_model(model);
+    hlog(L"headlights: menu car %s (lamps on below %.1f deg of NUMOS's menu clock)", model.c_str(), g_cfg.autoBelow);
+  }
+  {
+    const float t = std::clamp((sunEl - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
+    g_dayK = std::round((1.0f + (g_cfg.dayIntensity - 1.0f) * t) * 50.0f) / 50.0f;
+  }
+  const bool dark = sunEl < g_cfg.autoBelow;
+  if (dark != g_menuDark) {
+    wchar_t why[64];
+    swprintf_s(why, L"menu, NUMOS clock sun %.1f deg", sunEl);
+    set_mode(dark ? g_cfg.autoMode : kOff, why);
+    g_menuDark = dark;
+  }
+  sync_game_lamps();                                   // the menu car's own lit lenses and glow sprites
+  g_braking = g_reversing = g_popOn = false;
+  g_tailOn = g_cfg.rear && g_mode != kOff;
+  g_lampsLit = g_mode != kOff;
+  if (!g_lampsLit) return;
+  float C[16];
+  if (!menu_root(groups, C)) {                         // not drawn this frame: the lamps stay where they were
+    if (++g_menuRootMissed == 1 || g_menuRootMissed % 3600 == 0)
+      hlog(L"headlights: menu car not found among this frame's car draws (%zu groups); %u frames so far", groups.size(), g_menuRootMissed);
+    for (Lamp& l : g_lamps) if (l.h) { g_api->DrawLightInstance(l.h); l.sent = g_frameNo; }
+    return;
+  }
+  send_lamps(C, L"menu");
+}
+
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   cockpit_glass_find();                                  // cockpit: the windscreen as drawn this frame
   ++g_frameNo;
@@ -1588,10 +1842,20 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
   g_emitted = g_refined = g_sentThisFrame = false;       // lamp states at the next first BeginScene
   if (layerOn && g_track >= 0) measure_frame();          // with every car draw of the frame
-  g_groups.clear();
+  if (!g_groups.empty()) ++g_worldCarFrames;
+  std::vector<Group> groups;
+  groups.swap(g_groups);
   if (!g_cfg.enabled || !g_api) return;
   RbrStageInfo si;
   const bool stage = in_stage(&si);
+  float menuEl = 0.0f;
+  if (!stage && layerOn && rbrrtx_menu_sun_elevation(&menuEl)) { menu_lamps(si, menuEl, groups); return; }
+  if (g_menuCar) {                                     // out of the menu: its lamps go, a stage decides afresh
+    g_menuCar = g_menuDark = false;
+    set_mode(kOff, L"left the menu");
+    g_gameLampsSent = -1;
+    g_hhWorld = nullptr;
+  }
   if (!stage || !layerOn) {
     if (g_mode != kOff && !stage) set_mode(kOff, L"left the stage");
     if (!layerOn) destroy_all();
@@ -1765,7 +2029,7 @@ void rbrrtx_headlights_write_lit_mod() {
 // For litparts.cpp: the game's own lamp switch as last sent (1 on, 0 off), -1 when not switched by us (game_lamps 0,
 // switch not found, not on a stage).
 int rbrrtx_headlights_game_lamps() {
-  return g_cfg.enabled && g_cfg.gameLamps && g_track >= 0 && g_hhWorld && g_gameLampsSent >= 0 ? g_gameLampsSent : -1;
+  return g_cfg.enabled && g_cfg.gameLamps && (g_track >= 0 || g_menuCar) && g_hhWorld && g_gameLampsSent >= 0 ? g_gameLampsSent : -1;
 }
 
-const wchar_t* rbrrtx_car_model_path() { return g_track >= 0 ? g_car.file.c_str() : L""; }
+const wchar_t* rbrrtx_car_model_path() { return g_track >= 0 || g_menuCar ? g_car.file.c_str() : L""; }

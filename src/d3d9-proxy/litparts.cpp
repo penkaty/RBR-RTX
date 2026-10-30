@@ -9,10 +9,12 @@
 //
 // What happens here, per car:
 // 1. Learn the lit parts. Every car draw (buffers + index range = a fingerprint) is counted per signal: brake (pedal
-//    input), lamps (the game's lamp switch as headlights.cpp last sent it), reverse (gear R). A fingerprint seen in
-//    >= kOnFrames frames while a signal was clearly on, and never while it was clearly off (after kOffFrames such
-//    frames with car draws), is that signal's lit part. Seen once while clearly off = never one. Parts bigger than
-//    kMaxPrims (a body, an interior) are never lit parts.
+//    input), lamps (the game's lamp switch as headlights.cpp last sent it), reverse (gear R). At a clean switch of a
+//    signal (switch_seen: the others steady, the same view on both sides) a fingerprint that appears with it is its lit
+//    part; one drawn on both sides is not; one that vanishes when the brake comes on is the unlit brake lens (it glows
+//    as a tail lamp while the lamps are on). Drawn with every signal off = never a lit part. Parts bigger than
+//    kMaxPrims (a body, an interior) are never lit parts. headlights.cpp keeps the game's lamps off for the first car
+//    frames of a stage, so night stages give one clean lamp switch at the start.
 // 2. Bind a twin texture for those draws: 16x16 A8R8G8B8 whose content is derived from (atlas hash, signal), so its
 //    Remix hash (XXH3_64 of mip 0, harvest.cpp) is known before Remix sees it. Only Remix sees it: the replacement
 //    material below brings the atlas back.
@@ -40,27 +42,38 @@ namespace {
 
 #define llog(...) rbrrtx_log_to(L"rbrrtx_comp.log", __VA_ARGS__)
 
-constexpr unsigned kOnFrames = 6, kOffFrames = 60, kMaxPrims = 4000, kSettle = 12;
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3 };
-const wchar_t* const kSignalName[kSignals] = { L"brake", L"lamps", L"reverse" };
+constexpr unsigned kMaxPrims = 4000, kSettle = 12, kSwitchWindow = 60;
+// Signals, and the glow kinds (a fourth kind: tail = the unlit brake lens while the lamps are on).
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kKinds = 4 };
+const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail" };
 
 struct Cfg {
   bool enabled = true;
-  float glow[kSignals] = { 12.0f, 20.0f, 15.0f };
+  float glow[kKinds] = { 12.0f, 20.0f, 15.0f, 6.0f };
 } g_cfg;
 
+// Evidence comes only from clean switches (switch_seen): one signal flips, the others stay settled the same, and the
+// car is drawn from the same view on both sides. Run 20261030-055723 (06:02:37): with "drawn only while on" counting,
+// ~100 body, chassis and interior parts became lamp parts after 230 lamp-off frames the replay showed from another
+// camera (other LODs) - the whole car glowed.
 struct Part {
-  unsigned onFrames[kSignals] = {};
-  bool offSeen[kSignals] = {};
+  unsigned yes[kSignals] = {};                           // appeared when it switched on / vanished when it switched off
+  unsigned no[kSignals] = {};                            // drawn on both sides of a clean switch: not switched by it
+  unsigned partner[kSignals] = {};                       // vanished when it switched on: the unlit twin of a lit part
+  bool everOn[kSignals] = {};                            // drawn while the signal was settled on
   unsigned lastFrame = ~0u;
-  int lit = -1;                                          // signal it is the lit part of
+  unsigned mask = 0;                                     // signals it is the lit part of (tail lenses: lamps and brake)
+  bool tail = false;                                     // unlit brake lens: glows as a tail lamp with the lamps on
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
-unsigned g_offFrames[kSignals] = {};                     // frames with the signal clearly off and car draws
 unsigned g_frame = 0;
 unsigned g_carDrawsThisFrame = 0;
+std::vector<uint64_t> g_drawn;                           // this frame's part keys
+struct Side { bool valid = false; unsigned frame = 0; int st[kSignals] = {}; std::vector<uint64_t> keys; };
+Side g_side[kSignals];                                   // per signal: the last judged frame with it settled
+unsigned g_switches = 0, g_switchesRefused = 0;
 std::wstring g_carFile;
 
 // Signal state per frame: +1 clearly on, -1 clearly off, 0 changing (the game fades lamps over 0.02-0.05 s and its
@@ -123,6 +136,7 @@ void load_cfg() {
   c.glow[kBrake] = std::clamp(f(L"brake_glow", c.glow[kBrake]), 0.0f, 10000.0f);
   c.glow[kLamps] = std::clamp(f(L"lamp_glow", c.glow[kLamps]), 0.0f, 10000.0f);
   c.glow[kReverse] = std::clamp(f(L"reverse_glow", c.glow[kReverse]), 0.0f, 10000.0f);
+  c.glow[kTail] = std::clamp(f(L"tail_glow", c.glow[kTail]), 0.0f, 10000.0f);
   g_cfg = c;
 }
 
@@ -291,49 +305,121 @@ std::wstring car_dir() {
   return slash == std::wstring::npos ? std::wstring() : g_carFile.substr(0, slash);
 }
 
-// Every part drawn in the frame that just ended, against that frame's signal states (+1 on, -1 off, 0 not settled).
-// A lit part is dropped only when drawn with ALL signals clearly off: RBR's tail lamp lenses show with the lamps AND
-// with the brake, so "drawn with the lamps off" while braking is no reason (the same run unlearnt them as lamp
-// parts and learnt them again as brake parts, with another glow).
-void judge_frame(const int st[kSignals]) {
-  if (g_carDrawsThisFrame < 8) return;                 // no car this frame (menus, loading)
-  bool allOff = true;
-  for (int i = 0; i < kSignals; ++i) {
-    allOff = allOff && st[i] < 0;
-    if (st[i] < 0) ++g_offFrames[i];
+std::wstring mask_names(unsigned m) {
+  std::wstring s;
+  for (int i = 0; i < kSignals; ++i)
+    if (m & (1u << i)) s += (s.empty() ? L"" : L" + ") + std::wstring(kSignalName[i]);
+  return s.empty() ? L"nothing" : s;
+}
+
+// Signal i flipped between g_side[i] (the last frame it was settled the other way) and this frame (keys sorted). Only
+// a clean switch counts: the other signals settled and the same on both sides, at most kSwitchWindow frames apart,
+// and the car drawn from the same view (the parts in common >= 75 % of each side; a camera cut or a LOD change swaps
+// far more). RBR swaps a lit mesh for its unlit one (e_light_lf -> e_light_lf_lit), so the lit part appears with the
+// signal and its unlit twin vanishes.
+void switch_seen(int i, const Side& before, const std::vector<uint64_t>& now, const int st[kSignals]) {
+  for (int j = 0; j < kSignals; ++j)
+    if (j != i && (st[j] == 0 || st[j] != before.st[j])) return;
+  if (g_frame - before.frame > kSwitchWindow) return;
+  const bool on = st[i] > 0;
+  const std::vector<uint64_t>& off = on ? before.keys : now;   // the side with the signal off
+  const std::vector<uint64_t>& lit = on ? now : before.keys;   // ... and on
+  size_t common = 0;
+  for (size_t a = 0, b = 0; a < off.size() && b < lit.size();) {
+    if (off[a] < lit[b]) ++a; else if (lit[b] < off[a]) ++b; else { ++common; ++a; ++b; }
   }
+  if (common * 4 < off.size() * 3 || common * 4 < lit.size() * 3) { ++g_switchesRefused; return; }
+  ++g_switches;
+  const unsigned bit = 1u << i;
+  auto other_on = [&](const Part& p) {                 // another of its signals is on: this switch says nothing
+    for (int j = 0; j < kSignals; ++j) if (j != i && (p.mask & (1u << j)) && st[j] > 0) return true;
+    return false;
+  };
+  for (size_t a = 0, b = 0; a < off.size() || b < lit.size();) {
+    const bool inOff = a < off.size() && (b >= lit.size() || off[a] <= lit[b]);
+    const bool inLit = b < lit.size() && (a >= off.size() || lit[b] <= off[a]);
+    const uint64_t k = inOff ? off[a] : lit[b];
+    if (inOff) ++a;
+    if (inLit) ++b;
+    auto it = g_parts.find(k);
+    if (it == g_parts.end()) continue;
+    Part& p = it->second;
+    if (other_on(p)) continue;                         // (never = no lit part; it can still be the unlit brake lens)
+    if (inOff && inLit) {
+      ++p.no[i];
+      if (p.mask & bit) {
+        p.mask &= ~bit;
+        llog(L"lit parts: a %u-triangle part stayed drawn when the %s switched: no longer its lit part (now %s)", p.prims,
+             kSignalName[i], mask_names(p.mask).c_str());
+      }
+      if (i == kBrake && p.tail) {
+        p.tail = false;
+        llog(L"lit parts: a %u-triangle part stayed drawn when the brake switched: no longer an unlit brake lens", p.prims);
+      }
+    } else if (inLit) {
+      ++p.yes[i];
+      if (!(p.mask & bit) && !p.no[i] && !p.never && p.prims <= kMaxPrims) {
+        p.mask |= bit;
+        ++g_learnt;
+        llog(L"lit parts: a %u-triangle car part appeared when the %s switched on (or vanished when it switched off): lit "
+             L"part of %s", p.prims, kSignalName[i], mask_names(p.mask).c_str());
+      }
+    } else {
+      ++p.partner[i];
+      if (i == kBrake && !p.tail && !p.no[i] && !p.everOn[i] && p.prims <= kMaxPrims) {
+        p.tail = true;
+        llog(L"lit parts: a %u-triangle car part vanished when the brake switched on: the unlit brake lens, it glows as a "
+             L"tail lamp while the lamps are on", p.prims);
+      }
+    }
+  }
+}
+
+// The frame that just ended, against its signal states (+1 on, -1 off, 0 not settled). A part drawn with ALL signals
+// clearly off is an ordinary part for good (RBR's tail lamp lenses show with the lamps AND with the brake, so drawn
+// with one of them off proves nothing).
+void judge_frame(const int st[kSignals]) {
+  if (g_carDrawsThisFrame < 8) { g_drawn.clear(); return; }   // no car this frame (menus, loading)
+  std::sort(g_drawn.begin(), g_drawn.end());
+  g_drawn.erase(std::unique(g_drawn.begin(), g_drawn.end()), g_drawn.end());
+  bool allOff = true;
+  for (int i = 0; i < kSignals; ++i) allOff = allOff && st[i] < 0;
   for (auto it = g_parts.begin(); it != g_parts.end();) {
     Part& p = it->second;
     if (p.lastFrame != g_frame) {                       // not drawn for a minute and not lit: forget (dynamic buffers)
-      if (p.lit < 0 && g_frame - p.lastFrame > 3600) it = g_parts.erase(it); else ++it;
+      if (!p.mask && !p.tail && g_frame - p.lastFrame > 3600) it = g_parts.erase(it); else ++it;
       continue;
     }
     ++it;
-    for (int i = 0; i < kSignals; ++i) {
-      if (st[i] < 0) p.offSeen[i] = true;
-      else if (st[i] > 0) ++p.onFrames[i];
+    for (int i = 0; i < kSignals; ++i) if (st[i] > 0) p.everOn[i] = true;
+    if (p.tail && p.everOn[kBrake]) {
+      p.tail = false;
+      llog(L"lit parts: a %u-triangle part was drawn while braking: not an unlit brake lens", p.prims);
     }
-    if (p.lit >= 0 && allOff) {
-      llog(L"lit parts: a %u-triangle %s part was drawn with brake, lamps and reverse all off: no longer treated as lit",
-           p.prims, kSignalName[p.lit]);
-      p.lit = -1;
+    if (allOff && !p.never) {
+      if (p.mask)
+        llog(L"lit parts: a %u-triangle part of %s was drawn with brake, lamps and reverse all off: no longer treated as lit",
+             p.prims, mask_names(p.mask).c_str());
+      p.mask = 0;
       p.never = true;
     }
-    if (p.lit < 0 && !p.never && p.prims <= kMaxPrims)
-      for (int i = 0; i < kSignals; ++i)
-        if (!p.offSeen[i] && p.onFrames[i] >= kOnFrames && g_offFrames[i] >= kOffFrames) {
-          p.lit = i;
-          ++g_learnt;
-          llog(L"lit parts: a %u-triangle car part is drawn only with the %s on (%u frames on, none of %u off): lit part",
-               p.prims, kSignalName[i], p.onFrames[i], g_offFrames[i]);
-          break;
-        }
   }
+  for (int i = 0; i < kSignals; ++i) {
+    if (!st[i]) continue;
+    Side& s = g_side[i];
+    if (s.valid && s.st[i] == -st[i]) switch_seen(i, s, g_drawn, st);
+    s.valid = true;
+    s.frame = g_frame;
+    std::memcpy(s.st, st, sizeof(s.st));
+    s.keys = g_drawn;
+  }
+  g_drawn.clear();
 }
 
 void forget_car() {
   g_parts.clear();
-  for (unsigned& n : g_offFrames) n = 0;
+  g_drawn.clear();
+  for (Side& s : g_side) s = Side();
 }
 
 }  // namespace
@@ -349,7 +435,7 @@ void rbrrtx_litparts_startup() {
   for (std::string line; std::getline(in, line);) {
     unsigned long long tw = 0, src = 0;
     int sig = -1, used = 0;
-    if (sscanf_s(line.c_str(), "%llx %llx %d %n", &tw, &src, &sig, &used) < 3 || sig < 0 || sig >= kSignals || !used) continue;
+    if (sscanf_s(line.c_str(), "%llx %llx %d %n", &tw, &src, &sig, &used) < 3 || sig < 0 || sig >= kKinds || !used) continue;
     std::string path = line.substr(static_cast<size_t>(used));
     while (!path.empty() && (path.back() == '\r' || path.back() == ' ')) path.pop_back();
     wchar_t w[MAX_PATH * 2] = {};
@@ -359,8 +445,9 @@ void rbrrtx_litparts_startup() {
   }
   if (!g_cfg.enabled) g_entries.clear();
   publish_locked();
-  llog(L"lit parts: %s, glow brake %.1f / lamps %.1f / reverse %.1f; %zu known from earlier runs",
-       g_cfg.enabled ? L"on" : L"OFF (materials.ini)", g_cfg.glow[kBrake], g_cfg.glow[kLamps], g_cfg.glow[kReverse], g_entries.size());
+  llog(L"lit parts: %s, glow brake %.1f / lamps %.1f / reverse %.1f / tail (unlit brake lens, lamps on) %.1f; %zu known "
+       L"from earlier runs", g_cfg.enabled ? L"on" : L"OFF (materials.ini)", g_cfg.glow[kBrake], g_cfg.glow[kLamps],
+       g_cfg.glow[kReverse], g_cfg.glow[kTail], g_entries.size());
 }
 
 // Per Present. carFile = the player's car model (.sgc) path, empty off a stage. lamps = the game's lamp switch as last
@@ -421,7 +508,14 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   Part& p = g_parts[key];
   p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
   p.prims = prims;
-  if (p.lit < 0) return nullptr;
+  g_drawn.push_back(key);
+  // Which glow: the signal that shows it now (the brake over the lamps on a shared tail lens), else the unlit brake
+  // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states.
+  int kind = -1;
+  for (int i : { kBrake, kReverse, kLamps }) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] > 0) kind = i;
+  if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
+  if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0) kind = kTail;
+  if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
   if (!t0) return nullptr;
@@ -432,14 +526,14 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   t0->lpVtbl->Release(t0);
   if (!src || !is2d) { if (++g_noHash == 1) llog(L"lit parts: a lit part's texture has no known hash: not made to glow"); return nullptr; }
   uint64_t th = 0;
-  IDirect3DTexture9* twin = make_twin(dev, src, p.lit, &th);
+  IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
   if (!twin) return nullptr;
   {
     std::lock_guard<std::mutex> g(g_mx);
     if (!g_entries.count(th)) {
       bool queued = false;
       for (const Pending& q : g_pending) queued = queued || q.twin == th;
-      if (!queued) g_pending.push_back({ th, src, p.lit, car_dir(), d.Width, d.Height });
+      if (!queued) g_pending.push_back({ th, src, kind, car_dir(), d.Width, d.Height });
     }
   }
   ++g_swapped;
@@ -452,11 +546,15 @@ void rbrrtx_litparts_status(wchar_t* out, size_t n) {
     std::lock_guard<std::mutex> g(g_mx);
     entries = g_entries.size();
   }
-  unsigned lit[kSignals] = {};
-  for (const auto& kv : g_parts) if (kv.second.lit >= 0) ++lit[kv.second.lit];
-  swprintf_s(out, n, L"lit parts: %s; this car: %zu draws seen, lit parts brake %u / lamps %u / reverse %u (%u learnt this run); "
-             L"%zu glowing materials; twin draws %u",
-             g_cfg.enabled ? L"on" : L"off", g_parts.size(), lit[kBrake], lit[kLamps], lit[kReverse], g_learnt, entries, g_swapped);
+  unsigned lit[kKinds] = {};
+  for (const auto& kv : g_parts) {
+    for (int i = 0; i < kSignals; ++i) if (kv.second.mask & (1u << i)) ++lit[i];
+    if (kv.second.tail) ++lit[kTail];
+  }
+  swprintf_s(out, n, L"lit parts: %s; this car: %zu draws seen, lit parts brake %u / lamps %u / reverse %u / unlit brake "
+             L"lenses %u (%u learnt this run; clean switches %u, %u refused as another view); %zu glowing materials; twin draws %u",
+             g_cfg.enabled ? L"on" : L"off", g_parts.size(), lit[kBrake], lit[kLamps], lit[kReverse], lit[kTail], g_learnt,
+             g_switches, g_switchesRefused, entries, g_swapped);
 }
 
 void rbrrtx_litparts_destroy() {
