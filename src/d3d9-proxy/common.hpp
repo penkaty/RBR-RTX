@@ -129,7 +129,7 @@ unsigned rbrrtx_remixplus_converted();                         // pNext chains r
 // Remix Plus calls beyond NVIDIA's table (Kim's header types; null = the runtime/bridge lacks it). For the API world.
 struct RbrApiExt {
   void *createRetained, *updateRetained, *destroyRetained, *drawRetained, *importD3D9Texture, *createMeshBatched,
-       *setupCamera, *createMaterial, *drawInstance, *destroyMesh, *destroyMaterial, *destroyTexture;
+       *setupCamera, *createMaterial, *drawInstance, *destroyMesh, *destroyMaterial, *destroyTexture, *setGameValue, *getGameValue;
   unsigned long long version;                                  // the API version the library accepted
 };
 const RbrApiExt* rbrrtx_api_ext();                              // nullptr before init / without Remix Plus
