@@ -122,7 +122,7 @@ D3DMATRIX identity() {
 // ---------------------------------------------------------------- shader identification
 
 enum : unsigned { SH_KNOWN = 1, SH_WORLDSPACE = 2, SH_USES_C8 = 4, SH_CAR = 8, SH_SKY = 16, SH_GLASS = 32, SH_SCENERY = 64, SH_PARTICLE = 128,
-           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87)
+           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024, SH_DOUBLE = 2048 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87); DOUBLE: RLDouble* two-texture blend
 
 // A matrix constant of a D3DX-compiled shader, found by name in its constant table. HLSL packs column_major by
 // default: then register r+i holds column i, so the D3D (row-vector) matrix is the transpose of the registers.
@@ -219,6 +219,7 @@ unsigned flags_for(const std::wstring& rel) {
   if (starts_with(n, L"Clouds") || starts_with(n, L"SkyDome")) f |= SH_SKY;
   if (n.find(L"Sway") != std::wstring::npos) f |= SH_SWAY;
   if (n.find(L"Anim") != std::wstring::npos) f |= SH_ANIM;
+  if (starts_with(n, L"RLDouble")) f |= SH_DOUBLE;
   if (n == L"Particle.vso") f |= SH_PARTICLE;   // dust, smoke, spray, rain sprites (and the ignored car shadow quad)
   if (n == L"CarGlassInternal.vso") f |= SH_GLASS;   // windscreen seen from the cockpit (CarGlass.vso = outside + mirrors)
   static const wchar_t* uses_c8[] = { L"CarGlass.vso", L"CarPaint1.vso", L"CarPaintInternal.vso", L"CarPlastic.vso",
@@ -381,7 +382,7 @@ float g_sunWeather = 1.0f;                             // stage atmosphere: clou
 float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from the conf (-1 = not read) / last set
 
 struct Stats {
-  unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace;
+  unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace, apiWorld;   // apiWorld: draws its retained instance made
   unsigned uiTriggerAt, oqAtUi;                        // draw number of our UI trigger (0 = none); open queries then
   unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, their copies
   unsigned btbRebuilt, btbCamRejected;                 // merged instance buffers built this frame; camera candidates refused
@@ -1355,6 +1356,7 @@ void atmo_frame() {
     }
     numos_menu(g_inMenu);
     rbrrtx_world_lights_reset();                       // lamp positions are per scene
+    rbrrtx_apiworld_reset(g_inMenu ? L"menu" : L"stage");
     menuApplied = true;
   }
   static std::wstring nightKey;
@@ -2971,11 +2973,19 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (rbrrtx_key_pressed(RBRKEY_RAIN)) rbrrtx_rain_toggle();          // rain/snow: Remix <-> the game's own
   if (kDust && rbrrtx_particles_active()) rbrrtx_particles_toggle();   // Remix API dust on/off
-  if (rbrrtx_key_pressed(RBRKEY_BOUNCES)) {            // secondary ray bounces: rtx.conf default 2 <-> 1 (user 2026-10-24)
-    static int bounces = 2;
-    bounces = bounces == 2 ? 1 : 2;
-    remix_set("rtx.secondaryRayMaxInteractions", bounces == 2 ? "2" : "1");
-    swprintf_s(why, L"%s: secondary ray bounces %d", rbrrtx_key_name(RBRKEY_BOUNCES), bounces);
+  // Ray interaction budgets: rtx.conf (secondary 2, primary/PSR 16) -> large (8, 64) -> secondary 1 (user 2026-10-24).
+  // Large = the test for white wedges in dense forest (2026-11-01): the last allowed interaction skips every remaining
+  // cut-out card, so a ray through many stacked cards lands on sky.
+  if (rbrrtx_key_pressed(RBRKEY_BOUNCES)) {
+    static int state = 0;
+    state = (state + 1) % 3;
+    static const char* sec[3] = { "2", "8", "1" };
+    static const char* prim[3] = { "16", "64", "16" };
+    remix_set("rtx.secondaryRayMaxInteractions", sec[state]);
+    remix_set("rtx.primaryRayMaxInteractions", prim[state]);
+    remix_set("rtx.psrRayMaxInteractions", prim[state]);
+    swprintf_s(why, L"%s: ray interactions secondary %hs, primary/PSR %hs%s", rbrrtx_key_name(RBRKEY_BOUNCES), sec[state],
+               prim[state], state == 0 ? L" (rtx.conf)" : state == 1 ? L" (large: dense-forest test)" : L"");
     log_frame(why);
   }
   if (kSky) {                                          // sky mode 2 <-> 1
@@ -3115,6 +3125,15 @@ void end_frame(IDirect3DDevice9* dev) {
     log_frame(msg);
   }
   debug_sky();
+  if (g_apiOk) {                                       // retained world: hides, shows, stats
+    const D3DMATRIX vp = mul(g_V, g_P);
+    rbrrtx_apiworld_frame_end(g_frameCam ? &vp.m[0][0] : nullptr, g_enabled);
+  }
+  if (rbrrtx_key_pressed(RBRKEY_API_WORLD)) {
+    wchar_t w[96];
+    swprintf_s(w, L"%s: world through the Remix API: %s", rbrrtx_key_name(RBRKEY_API_WORLD), rbrrtx_apiworld_cycle());
+    log_frame(w);
+  }
   g_frameCam = false;
   g_btbPrev = g_st.btb > 0;
   const bool cameraNow = g_st.xformed > 0;
@@ -3368,6 +3387,7 @@ HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
   ++g_st.scenes;
   if (SUCCEEDED(hr) && !g_sunDrawn) {
     g_sunDrawn = true;
+    if (g_apiOk) rbrrtx_apiworld_replay();             // retained world instances, before this frame's draws
     update_sun();
     if (g_enabled && g_apiOk) rbrrtx_headlights_emit();   // once per frame, with the sun: from RBR's car object
     if (g_enabled && g_apiOk) { rbrrtx_particles_emit(g_sweep); rbrrtx_windscreen_emit(g_sweep); }   // particles.cpp, windscreen.cpp
@@ -3388,7 +3408,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
   if (g_apiOk) {
     const ULONG refs = o.AddRef(dev);
     o.Release(dev);
-    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); }
+    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_apiworld_reset(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); }
   }
   return o.Release(dev);
 }
@@ -4375,6 +4395,13 @@ void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   decl->lpVtbl->Release(decl);
 }
 
+// The world through the Remix API (apiworld.cpp): static RL* world-space scenery, one texture, declarations only.
+bool api_world_class() {
+  if (!g_enabled || !g_apiOk || !g_primaryRT || !g_haveCam || g_testMode != 0 || !g_curInfo || g_vin != kVinDecl) return false;
+  const unsigned f = g_curInfo->flags;
+  return (f & SH_SCENERY) && (f & SH_WORLDSPACE) && !(f & (SH_ANIM | SH_BTB | SH_DOUBLE));
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -4437,6 +4464,22 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       if (!blend && oldRef > g_cutoutRef) {
         refChanged = SUCCEEDED(o.SetRenderState(dev, D3DRS_ALPHAREF, g_cutoutRef));
         ++g_refLowered;
+      }
+    }
+  }
+  // Registered once as a retained Remix API instance (apiworld.cpp): not sent again (alpha state as lowered above).
+  if (g_dip.valid && api_world_class()) {
+    const bool sway = (g_curInfo->flags & SH_SWAY) != 0;
+    if (rbrrtx_apiworld_wants(sway)) {
+      if (sway) {                                     // foliage.cpp still learns the leaf textures
+        IDirect3DBaseTexture9* ft = nullptr;
+        if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &ft)) && ft) { ft->lpVtbl->Release(ft); rbrrtx_foliage_draw(ft); }
+      }
+      const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, sway };
+      if (rbrrtx_apiworld_draw(dev, wd)) {
+        ++g_st.apiWorld;
+        if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
+        return D3D_OK;
       }
     }
   }
@@ -4612,6 +4655,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len,
   const HRESULT hr = o.CreateVertexBuffer(dev, len, usage, fvf, pool, vb, shared);
   if (SUCCEEDED(hr) && vb && *vb) {
     ++g_vbGen[*vb];
+    rbrrtx_apiworld_forget(*vb);
     rbrrtx_alphacut_forget(*vb);
     rbrrtx_radnorm_forget(*vb);
     if (*vb == g_clockVB) g_clockVB = nullptr;         // a new buffer at the clock's old address
@@ -4622,7 +4666,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexBuffer(IDirect3DDevice9* dev, UINT len,
 HRESULT STDMETHODCALLTYPE hk_CreateIndexBuffer(IDirect3DDevice9* dev, UINT len, DWORD usage, D3DFORMAT fmt, D3DPOOL pool,
                                                IDirect3DIndexBuffer9** ib, HANDLE* shared) {
   const HRESULT hr = o.CreateIndexBuffer(dev, len, usage, fmt, pool, ib, shared);
-  if (SUCCEEDED(hr) && ib && *ib) { rbrrtx_alphacut_forget(*ib); rbrrtx_radnorm_forget(*ib); }
+  if (SUCCEEDED(hr) && ib && *ib) { rbrrtx_apiworld_forget(*ib); rbrrtx_alphacut_forget(*ib); rbrrtx_radnorm_forget(*ib); }
   return hr;
 }
 
@@ -4678,6 +4722,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_world_lights_init(g_apiOk ? &g_api : nullptr);
+  rbrrtx_apiworld_init(g_apiOk && g_remixPlus ? rbrrtx_api_ext() : nullptr);
   load_skip_textures();
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);

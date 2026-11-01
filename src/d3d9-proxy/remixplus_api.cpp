@@ -204,6 +204,8 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
   g_ext.createMaterial = reinterpret_cast<void*>(g_rp.CreateMaterial);
   g_ext.drawInstance = reinterpret_cast<void*>(g_rp.DrawInstance);
   g_ext.destroyMesh = reinterpret_cast<void*>(g_rp.DestroyMesh);
+  g_ext.destroyMaterial = reinterpret_cast<void*>(g_rp.DestroyMaterial);
+  g_ext.destroyTexture = reinterpret_cast<void*>(g_rp.DestroyTexture);
   g_ext.version = info.version;
   // The bridge fills only what it forwards (migration guide section 7); the proxy needs these.
   if (!in_module(reinterpret_cast<const void*>(g_rp.CreateLight), backend) ||

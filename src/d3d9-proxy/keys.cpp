@@ -50,7 +50,8 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},
   {L"foliage_normals", kAlt | 'R', L"radial foliage normals on/off (prototype, foliage-normals.ini)"},
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
-  {L"bounces", kAlt | '0', L"secondary ray bounces 2 <-> 1 (rtx.secondaryRayMaxInteractions)"},   // Alt+P = experiment
+  {L"bounces", kAlt | '0', L"ray interactions: rtx.conf -> large (dense-forest test) -> secondary 1"},   // Alt+P = experiment
+  {L"api_world", kAlt | 'W', L"world through the Remix API: all -> foliage only -> off"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};

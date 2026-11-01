@@ -129,7 +129,7 @@ unsigned rbrrtx_remixplus_converted();                         // pNext chains r
 // Remix Plus calls beyond NVIDIA's table (Kim's header types; null = the runtime/bridge lacks it). For the API world.
 struct RbrApiExt {
   void *createRetained, *updateRetained, *destroyRetained, *drawRetained, *importD3D9Texture, *createMeshBatched,
-       *setupCamera, *createMaterial, *drawInstance, *destroyMesh;
+       *setupCamera, *createMaterial, *drawInstance, *destroyMesh, *destroyMaterial, *destroyTexture;
   unsigned long long version;                                  // the API version the library accepted
 };
 const RbrApiExt* rbrrtx_api_ext();                              // nullptr before init / without Remix Plus
@@ -171,6 +171,16 @@ bool rbrrtx_world_lights_uv(unsigned long long hash, float rect[4]);   // lamp i
 void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
+// apiworld.cpp: static stage draws as retained Remix API instances on Kim's runtime (materials.ini [api_world]).
+struct RbrWorldDraw { int base; unsigned minIdx, numV, startIdx, prims; bool sway; };
+void rbrrtx_apiworld_init(const RbrApiExt* ext);                // after the API is up (null = unavailable)
+bool rbrrtx_apiworld_wants(bool sway);                          // this class is taken now
+bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d); // true = its instance draws it: skip the D3D9 draw
+void rbrrtx_apiworld_replay();                                  // first BeginScene of a frame
+void rbrrtx_apiworld_frame_end(const float* viewProj, bool active);   // Present (viewProj null = no world camera)
+void rbrrtx_apiworld_reset(const wchar_t* why);                 // menu <-> stage, device released
+void rbrrtx_apiworld_forget(const void* buffer);                // the game created a buffer at this address
+const wchar_t* rbrrtx_apiworld_cycle();                         // key: all -> foliage only -> off
 
 // genmod.cpp: the generated Remix mod <mods>\rbr_rtx_lit\mod.usda (sections "lit", "litparts", "foliage"); Remix reloads
 // it when it changes. init before the backend loads; flush writes now; tick (per Present) writes a change at most
@@ -244,7 +254,7 @@ void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed);
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_API_WORLD, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);
