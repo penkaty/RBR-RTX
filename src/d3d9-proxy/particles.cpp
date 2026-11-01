@@ -292,6 +292,10 @@ struct DustCfg {
   int collisionMode = 2;                               // Remix: 0 bounce (takes the hit surface's velocity), 1 stop, 2 kill
   float restitution = 0.0f;                            // bounce: share of the speed kept
   bool holdColour = false;                             // start colour held for half the life, then to the end colour
+  // Shelter (user 2026-11-01: rain fell inside the car): Kim's runtime traces each new particle up against the whole
+  // scene and moves it to open sky, and traces its fall so it dies on the first opaque surface (a roof the camera
+  // cannot see, the car's own roof). Sent as bit 0x80 of collisionMode (our runtime, rtx_remix_api.cpp).
+  bool shelter = false;
   // Rain/snow: Remix Plus lights particles from its froxel radiance cache, which is near black under trees and heavy
   // cloud: flakes went black against the sky (user 2026-11-01, Toivonvaara HeavySnow). A little white emission keeps
   // them visible there (emissive intensity; 0 = none).
@@ -337,6 +341,7 @@ DustCfg precip_defaults(int pre) {
   DustCfg c;
   c.maxParticles = 30000;
   c.collision = true;
+  c.shelter = true;
   c.rotation = 0.0f;
   if (pre == PRE_RAIN_LIGHT || pre == PRE_RAIN_HEAVY) {
     const float a[4] = { 0.70f, 0.72f, 0.76f, 0.25f }, b[4] = { 0.85f, 0.87f, 0.90f, 0.40f };
@@ -399,7 +404,7 @@ DustCfg precip_defaults(int pre) {
       c.riseSpeed = 1.0f; c.cone = 60.0f; c.drag = 2.0f; c.gravity = -0.5f;
       c.turbulenceForce = 3.0f; c.turbulenceFrequency = 0.8f;
       c.velFromMotion = 0.7f;
-      c.collision = true; c.collisionMode = 2; c.holdColour = true;
+      c.collision = true; c.collisionMode = 2; c.holdColour = true; c.shelter = false;   // starts on the car itself
       c.holeLength = 4.2f; c.holeWidth = 1.75f; c.above = 1.35f;   // car shell: length, width, roof above the car's root
       c.wakeOnKmh = 25.0f;
     }
@@ -506,6 +511,7 @@ void load_fx(DustCfg& c) {
   c.collisionMode = static_cast<int>(cfg_float(L"collision_mode", static_cast<float>(c.collisionMode), 0.0f, 2.0f));
   c.restitution = cfg_float(L"collision_restitution", c.restitution, 0.0f, 1.0f);
   c.holdColour = cfg_float(L"hold_colour", c.holdColour ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+  c.shelter = cfg_float(L"shelter", c.shelter ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
   c.selfLight = cfg_float(L"self_light", c.selfLight, 0.0f, 100.0f);
   c.wakeOnKmh = cfg_float(L"on_above_kmh_wake", c.wakeOnKmh, 0.0f, 300.0f);
   GetPrivateProfileStringW(g_sec, L"texture", c.tex, c.tex, 64, g_cfgPath);
@@ -790,7 +796,7 @@ remixapi_InstanceInfoParticleSystemEXT fx_desc(const DustCfg& c, const float* ti
   p.enableMotionTrail = c.trail > 0.0f;
   p.alignParticlesToVelocity = c.align;
   p.enableCollisionDetection = c.collision;
-  p.collisionMode = static_cast<uint8_t>(c.collisionMode);
+  p.collisionMode = static_cast<uint8_t>(c.collisionMode | (c.shelter ? 0x80 : 0));
   p.collisionRestitution = c.restitution;
   p.collisionThickness = c.collisionThickness;
   p.initialVelocityFromMotion = c.velFromMotion;
