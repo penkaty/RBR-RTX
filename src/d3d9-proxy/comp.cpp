@@ -1357,6 +1357,7 @@ void atmo_frame() {
     numos_menu(g_inMenu);
     rbrrtx_world_lights_reset();                       // lamp positions are per scene
     rbrrtx_apiworld_reset(g_inMenu ? L"menu" : L"stage");
+    rbrrtx_hudglow_forget();
     menuApplied = true;
   }
   static std::wstring nightKey;
@@ -2275,6 +2276,25 @@ bool clock_draw(IDirect3DDevice9* dev, HRESULT& hr) {
   return true;
 }
 
+// The first world-space (RL*) draw of the frame defines the camera: its c0 is view*projection. Also called for the
+// draws the API world skips (apiworld.cpp), else the frame keeps an old camera and the car is placed against it.
+void frame_camera(const D3DMATRIX& wvp) {
+  if (g_frameCam) return;
+  DMat V, P, vpinv;
+  double rec = 0;
+  const DMat vp = to_d(wvp);
+  if (!decompose_vp(vp, V, P, rec) || !inverse_d(vp, vpinv)) return;
+  g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv; g_VPd = vp;
+  g_haveCam = true;
+  g_frameCam = true;
+  g_st.recErr = static_cast<float>(rec);
+  D3DMATRIX vi;                                        // windscreen drops in cockpit views ride on the camera
+  if (g_enabled && g_apiOk && g_primaryRT && inverse(g_V, vi) && g_P._22 > 1e-4f) {
+    rbrrtx_headlights_camera(&vi._11);                 // cockpit or not: is the camera in the cabin
+    rbrrtx_windscreen_camera(&vi._11, 2.0f * std::atan(1.0f / g_P._22) * 57.29578f);
+  }
+}
+
 bool before_draw(IDirect3DDevice9* dev) {
   ++g_st.draws;
   g_clockNow = false;
@@ -2393,22 +2413,7 @@ bool before_draw(IDirect3DDevice9* dev) {
     return btb_draw(dev);
   }
   const bool worldSpace = g_curInfo && (g_curInfo->flags & SH_WORLDSPACE);
-  if (worldSpace && !g_frameCam) {                     // first world-space draw of the frame defines the camera
-    DMat V, P, vpinv;
-    double rec = 0;
-    const DMat vp = to_d(wvp);
-    if (decompose_vp(vp, V, P, rec) && inverse_d(vp, vpinv)) {
-      g_V = to_f(V); g_P = to_f(P); g_VPinv = vpinv; g_VPd = vp;
-      g_haveCam = true;
-      g_frameCam = true;
-      g_st.recErr = static_cast<float>(rec);
-      D3DMATRIX vi;                                    // windscreen drops in cockpit views ride on the camera
-      if (g_enabled && g_apiOk && g_primaryRT && inverse(g_V, vi) && g_P._22 > 1e-4f) {
-        rbrrtx_headlights_camera(&vi._11);             // cockpit or not: is the camera in the cabin
-        rbrrtx_windscreen_camera(&vi._11, 2.0f * std::atan(1.0f / g_P._22) * 57.29578f);
-      }
-    }
-  }
+  if (worldSpace) frame_camera(wvp);
   if (!g_haveCam) { ++g_st.noCamera; return false; }
   D3DMATRIX world = to_f(mul_d(to_d(wvp), g_VPinv));
   if (worldSpace) {                                    // should be identity; how far off is it?
@@ -3139,7 +3144,7 @@ void end_frame(IDirect3DDevice9* dev) {
   g_btbPrev = g_st.btb > 0;
   const bool cameraNow = g_st.xformed > 0;
   if (cameraNow && g_detailFrames < 3) { ++g_detailFrames; log_frame(L"first frames with a camera"); }
-  else if (g_frame < 3 || g_frame % 600 == 0) { log_frame(L"periodic"); cull_log_stats(); }
+  else if (g_frame < 3 || g_frame % 600 == 0) { log_frame(L"periodic"); cull_log_stats(); if (g_frame) rbrrtx_hudglow_log(); }
   rbrrtx_report_frame(g_wnd, { g_st.draws, g_st.xformed, g_st.ff, g_st.btb, { g_carPos[0], g_carPos[1], g_carPos[2] } });
   g_st = {};
   g_hinted = 0;
@@ -4479,6 +4484,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
         if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &ft)) && ft) { ft->lpVtbl->Release(ft); rbrrtx_foliage_draw(ft); }
       }
       const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, sway };
+      frame_camera(from_rows(&g_c[0]));               // this draw may be the one that defines the frame's camera
       if (rbrrtx_apiworld_draw(dev, wd)) {
         ++g_st.apiWorld;
         if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
@@ -4564,7 +4570,11 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
-  else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) hr = draw();
+  else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) {
+    if (g_enabled && g_primaryRT) rbrrtx_hudglow_before(dev);
+    hr = draw();
+    rbrrtx_hudglow_after(dev);
+  }
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
   if (litPrev) litPrev->lpVtbl->Release(litPrev);
   if (SUCCEEDED(hr)) { if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
@@ -4726,6 +4736,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_world_lights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_apiworld_init(g_apiOk && g_remixPlus ? rbrrtx_api_ext() : nullptr);
+  rbrrtx_hudglow_init(dev, g_apiOk && g_remixPlus && rbrrtx_api_ext() && rbrrtx_api_ext()->createRetained);
   load_skip_textures();
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);

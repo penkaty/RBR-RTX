@@ -180,6 +180,12 @@ void rbrrtx_apiworld_replay();                                  // first BeginSc
 void rbrrtx_apiworld_frame_end(const float* viewProj, bool active);   // Present (viewProj null = no world camera)
 void rbrrtx_apiworld_reset(const wchar_t* why);                 // menu <-> stage, device released
 void rbrrtx_apiworld_forget(const void* buffer);                // the game created a buffer at this address
+// hudglow.cpp: RBRHUD gauge displays (s0 render target + s15 emissive mask) glow through Kim's material protocol.
+void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol); // materials.ini [hud_glow]; patches SetTexture / SetPixelShaderConstantB
+void rbrrtx_hudglow_before(void* device);                       // around each D3D9 draw sent to Remix
+void rbrrtx_hudglow_after(void* device);
+void rbrrtx_hudglow_forget();                                   // stage / device change: texture pointers may be reused
+void rbrrtx_hudglow_log();                                      // periodic count line
 const wchar_t* rbrrtx_apiworld_cycle();                         // key: all -> foliage only -> off
 
 // genmod.cpp: the generated Remix mod <mods>\rbr_rtx_lit\mod.usda (sections "lit", "litparts", "foliage"); Remix reloads
