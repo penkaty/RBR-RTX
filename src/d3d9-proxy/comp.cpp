@@ -3838,12 +3838,19 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
 
 // Lamp textures (worldlights.cpp): the lamp sits on this draw's bounding sphere.
 void world_light_draw(IDirect3DDevice9* dev) {
-  if (!g_primaryRT || !g_frameCam || !g_curVS || !rbrrtx_world_lights_wanted()) return;
+  if (!g_primaryRT || !g_frameCam || !rbrrtx_world_lights_wanted()) return;
   IDirect3DBaseTexture9* bt = nullptr;
   if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return;
   const unsigned long long hx = rbrrtx_texture_hash(bt);
   bt->lpVtbl->Release(bt);
   if (!rbrrtx_world_lights_texture(hx)) return;
+  if (!g_curVS) {                                          // fixed-function (e.g. screen-space sprites): no world place
+    static std::unordered_set<unsigned long long> told;
+    if (told.insert(hx).second)
+      clog(L"world lights: texture %016llX is drawn fixed-function%s: no lamp placed from it", hx,
+           screen_space_input(dev) ? L" in screen space" : L"");
+    return;
+  }
   float rect[4];
   if (rbrrtx_world_lights_uv(hx, rect)) {
     if (!g_curInfo || g_drawNumVert == 0) return;

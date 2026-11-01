@@ -26,6 +26,7 @@
 #include "common.hpp"
 #include <d3d9.h>
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -75,13 +76,13 @@ struct Part {
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
   unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
-  bool disc() const { return offBody > onBody; }         // moves with a wheel: a brake disc
+  bool disc() const { return offBody >= 3; }             // turned against the body (a lens never is): a brake disc
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
 unsigned g_frame = 0;
 unsigned g_carDrawsThisFrame = 0;
 std::vector<uint64_t> g_drawn;                           // this frame's part keys
-struct DrawnAt { uint64_t key; float t[3]; };
+struct DrawnAt { uint64_t key; float m[12]; };            // the draw's matrix rows 0-2 (axes)
 std::vector<DrawnAt> g_drawnAt;                          // this frame's lit-part draws and where (matrix row 3)
 ULONGLONG g_brakeSince = 0;                              // when the brake came on (0 = off)
 float g_sunEl = 90.0f;                                   // sun height at the last Present
@@ -502,10 +503,16 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
     for (const DrawnAt& d : g_drawnAt) {
       auto it = g_parts.find(d.key);
       if (it == g_parts.end()) continue;
-      const float dx = d.t[0] - body[12], dy = d.t[1] - body[13], dz = d.t[2] - body[14];
+      // Turned against the body = spins or steers with a wheel: a disc. Only the axes count (run 20261101-111428, Fiat
+      // 126p: its brake lens is a node of its own, offset from the body's origin but never turned, and the old
+      // position test made it a disc: no glow for the first 1.5 s of braking, "taillights go off when braking").
+      float turn = 0.0f;
+      for (int k = 0; k < 3; ++k)
+        turn = (std::max)(turn, std::fabs(d.m[k] - body[k]) + std::fabs(d.m[4 + k] - body[4 + k]) +
+                                std::fabs(d.m[8 + k] - body[8 + k]));
       Part& p = it->second;
       const bool wasDisc = p.disc();
-      if (dx * dx + dy * dy + dz * dz < 1e-6f) ++p.onBody; else ++p.offBody;
+      if (turn < 1e-3f) ++p.onBody; else ++p.offBody;
       if (p.disc() != wasDisc && (p.mask & (1u << kBrake)))
         llog(L"lit parts: a %u-triangle brake part is %s", p.prims, p.disc()
              ? L"drawn off the body (moves with a wheel): a brake disc, it glows after the brake is held a while"
@@ -548,7 +555,8 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   p.prims = prims;
   g_drawn.push_back(key);
   if (world && (p.mask & (1u << kBrake)) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
-    g_drawnAt.push_back({ key, { world[12], world[13], world[14] } });
+    g_drawnAt.push_back({ key, { world[0], world[1], world[2], world[3], world[4], world[5], world[6], world[7],
+                                 world[8], world[9], world[10], world[11] } });
   // Which glow: the signal that shows it now (the brake over the lamps on a shared tail lens), else the unlit brake
   // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states. A brake disc only once the brake
   // has been held discDelay seconds (until then it is drawn as the game textures it).
