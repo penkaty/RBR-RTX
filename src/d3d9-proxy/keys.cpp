@@ -31,10 +31,10 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"windscreen", kAlt | 'I', L"windscreen"},
   {L"sky", '6', L"sky mode"},
   {L"debug_sun", VK_OEM_2, L"debug sun"},                     // /  (was H until 2026-10-24, user)
-  {L"debug_sun_left", VK_OEM_4, L"debug sun turn left"},     // [
-  {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
-  {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
-  {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
+  {L"debug_sun_left", VK_OEM_4, L"debug sun: north heading left"},   // [
+  {L"debug_sun_right", VK_OEM_6, L"debug sun: north heading right"}, // ]
+  {L"debug_sun_down", VK_OEM_1, L"debug sun: time earlier"},       // ;
+  {L"debug_sun_up", VK_OEM_7, L"debug sun: time later"},         // '
   {L"experiment", kAlt | 'P', L"performance experiment run"},
   {L"culling", kAlt | 'U', L"distance culling on/off"},
   {L"sun_brighter", kAlt | 'N', L"sun brightness +10 %"},

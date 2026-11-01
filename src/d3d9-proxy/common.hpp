@@ -155,6 +155,15 @@ void rbrrtx_headlights_status(wchar_t* out, size_t n);
 int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
 void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this frame's camera (cockpit = camera in the cabin)
 
+// worldlights.cpp: lamps the game only paints (street lamps, the menu's lamp post) as Remix sphere lights from dusk to
+// dawn; rbr-rtx\config\lights.ini [lamp.<name>] texture = <Remix hash>.
+void rbrrtx_world_lights_init(const remixapi_Interface* api);
+bool rbrrtx_world_lights_wanted();                              // any lamp texture listed (else no per-draw work)
+bool rbrrtx_world_lights_texture(unsigned long long hash);
+void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
+void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
+void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
+
 // genmod.cpp: the generated Remix mod <mods>\rbr_rtx_lit\mod.usda (sections "lit", "litparts", "foliage"); Remix reloads
 // it when it changes. init before the backend loads; flush writes now; tick (per Present) writes a change at most
 // every few seconds.

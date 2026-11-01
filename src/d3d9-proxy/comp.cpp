@@ -362,12 +362,17 @@ bool g_remixPlus = false, g_numos = false;
 remixapi_LightHandle g_sun = nullptr;
 float g_sunDir[3] = {}, g_sunRadiance[3] = { 6.0f, 5.7f, 5.2f };
 unsigned g_sunCreates = 0;
-// Debug sun (user 2026-10-16, judging normal maps needs low, raking light): H (keys.ini) switches to a manual sun that
-// starts where the game's sun is; while it is on, hold ; / ' to lower/raise it and [ / ] to turn it around (0.5
-// degrees per frame). H again = the game's sun. Night (user 2026-10-17): below the horizon down to -18 degrees; the
-// sun light fades out between +2 and -4 degrees and Remix's sky light (rtx.skyBrightness) dims to 1 % at -12.
+// Debug sun (user 2026-10-16, judging normal maps needs low, raking light): / (keys.ini) switches to a manual sun that
+// starts where the sun shown is; / again = the game's sun. Night (user 2026-10-17): below the horizon down to -18
+// degrees; the sun light fades out between +2 and -4 degrees and Remix's sky light (rtx.skyBrightness) dims to 1 % at -12.
+// Since 2026-11-01 (user: "control time of day and NORTH heading"; "it starts in some weird place" and "remembers the
+// custom sun in different stages": under NUMOS g_sunDir was never updated, so / started from an old debug sun): the
+// manual sun is a clock time on NUMOS's solar path (latitudeDegrees, dayOfYear of the conf) plus a north heading that
+// turns the whole path. ; / ' = time earlier / later (1 h per second held), [ / ] = north heading (30 degrees per
+// second). Both start from the sun on screen (NUMOS: the values sent last), so the first press changes nothing.
 bool g_sunManual = false, g_sunMoving = false;
-float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon
+float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon (proxy convention)
+float g_dbgHour = 12.0f, g_dbgNorth = 0.0f;           // debug sun clock and north heading
 float g_sunShownEl = 90.0f;                            // elevation of the sun shown (game sun after the rules, or debug sun)
 float g_sunFade = 1.0f;                                // sun radiance factor of the light currently created
 float g_sunScale = 1.0f;                               // live brightness (sun_brighter / sun_dimmer keys), times g_sunRadiance
@@ -780,9 +785,9 @@ void numos_sun(const float d[3], float elev) {
   float az = std::atan2(-d[0], -d[2]) * 57.2958f * g_numosAzSign + g_numosAzOffset;
   az = std::fmod(az + 720.0f, 360.0f);
   if (g_inMenu) {
-    menu_blend_sun(&elev, &az);
+    if (!g_sunManual) menu_blend_sun(&elev, &az);
     g_menuSunEl = elev;
-  } else {
+  } else if (!g_sunManual) {                           // the menu runs forward from the stage's own sun, not a debug sun
     g_stageSentEl = elev;
   }
   numos_moon(elev, az);
@@ -902,7 +907,7 @@ void update_sun() {
   for (float& v : d) v /= len;
   const float elev = std::asin(std::clamp(-d[1], -1.0f, 1.0f)) * 57.2958f;
   g_sunShownEl = elev;                                 // also with the sun key off: the headlights' automatic switch
-  if (g_numos) { numos_sun(d, elev); return; }
+  if (g_numos) { std::memcpy(g_sunDir, d, sizeof(d)); numos_sun(d, elev); return; }   // g_sunDir: sun_save
   if (!g_apiOk || !g_enabled || !g_sunOn) return;
   const float fade = std::clamp((elev + 4.0f) / 6.0f, 0.0f, 1.0f);   // twilight: full at +2, gone at -4 degrees
   if (fade <= 0.0f) {                                  // night: no sun light at all
@@ -1341,6 +1346,7 @@ void atmo_frame() {
       clog(L"debug sun off (%s): the game's sun again", g_inMenu ? L"back in the menu" : L"new stage");
     }
     numos_menu(g_inMenu);
+    rbrrtx_world_lights_reset();                       // lamp positions are per scene
     menuApplied = true;
   }
   static std::wstring nightKey;
@@ -1786,6 +1792,8 @@ void dump_ff_state(IDirect3DDevice9* dev) {
        w._11, w._41, v._11, v._43, p._11, p._22, p._41, p._44, tex.c_str());
 }
 
+bool draw_world_sphere(IDirect3DDevice9* dev, float c[3], float* r, bool force = false);
+
 void dump_draw(IDirect3DDevice9* dev, const wchar_t* fate) {
   if (++g_dumpDraws > 1500) return;
   const ShaderInfo* key = !g_curVS ? &kFixedFunction : g_curInfo ? g_curInfo : &kUnknownShader;
@@ -1807,11 +1815,22 @@ void dump_draw(IDirect3DDevice9* dev, const wchar_t* fate) {
   tex_desc(dev, 0, t0, 96);
   tex_desc(dev, 1, t1, 96);
   if (g_vin == kVinFvf) fvf = g_curFVF;
-  clog(L"  dump #%u %s %s %s: vp %lu,%lu %lux%lu z %.2f..%.2f %s 0x%lx%s blend %lu %lu/%lu z %lu zw %lu at %lu/%lu ps %s%s; t0 %s; t1 %s",
+  // Remix hash of t0 and the draw's world bounding sphere (lights.ini [lamp.*] texture = that hash, 2026-11-01).
+  wchar_t where[96] = L"";
+  {
+    IDirect3DBaseTexture9* bt = nullptr;
+    unsigned long long hx = 0;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &bt)) && bt) { hx = rbrrtx_texture_hash(bt); bt->lpVtbl->Release(bt); }
+    float c[3], r = 0.0f;
+    const bool have = g_curVS && g_frameCam && draw_world_sphere(dev, c, &r, true);   // a dump reads every range
+    if (have) swprintf_s(where, L"; hash %016llX at (%.1f %.1f %.1f) r %.1f", hx, c[0], c[1], c[2], r);
+    else if (hx) swprintf_s(where, L"; hash %016llX", hx);
+  }
+  clog(L"  dump #%u %s %s %s: vp %lu,%lu %lux%lu z %.2f..%.2f %s 0x%lx%s blend %lu %lu/%lu z %lu zw %lu at %lu/%lu ps %s%s; t0 %s; t1 %s%s",
        g_dumpDraws, fs::path(key->name).filename().c_str(), g_primaryRT ? L"P" : L"O", fate, vp.X, vp.Y, vp.Width, vp.Height,
        vp.MinZ, vp.MaxZ, g_vin == kVinDecl ? L"decl" : L"fvf", g_vin == kVinDecl ? reinterpret_cast<uintptr_t>(g_curDecl) : fvf,
        screen_space_input(dev) ? L" (screen-space)" : L"", blend, src, dst,
-       z, zw, at, aref, ps ? L"yes" : L"no", g_oqActive > 0 ? L" IN-OCCLUSION-QUERY" : L"", t0, t1);
+       z, zw, at, aref, ps ? L"yes" : L"no", g_oqActive > 0 ? L" IN-OCCLUSION-QUERY" : L"", t0, t1, where);
   if (g_curVS && !g_curInfo) {                         // unknown vertex shader: which one, and what it is fed
     auto it = g_curDecl ? g_declText.find(g_curDecl) : g_declText.end();
     clog(L"    vs %p decl %s", g_curVS, it != g_declText.end() ? it->second.c_str() : L"(fvf)");
@@ -2966,24 +2985,49 @@ void end_frame(IDirect3DDevice9* dev) {
                g_sunRadiance[0] * g_sunScale, g_sunRadiance[1] * g_sunScale, g_sunRadiance[2] * g_sunScale);
     log_frame(why);
   }
+  static SolarPath dbgPath = { 0.785f, 0.0f };
+  static ULONGLONG dbgLast = 0;
   if (kDebugSun) {                                     // manual debug sun on/off (g_sunManual)
     g_sunManual = !g_sunManual;
-    if (g_sunManual && g_sunDir[1] != 0.0f) {          // start from the sun currently drawn
-      g_sunEl = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f;
-      g_sunAz = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
-      // g_sunDir is the Remix sun after sun_rule (never overhead any more).
+    if (g_sunManual) {                                 // start from the sun on screen
+      float el = g_sunShownEl, naz = 0.0f;             // naz: NUMOS rotation (compass-like, 0 = north)
+      if (g_numos && g_numosSentEl > -999.0f) { el = g_numosSentEl; naz = g_numosSentAz; }
+      else if (g_sunDir[0] != 0.0f || g_sunDir[1] != 0.0f || g_sunDir[2] != 0.0f) {
+        el = std::asin(std::clamp(-g_sunDir[1], -1.0f, 1.0f)) * 57.2958f;
+        naz = std::atan2(-g_sunDir[0], -g_sunDir[2]) * 57.2958f * g_numosAzSign + g_numosAzOffset;
+      }
+      dbgPath = solar_path();
+      // A sun higher than the conf's path reaches at noon: the path's latitude lowered until it does.
+      if (el > 90.0f - std::fabs(dbgPath.lat - dbgPath.dec) * 57.2958f)
+        dbgPath.lat = dbgPath.dec + (90.0f - (std::min)(el, 89.9f)) * 0.0174533f;
+      // Morning stages run the clock from the morning side, every other one (and the menu) from the afternoon side.
+      g_dbgHour = solar_hour(dbgPath, el, g_inMenu || g_stageSentTime != 0);
+      g_dbgNorth = std::remainder(naz - solar_azimuth(dbgPath, g_dbgHour), 360.0f);
+      dbgLast = GetTickCount64();
+      g_sunMoving = true;                              // sets g_sunAz / g_sunEl below and logs the start
     }
-    swprintf_s(why, L"%s: %s sun (azimuth %.1f, elevation %.1f)", rbrrtx_key_name(RBRKEY_DEBUG_SUN), g_sunManual ? L"manual" : L"game", g_sunAz, g_sunEl);
+    swprintf_s(why, L"%s: %s sun", rbrrtx_key_name(RBRKEY_DEBUG_SUN), g_sunManual ? L"debug (time of day / north heading)" : L"game");
     log_frame(why);
   }
   if (g_sunManual) {
-    const float dEl = (rbrrtx_key_held(RBRKEY_SUN_UP) ? 0.5f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_DOWN) ? 0.5f : 0.0f);
-    const float dAz = (rbrrtx_key_held(RBRKEY_SUN_RIGHT) ? 0.5f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_LEFT) ? 0.5f : 0.0f);
-    const bool moving = dEl != 0.0f || dAz != 0.0f;
-    g_sunEl = std::clamp(g_sunEl + dEl, -18.0f, 90.0f);
-    g_sunAz = std::fmod(g_sunAz + dAz + 540.0f, 360.0f) - 180.0f;
+    const ULONGLONG now = GetTickCount64();
+    const float dt = (std::min)(static_cast<float>(now - dbgLast) * 0.001f, 0.1f);
+    dbgLast = now;
+    const float dH = ((rbrrtx_key_held(RBRKEY_SUN_UP) ? 1.0f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_DOWN) ? 1.0f : 0.0f)) * dt;
+    const float dN = ((rbrrtx_key_held(RBRKEY_SUN_RIGHT) ? 30.0f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_LEFT) ? 30.0f : 0.0f)) * dt;
+    const bool moving = dH != 0.0f || dN != 0.0f;
+    if (moving || g_sunMoving) {
+      g_dbgHour = std::fmod(g_dbgHour + dH + 24.0f, 24.0f);
+      g_dbgNorth = std::remainder(g_dbgNorth + dN, 360.0f);
+      const float el = std::clamp(solar_elevation(dbgPath, g_dbgHour), -18.0f, 90.0f);
+      // NUMOS rotation -> the proxy's direction (numos_sun's mapping backwards), then its azimuth = atan2(z, x).
+      const float a = (solar_azimuth(dbgPath, g_dbgHour) + g_dbgNorth - g_numosAzOffset) * g_numosAzSign * 0.0174533f;
+      g_sunEl = el;
+      g_sunAz = std::atan2(-std::cos(a), -std::sin(a)) * 57.2958f;
+    }
     if (!moving && g_sunMoving) {                      // log where the sun was left
-      swprintf_s(why, L"debug sun moved to azimuth %.1f, elevation %.1f%s", g_sunAz, g_sunEl,
+      swprintf_s(why, L"debug sun at %02d:%02d, north heading %+.1f: elevation %.1f%s", static_cast<int>(g_dbgHour),
+                 static_cast<int>(std::fmod(g_dbgHour, 1.0f) * 60.0f), g_dbgNorth, g_sunEl,
                  g_sunEl <= -4.0f ? L" (night: no sun light)" : g_sunEl < 2.0f ? L" (twilight)" : L"");
       log_frame(why);
     }
@@ -2991,6 +3035,16 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
   rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
+  {
+    D3DMATRIX vinv;
+    const float cam[3] = { 0, 0, 0 };
+    if (g_frameCam && inverse(g_V, vinv)) {
+      const float c[3] = { vinv._41, vinv._42, vinv._43 };
+      rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), c, g_enabled && g_apiOk);
+    } else {
+      rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), cam, g_enabled && g_apiOk);
+    }
+  }
   numos_ground();                                      // NUMOS: ground level from the car (no-op without NUMOS)
   if (g_numos && g_apiOk) {
     // NUMOS's lamp glow in fog lives in a froxel grid whose history is reprojected with the camera only (aerial-
@@ -3677,12 +3731,17 @@ bool cull_toggle() { g_cull.enabled = !g_cull.enabled; for (auto& e : g_cullCach
 // this test. With an older camera (Toikkala/Toivonvaara, run 20261024-000533: the menu's camera at (4, -1, 63) kept
 // while the stage sat at (2838, 139, 1049)) every world-space draw was culled as off-screen before it could renew the
 // camera, so it never renewed: 827 of 849 draws culled for the whole stage, "only ~15 draws, unknown shaders".
-bool cull_draw(IDirect3DDevice9* dev) {
-  if (!g_primaryRT || !g_enabled || !g_frameCam || !g_curVS || g_drawNumVert == 0 || !cull_class()) return false;
+// The current draw's bounding sphere in world space (cull_entry's, moved with this draw's W); needs the frame camera.
+// force: read a new range even when this frame's budget is spent (dumps, the few lamp draws).
+bool draw_world_sphere(IDirect3DDevice9* dev, float c[3], float* r, bool force) {
+  if (!g_curInfo || g_drawNumVert == 0) return false;
+  const int saved = g_cullBuildBudget;
+  if (force) g_cullBuildBudget = -1;
   CullEntry* e = cull_entry(dev);
+  if (force) g_cullBuildBudget = saved;
   if (!e) return false;
-  float c[3] = { e->c[0], e->c[1], e->c[2] };
-  float r = e->r;
+  c[0] = e->c[0]; c[1] = e->c[1]; c[2] = e->c[2];
+  *r = e->r;
   if (!(g_curInfo->flags & SH_WORLDSPACE)) {               // object space -> world with this draw's W
     const D3DMATRIX w = to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
     const float x = c[0], y = c[1], z = c[2];
@@ -3690,8 +3749,28 @@ bool cull_draw(IDirect3DDevice9* dev) {
     const float sx = std::sqrt(w.m[0][0] * w.m[0][0] + w.m[0][1] * w.m[0][1] + w.m[0][2] * w.m[0][2]);
     const float sy = std::sqrt(w.m[1][0] * w.m[1][0] + w.m[1][1] * w.m[1][1] + w.m[1][2] * w.m[1][2]);
     const float sz = std::sqrt(w.m[2][0] * w.m[2][0] + w.m[2][1] * w.m[2][1] + w.m[2][2] * w.m[2][2]);
-    r *= (std::max)(sx, (std::max)(sy, sz));
+    *r *= (std::max)(sx, (std::max)(sy, sz));
   }
+  return true;
+}
+
+// Lamp textures (worldlights.cpp): the lamp sits on this draw's bounding sphere.
+void world_light_draw(IDirect3DDevice9* dev) {
+  if (!g_primaryRT || !g_frameCam || !g_curVS || !rbrrtx_world_lights_wanted()) return;
+  IDirect3DBaseTexture9* bt = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return;
+  const unsigned long long hx = rbrrtx_texture_hash(bt);
+  bt->lpVtbl->Release(bt);
+  if (!rbrrtx_world_lights_texture(hx)) return;
+  float c[3], r = 0.0f;
+  if (draw_world_sphere(dev, c, &r, true)) rbrrtx_world_lights_seen(hx, c, r, g_inMenu);
+}
+
+bool cull_draw(IDirect3DDevice9* dev) {
+  if (!g_primaryRT || !g_enabled || !g_frameCam || !g_curVS || g_drawNumVert == 0 || !cull_class()) return false;
+  float c[3], r = 0.0f;
+  if (!draw_world_sphere(dev, c, &r)) return false;
+  CullEntry* e = cull_entry(dev);                          // cached: the same entry, for its culled flag
   float ref[3];
   if (g_haveCar) { ref[0] = g_carPos[0]; ref[1] = g_carPos[1]; ref[2] = g_carPos[2]; }
   else {                                                     // no car seen yet: the camera
@@ -4216,6 +4295,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"culling");
     return D3D_OK;
   }
+  world_light_draw(dev);                                     // lamp textures (lights.ini): a light at the object
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
     IDirect3DBaseTexture9* t = nullptr;
@@ -4478,6 +4558,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   if (rbrrtx_env_flag(L"RBRRTX_GAUGE_PROBE", false)) rbrrtx_gauge_probe_init(dev);
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
+  rbrrtx_world_lights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");
