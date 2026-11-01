@@ -4181,7 +4181,7 @@ void lamp_pick_draw(IDirect3DDevice9* dev) {
 
 // Writes the mark into lights-marked.ini (plain text, CRLF): a new [lamp.mark_<hash>_<n>], or, when the rectangle
 // overlaps one already marked for the texture, that section's rectangle replaced. Returns the section name.
-std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const float rect[4], const std::string& note, bool* replaced) {
+std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const float rect[4], const std::string& note, float glow, bool* replaced) {
   std::string text;
   { std::ifstream in(path, std::ios::binary); if (in) text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()); }
   std::vector<std::string> lines;
@@ -4198,6 +4198,9 @@ std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const f
               "; One section per lamp type: the texture and the rectangle of it that the lamp head uses. Every lamp drawn with",
               "; that part of the texture, on every stage, gets a light (worldlights.cpp; lumens, colour and size from lights.ini",
               "; [auto]; lights show at dusk/night). Delete a section to remove it. Read at game start and right after a mark.",
+              "; glow = emissive intensity of that part of the texture while the lamps are on (0 = no glow; for a closed lamp the glass",
+              "; glows, set from lights.ini [lights] mark_glow; the first night after a change the mod reloads once). Optional per",
+              "; section: offset = x, y, z (default 0, -0.1, 0: the light sits just below the glass), lumens, colour_temperature, radius.",
               "" };
   }
   char hex[24];
@@ -4228,10 +4231,11 @@ std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const f
     }
   }
   const int n = sameN ? sameN : maxN + 1;
-  char name[64], uv[96];
+  char name[64], uv[96], gl[48];
   snprintf(name, sizeof(name), "lamp.mark_%s_%d", hex, n);
   snprintf(uv, sizeof(uv), "uv = %.4f, %.4f, %.4f, %.4f", rect[0], rect[1], rect[2], rect[3]);
-  const std::vector<std::string> block = { "; " + note, std::string("[") + name + "]", std::string("texture = ") + hex, uv, "anchor = bottom" };
+  snprintf(gl, sizeof(gl), "glow = %.1f", glow);
+  const std::vector<std::string> block = { "; " + note, std::string("[") + name + "]", std::string("texture = ") + hex, uv, "anchor = bottom", gl };
   if (sameN) {
     lines.erase(lines.begin() + sameStart, lines.begin() + sameEnd);
     lines.insert(lines.begin() + sameStart, block.begin(), block.end());
@@ -4284,7 +4288,7 @@ void lamp_pick_finish() {
   snprintf(note, sizeof(note), "%s, marked %04d-%02d-%02d %02d:%02d, hit at (%.2f %.2f %.2f) %.1f m away, %u island vertices", stage.c_str(),
            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, g_pick.point[0], g_pick.point[1], g_pick.point[2], g_pick.t, g_pick.island);
   bool replaced = false;
-  const std::string sec = lamp_mark_write(path, g_pick.tex, g_pick.rect, note, &replaced);
+  const std::string sec = lamp_mark_write(path, g_pick.tex, g_pick.rect, note, rbrrtx_world_lights_mark_glow(), &replaced);
   if (sec.empty()) { clog(L"lamp mark: FAILED to write %s", path); lamp_mark_beep(false); return; }
   clog(L"lamp mark: %S texture %016llX (shader %s, %u vertices in the draw) hit at (%.2f %.2f %.2f), %.1f m away; island %u vertices, "
        L"uv %.4f, %.4f, %.4f, %.4f -> [%S] %s in %s",
@@ -4306,13 +4310,7 @@ void lamp_mark_frame() {
 }
 
 // Lamp textures (worldlights.cpp): the lamp sits on this draw's bounding sphere.
-void world_light_draw(IDirect3DDevice9* dev) {
-  if (!g_primaryRT || !g_frameCam || !rbrrtx_world_lights_wanted()) return;
-  IDirect3DBaseTexture9* bt = nullptr;
-  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return;
-  const unsigned long long hx = rbrrtx_texture_hash(bt);
-  bt->lpVtbl->Release(bt);
-  if (!rbrrtx_world_lights_texture(hx)) return;
+void world_light_place(IDirect3DDevice9* dev, unsigned long long hx) {
   if (!g_curVS) {                                          // fixed-function (e.g. screen-space sprites): no world place
     static std::unordered_set<unsigned long long> told;
     if (told.insert(hx).second)
@@ -4339,6 +4337,19 @@ void world_light_draw(IDirect3DDevice9* dev) {
   if (poleMin > 0) return;                                  // generated kinds place lamps from rectangles only
   float c[3], r = 0.0f;
   if (draw_world_sphere(dev, c, &r, true)) rbrrtx_world_lights_seen(hx, c, r, g_inMenu);
+}
+
+// Returns the twin texture to draw with (a marked lamp whose glass glows while the lamps are on), else nullptr.
+void* world_light_draw(IDirect3DDevice9* dev) {
+  if (!g_primaryRT || !g_frameCam || !rbrrtx_world_lights_wanted()) return nullptr;
+  IDirect3DBaseTexture9* bt = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return nullptr;
+  const unsigned long long hx = rbrrtx_texture_hash(bt);
+  const bool lamp = rbrrtx_world_lights_texture(hx);
+  void* glow = lamp && g_curVS ? rbrrtx_world_lights_glow(dev, hx, bt, g_inMenu) : nullptr;
+  bt->lpVtbl->Release(bt);
+  if (lamp) world_light_place(dev, hx);
+  return glow;
 }
 
 bool cull_draw(IDirect3DDevice9* dev) {
@@ -4899,7 +4910,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     return D3D_OK;
   }
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
-  world_light_draw(dev);                                     // lamp textures (lights.ini): a light at the object
+  void* lampGlow = world_light_draw(dev);                    // lamp textures (lights.ini): a light at the object
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
     IDirect3DBaseTexture9* t = nullptr;
@@ -5017,6 +5028,10 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_SWAY)) {
     IDirect3DBaseTexture9* ft = nullptr;
     if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &ft)) && ft) { ft->lpVtbl->Release(ft); rbrrtx_foliage_draw(ft); }
+  }
+  if (lampGlow && !litSwap) {                                // a marked lamp's glass glows (worldlights.cpp): its twin texture
+    dev->lpVtbl->GetTexture(dev, 0, &litPrev);
+    litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(lampGlow)));
   }
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);

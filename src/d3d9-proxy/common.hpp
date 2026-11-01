@@ -45,6 +45,7 @@ bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]);
 // harvest.cpp: writes mip 0 of a 2D texture to a .dds through a READONLY lock (frame dump; through the Remix bridge
 // that is the client's copy, the bytes it sent). False if the type or format is not handled or the lock fails.
 bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path);
+bool rbrrtx_save_texture_dds_mips(void* base_texture, const wchar_t* path);   // ... the whole mip chain (a replacement file)
 
 // gaugeprobe.cpp: RBRHUD gauge / display probe (dev tool; RBRRTX_GAUGE_PROBE=1 / launcher -GaugeProbe). Every call site
 // checks rbrrtx_gauge_probe_on first, so nothing runs when it is off. Log: rbrrtx_gauge_probe.log in the run logs.
@@ -174,6 +175,11 @@ void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
 void rbrrtx_world_lights_reload();                              // lights*.ini read again (after the lamp_mark key; lamps go)
+float rbrrtx_world_lights_mark_glow();                         // lights.ini [lights] mark_glow: the glow a new lamp mark gets
+void rbrrtx_world_lights_startup();                             // before the backend loads, after rbrrtx_genmod_init: glowing lamp materials of earlier runs
+// A draw with a marked lamp texture (kind with glow > 0) while the lamps are on: the twin texture to bind (its generated
+// material = the texture + an emissive mask on the marked rectangles), else nullptr. baseTexture = what is bound now.
+void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* baseTexture, bool inMenu);
 // apiworld.cpp: static stage draws as retained Remix API instances on Kim's runtime (materials.ini [api_world]).
 struct RbrWorldDraw { int base; unsigned minIdx, numV, startIdx, prims; bool sway; };
 void rbrrtx_apiworld_init(const RbrApiExt* ext);                // after the API is up (null = unavailable)

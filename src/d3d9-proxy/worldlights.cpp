@@ -20,6 +20,14 @@
 // to config\lights-marked.ini (anchor = bottom, no pole test, values from lights.ini [auto] unless the section sets them).
 // Marks of one texture merge into one kind (several rectangles). Load order: lights-auto.ini, lights-marked.ini,
 // lights.ini; the last one wins for the same texture. rbrrtx_world_lights_reload re-reads them at once after a mark.
+//
+// Glowing glass (user 2026-11-02: a closed street lamp is one full mesh, e.g. Hondarribia 30AD069FFA15A009; its glass should
+// glow too): a kind with glow > 0 (section key glow, emissive intensity; new marks get lights.ini [lights] mark_glow) draws
+// with a twin texture while the lamps are on. First time the texture is drawn its mip chain is saved from the game's memory
+// to <mods>\rbr_rtx_lit\marked\<hash>.dds (stages are encrypted: no file to point at), with a 256x256 mask that is white on
+// the marked uv rectangles. The generated mod (genmod.cpp, section "marked") gives the twin's hash (one per on-level, the
+// fade of the lamps in kGlowLevels steps) a material: the saved texture as albedo, the mask as emissive mask, the lamp colour
+// as emissive colour. Later runs publish the section before Remix starts. Day / lamps off: the real texture is drawn.
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
@@ -30,6 +38,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,6 +56,7 @@ struct Kind {
   std::vector<std::array<float, 4>> uvs;               // uv, uv2.. uv8: lamp rectangles in the texture
   bool pole = false;                                   // auto = 1: keep a vertex group only on a pole (comp.cpp)
   float minHeight = 3.0f;                              // pole test: group at least this far above the draw beneath
+  float glow = 0.0f;                                   // emissive intensity of the marked glass while lit (0 = none)
 };
 struct Lamp {
   uint64_t hash = 0;
@@ -66,6 +77,10 @@ unsigned g_max = 24, g_frame = 0, g_created = 0;
 uint64_t g_nextHash = 0x52425257'4C000000ULL;          // "RBRWL" + a counter: one Remix light per lamp for its life
 
 constexpr size_t kMaxRects = 8;
+constexpr int kGlowLevels = 4;                         // lit-fraction steps of the glass (the lamps fade in over a few minutes)
+constexpr ULONGLONG kGlowSettle = 9000;                // ms a new material needs (mod written, Remix reload) before its twin is drawn
+float g_markGlow = 6.0f;                               // lights.ini [lights] mark_glow: glow written into a new mark
+float g_litFraction = 0.0f;                            // lamps on 0..1 as of the last frame
 
 float ini_f(const wchar_t* path, const wchar_t* sec, const wchar_t* key, float dflt) {
   wchar_t v[64] = {};
@@ -124,13 +139,14 @@ size_t load_kinds(const wchar_t* path, const wchar_t* dfltPath, bool marked = fa
     k.anchor = !a[0] ? (marked ? 2 : k.uvs.empty() ? 0 : 1)
              : !_wcsicmp(a, L"bottom") ? 2 : (!_wcsicmp(a, L"centre") || !_wcsicmp(a, L"center")) ? 1 : 0;
     GetPrivateProfileStringW(s, L"offset", L"", a, 32, path);
-    if (!a[0]) GetPrivateProfileStringW(ds, L"offset", L"0, 0, 0", a, 32, d);
+    if (!a[0]) GetPrivateProfileStringW(ds, L"offset", marked ? L"0, -0.1, 0" : L"0, 0, 0", a, 32, d);   // marked: just below the glass
     swscanf_s(a, L"%f , %f , %f", &k.offset[0], &k.offset[1], &k.offset[2]);
     k.lumens = num(L"lumens", k.lumens);
     k.kelvin = num(L"colour_temperature", k.kelvin);
     k.radius = (std::max)(0.01f, num(L"radius", k.radius));
     k.volumetric = num(L"volumetric", k.volumetric);
     k.minHeight = num(L"min_height", k.minHeight);
+    k.glow = (std::max)(0.0f, num(L"glow", 0.0f));
     k.pole = !marked && ini_f(path, s, L"auto", 0.0f) != 0.0f;
     GetPrivateProfileStringW(s, L"where", L"any", a, 32, path);
     k.where = !_wcsicmp(a, L"menu") ? 1 : !_wcsicmp(a, L"stage") ? 2 : 0;
@@ -151,6 +167,124 @@ size_t load_kinds(const wchar_t* path, const wchar_t* dfltPath, bool marked = fa
   return count;
 }
 
+// ---- glowing glass of marked lamps (see the header)
+struct Glow {
+  bool tried = false, ok = false;                      // saved / failed once
+  std::wstring dds, mask;                              // files in <genmod dir>\marked
+  ULONGLONG readyAt = 0;                               // twin drawn from this tick on
+  IDirect3DTexture9* twin[kGlowLevels] = {};
+};
+std::unordered_map<uint64_t, Glow> g_glow;
+
+std::wstring glow_dir() {
+  const wchar_t* d = rbrrtx_genmod_dir();
+  return d && d[0] ? std::wstring(d) + L"\\marked" : std::wstring();
+}
+
+std::wstring hex16(uint64_t h) {
+  wchar_t b[24];
+  swprintf_s(b, L"%016llX", static_cast<unsigned long long>(h));
+  return b;
+}
+
+// The twin's mip 0 (16x16 A8R8G8B8) from the texture hash and the level: its Remix hash is known before Remix sees it.
+uint64_t glow_twin_pixels(uint64_t src, int level, uint32_t px[256]) {
+  uint64_t st = src ^ (0x5242524C'414D5000ULL + static_cast<uint64_t>(level) * 0x1000193ULL);   // "RBRLAMP"
+  for (int i = 0; i < 256; ++i) {
+    uint64_t z = (st += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    px[i] = static_cast<uint32_t>(z ^ (z >> 31)) | 0xFF000000u;
+  }
+  return rbrrtx_xxh3(px, 256 * sizeof(uint32_t));
+}
+
+// 256x256 A8R8G8B8 mask, white where the uv falls in one of the kind's rectangles (the atlas cell wraps). Named by its
+// content, so a changed mark is a new asset (Remix does not reload a file it has open). Returns the path ("" = failed).
+std::wstring glow_write_mask(uint64_t hash, const Kind& k) {
+  const std::wstring dir = glow_dir();
+  if (dir.empty() || k.uvs.empty()) return std::wstring();
+  uint32_t crc = 2166136261u;                          // FNV-1a over the rectangles in 1/1024 steps
+  for (const auto& r : k.uvs)
+    for (float f : r) { crc ^= static_cast<uint32_t>(std::lround(f * 1024.0f)); crc *= 16777619u; }
+  wchar_t tail[40];
+  swprintf_s(tail, L"_mask_%08X.dds", crc);
+  const std::wstring path = dir + L"\\" + hex16(hash) + tail;
+  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return path;
+  constexpr int N = 256;
+  std::vector<uint32_t> px(N * N, 0xFF000000u);
+  auto inside = [](float t, float a, float b) {
+    if (a > b) std::swap(a, b);
+    for (int w = -2; w <= 3; ++w) if (t + w >= a && t + w <= b) return true;
+    return false;
+  };
+  for (int y = 0; y < N; ++y)
+    for (int x = 0; x < N; ++x) {
+      const float u = (x + 0.5f) / N, v = (y + 0.5f) / N;
+      for (const auto& r : k.uvs)
+        if (inside(u, r[0], r[2]) && inside(v, r[1], r[3])) { px[y * N + x] = 0xFFFFFFFFu; break; }
+    }
+  DWORD hdr[32] = {};
+  hdr[0] = 0x20534444; hdr[1] = 124;
+  hdr[2] = 0x1 | 0x2 | 0x4 | 0x8 | 0x1000;            // caps | height | width | pitch | pixelformat
+  hdr[3] = N; hdr[4] = N; hdr[5] = N * 4; hdr[7] = 1;
+  hdr[19] = 32; hdr[20] = 0x41; hdr[22] = 32;         // RGB | ALPHAPIXELS, 32 bit
+  hdr[23] = 0xFF0000; hdr[24] = 0xFF00; hdr[25] = 0xFF; hdr[26] = 0xFF000000u;
+  hdr[27] = 0x1000;
+  FILE* fp = nullptr;
+  if (_wfopen_s(&fp, path.c_str(), L"wb") || !fp) return std::wstring();
+  fwrite(hdr, sizeof(hdr), 1, fp);
+  fwrite(px.data(), 4, px.size(), fp);
+  fclose(fp);
+  return path;
+}
+
+// Section "marked" from every glowing kind whose texture is saved: one material per on-level.
+void glow_publish() {
+  std::string body;
+  for (const auto& kv : g_kinds) {
+    const Kind& kd = kv.second;
+    const auto g = g_glow.find(kv.first);
+    if (kd.glow <= 0.0f || g == g_glow.end() || !g->second.ok) continue;
+    float rgb[3];
+    kelvin_rgb(kd.kelvin, rgb);
+    const std::string dds = rbrrtx_genmod_asset(g->second.dds), mask = rbrrtx_genmod_asset(g->second.mask);
+    for (int lv = 1; lv <= kGlowLevels; ++lv) {
+      uint32_t px[256];
+      const uint64_t th = glow_twin_pixels(kv.first, lv, px);
+      char num[160];
+      snprintf(num, sizeof(num), "                color3f inputs:emissive_color_constant = (%.3f, %.3f, %.3f)\n"
+                                 "                float inputs:emissive_intensity = %.3f\n", rgb[0], rgb[1], rgb[2], kd.glow * lv / kGlowLevels);
+      const std::string in =
+          "                asset inputs:diffuse_texture = @" + dds + "@ (\n"
+          "                    colorSpace = \"auto\"\n"
+          "                )\n"
+          "                bool inputs:enable_emission = 1\n"
+          "                asset inputs:emissive_mask_texture = @" + mask + "@ (\n"
+          "                    colorSpace = \"auto\"\n"
+          "                )\n" + num;
+      char c[96];
+      snprintf(c, sizeof(c), "lamp glass glow, texture %016llX, lit %d/%d:", static_cast<unsigned long long>(kv.first), lv, kGlowLevels);
+      body += rbrrtx_genmod_material(th, std::string(c) + " " + dds, in);
+    }
+  }
+  rbrrtx_genmod_set("marked", body);
+}
+
+// After the kinds were (re)read: masks of saved textures follow the marks; the section is rewritten.
+void glow_refresh() {
+  for (auto& kv : g_glow) {
+    const auto it = g_kinds.find(kv.first);
+    if (!kv.second.ok || it == g_kinds.end() || it->second.glow <= 0.0f) continue;
+    const std::wstring m = glow_write_mask(kv.first, it->second);
+    if (!m.empty() && m != kv.second.mask) {
+      kv.second.mask = m;
+      kv.second.readyAt = GetTickCount64() + kGlowSettle;
+    }
+  }
+  glow_publish();
+}
+
 // lights.ini, and lights-auto.ini next to it (tools\lights\find_bulbs.py: bulbs found in stage textures, pole test on)
 // unless [lights] auto = 0, then lights-marked.ini (made in game by the lamp_mark key). lights.ini is read last: its
 // sections win for the same texture.
@@ -161,6 +295,7 @@ void load() {
   g_onBelow = ini_f(path, L"lights", L"on_below_sun", 6.0f);
   g_fade = (std::max)(0.1f, ini_f(path, L"lights", L"fade_degrees", 4.0f));
   g_max = static_cast<unsigned>((std::max)(0.0f, ini_f(path, L"lights", L"max_lights", 24.0f)));
+  g_markGlow = (std::max)(0.0f, ini_f(path, L"lights", L"mark_glow", 6.0f));
   size_t autoKinds = 0;
   std::wstring autoPath = path;
   autoPath = autoPath.substr(0, autoPath.find_last_of(L'\\') + 1) + L"lights-auto.ini";
@@ -171,9 +306,13 @@ void load() {
   size_t markedKinds = 0;
   if (GetFileAttributesW(markedPath) != INVALID_FILE_ATTRIBUTES) markedKinds = load_kinds(markedPath, path, true);
   const size_t own = load_kinds(path, nullptr);
+  glow_refresh();
   rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights (%s): %s, %zu lamp texture(s) (%zu own, %zu found in textures, %zu marked in game), "
                 L"on below sun %.1f deg (fade %.1f), at most %u", path, g_on ? L"on" : L"OFF", g_kinds.size(), own, autoKinds,
                 markedKinds, g_onBelow, g_fade, g_max);
+  size_t glowing = 0;
+  for (const auto& kv : g_kinds) glowing += kv.second.glow > 0.0f;
+  if (glowing) rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights: %zu lamp texture(s) with glowing glass (new marks get glow %.1f)", glowing, g_markGlow);
 }
 
 }  // namespace
@@ -182,6 +321,23 @@ void rbrrtx_world_lights_init(const remixapi_Interface* api) {
   g_api = api;
   load();
 }
+
+// Before the backend loads (after rbrrtx_genmod_init): the glowing lamp textures saved by earlier runs get their materials
+// now, so Remix has them from the first frame.
+void rbrrtx_world_lights_startup() {
+  load();
+  for (const auto& kv : g_kinds) {
+    if (kv.second.glow <= 0.0f) continue;
+    Glow& g = g_glow[kv.first];
+    g.dds = glow_dir() + L"\\" + hex16(kv.first) + L".dds";
+    g.mask = glow_write_mask(kv.first, kv.second);
+    g.tried = true;
+    g.ok = !g.mask.empty() && GetFileAttributesW(g.dds.c_str()) != INVALID_FILE_ATTRIBUTES;
+  }
+  glow_publish();
+}
+
+float rbrrtx_world_lights_mark_glow() { return g_markGlow; }
 
 bool rbrrtx_world_lights_wanted() { return g_api && g_on && !g_kinds.empty(); }
 bool rbrrtx_world_lights_texture(unsigned long long hash) { return g_kinds.count(hash) != 0; }
@@ -194,6 +350,50 @@ int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, 
   *poleMinHeight = it->second.pole ? it->second.minHeight : 0.0f;
   *anchor = it->second.anchor;
   return n;
+}
+
+// A draw with a glowing lamp texture while the lamps are on: its twin for the lit level (see the header).
+void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* baseTexture, bool inMenu) {
+  const auto it = g_kinds.find(hash);
+  if (it == g_kinds.end() || it->second.glow <= 0.0f || !g_on || g_litFraction <= 0.02f) return nullptr;
+  const Kind& k = it->second;
+  if ((k.where == 1 && !inMenu) || (k.where == 2 && inMenu)) return nullptr;
+  Glow& g = g_glow[hash];
+  if (!g.tried) {                                      // first sight in this install: save the texture, make the mask
+    g.tried = true;
+    const std::wstring dir = glow_dir();
+    if (!dir.empty()) CreateDirectoryW(dir.c_str(), nullptr);
+    g.dds = dir + L"\\" + hex16(hash) + L".dds";
+    const bool have = GetFileAttributesW(g.dds.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!dir.empty() && (have || rbrrtx_save_texture_dds_mips(baseTexture, g.dds.c_str()))) {
+      g.mask = glow_write_mask(hash, k);
+      g.ok = !g.mask.empty();
+    }
+    g.readyAt = GetTickCount64() + kGlowSettle;
+    rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights: glass glow of %s (texture %016llX): %s %s%s", k.name.c_str(),
+                  static_cast<unsigned long long>(hash), g.ok ? L"saved" : L"FAILED to save (not lockable or no folder)", g.dds.c_str(),
+                  g.ok ? L"; the glass glows once the generated mod has reloaded" : L"");
+    if (g.ok) glow_publish();
+  }
+  if (!g.ok || GetTickCount64() < g.readyAt) return nullptr;
+  const int lv = std::clamp(static_cast<int>(std::ceil(g_litFraction * kGlowLevels - 0.001f)), 1, kGlowLevels);
+  IDirect3DTexture9*& t = g.twin[lv - 1];
+  if (!t) {
+    IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+    uint32_t px[256];
+    glow_twin_pixels(hash, lv, px);
+    if (SUCCEEDED(dev->lpVtbl->CreateTexture(dev, 16, 16, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, nullptr)) && t) {
+      D3DLOCKED_RECT lr = {};
+      if (SUCCEEDED(t->lpVtbl->LockRect(t, 0, &lr, nullptr, 0)) && lr.pBits) {
+        for (int r = 0; r < 16; ++r) std::memcpy(static_cast<char*>(lr.pBits) + r * lr.Pitch, px + r * 16, 64);
+        t->lpVtbl->UnlockRect(t, 0);
+      } else {
+        t->lpVtbl->Release(t);
+        t = nullptr;
+      }
+    }
+  }
+  return t;
 }
 
 // A draw with a lamp texture, its bounding sphere in world space.
@@ -222,6 +422,7 @@ void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r
 // Per Present: draws the lamps seen this frame (nearest first), destroys the rest. cam = camera position.
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn) {
   const float k = std::clamp((g_onBelow - sunElevation) / g_fade, 0.0f, 1.0f);
+  g_litFraction = layerOn && g_on ? k : 0.0f;
   std::vector<Lamp*> lit;
   for (Lamp& l : g_lamps)
     if (l.seen == g_frame && k > 0.0f && layerOn && g_on) lit.push_back(&l);

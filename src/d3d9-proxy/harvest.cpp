@@ -16,6 +16,7 @@
 #include "common.hpp"
 #include "alpha_min.hpp"
 #include <d3d9.h>
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <mutex>
@@ -146,15 +147,16 @@ bool layout(D3DFORMAT f, UINT w, UINT h, UINT& rowBytes, UINT& rows, const char*
   return true;
 }
 
-void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::string& data) {
+void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::string& data, UINT levels = 1) {
   DWORD hdr[32] = {};
   hdr[0] = 0x20534444;                               // "DDS "
   hdr[1] = 124;
   hdr[2] = 0x1 | 0x2 | 0x4 | 0x1000;                 // caps | height | width | pixelformat
-  hdr[3] = h; hdr[4] = w; hdr[7] = 1;                // one mip level
+  hdr[3] = h; hdr[4] = w; hdr[7] = levels;                // mip levels (all in data, largest first)
+  if (levels > 1) hdr[2] |= 0x20000;                 // mipmap count
   hdr[19] = 32;                                      // pixel format size
   if (f == D3DFMT_DXT1 || f == D3DFMT_DXT2 || f == D3DFMT_DXT3 || f == D3DFMT_DXT4 || f == D3DFMT_DXT5) {
-    hdr[2] |= 0x80000; hdr[5] = static_cast<DWORD>(data.size());
+    hdr[2] |= 0x80000; hdr[5] = static_cast<DWORD>(levels > 1 ? ((w + 3) / 4) * ((h + 3) / 4) * (f == D3DFMT_DXT1 ? 8 : 16) : data.size());
     hdr[20] = 0x4; hdr[21] = static_cast<DWORD>(f);  // FOURCC (D3DFMT_DXTn values are the FOURCC codes)
   } else {
     hdr[2] |= 0x8;
@@ -168,7 +170,7 @@ void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::stri
       if (m.f == f) { hdr[20] = m.flags; hdr[22] = m.bits; hdr[23] = m.r; hdr[24] = m.g; hdr[25] = m.b; hdr[26] = m.a; }
     hdr[5] = w * (hdr[22] / 8);
   }
-  hdr[27] = 0x1000;                                  // DDSCAPS_TEXTURE
+  hdr[27] = levels > 1 ? (0x1000 | 0x8 | 0x400000) : 0x1000;   // DDSCAPS_TEXTURE (+ COMPLEX | MIPMAP)
   FILE* fp = nullptr;
   if (_wfopen_s(&fp, path, L"wb") || !fp) return;
   fwrite(hdr, sizeof(hdr), 1, fp);
@@ -396,6 +398,31 @@ bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path) {
     memcpy(&data[static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
   t->lpVtbl->UnlockRect(t, 0);
   write_dds(path, d.Format, d.Width, d.Height, data);
+  return true;
+}
+
+bool rbrrtx_save_texture_dds_mips(void* base_texture, const wchar_t* path) {
+  IDirect3DBaseTexture9* bt = static_cast<IDirect3DBaseTexture9*>(base_texture);
+  if (!bt || bt->lpVtbl->GetType(bt) != D3DRTYPE_TEXTURE) return false;
+  IDirect3DTexture9* t = reinterpret_cast<IDirect3DTexture9*>(bt);
+  D3DSURFACE_DESC d = {};
+  if (FAILED(t->lpVtbl->GetLevelDesc(t, 0, &d))) return false;
+  const UINT levels = (std::max)(1u, static_cast<UINT>(t->lpVtbl->GetLevelCount(t)));
+  std::string data;
+  for (UINT l = 0; l < levels; ++l) {
+    D3DSURFACE_DESC ld = {};
+    UINT rowBytes = 0, rows = 0;
+    const char* fmt = "?";
+    if (FAILED(t->lpVtbl->GetLevelDesc(t, l, &ld)) || !layout(ld.Format, ld.Width, ld.Height, rowBytes, rows, fmt)) return false;
+    D3DLOCKED_RECT lr = {};
+    if (FAILED(t->lpVtbl->LockRect(t, l, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits) return false;
+    const size_t at = data.size();
+    data.resize(at + static_cast<size_t>(rowBytes) * rows);
+    for (UINT r = 0; r < rows; ++r)
+      memcpy(&data[at + static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
+    t->lpVtbl->UnlockRect(t, l);
+  }
+  write_dds(path, d.Format, d.Width, d.Height, data, levels);
   return true;
 }
 
