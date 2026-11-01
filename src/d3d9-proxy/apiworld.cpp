@@ -12,8 +12,9 @@
 // externalDrawMaterialReplacement / externalDrawTextureCategories), so the PBR mods, the generated thin-opaque foliage
 // and CardNormals match as before.
 // What is taken (comp.cpp api_world_class): RL* world-space scenery, triangle lists, stream 0 only, opaque or alpha
-// tested, not blended (decals, the foliage soft-edge pass stay D3D9), single texture (RLDouble* needs the terrain
-// layers material, later). Sway foliage is taken without its sway (as FF scenery mode 2 drew it since 10-21); near-tree
+// tested, not blended (decals, the foliage soft-edge pass stay D3D9); RLDouble* two-texture ground only while the
+// ground second layer is off (then Remix shows layer A only anyway; the blend needs the terrain layers material, later).
+// Smooth-normal textures stay smooth: the runtime welds by position. Sway foliage is taken without its sway (as FF scenery mode 2 drew it since 10-21); near-tree
 // wind comes later from our own script (writeup section 5).
 // Lifetime: built under a per-frame budget (vertices, meshes) so loading a view does not hitch; the frame an instance
 // is created or shown again the D3D9 draw still runs (the replay at the next frame's first BeginScene is the first to

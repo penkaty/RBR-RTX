@@ -3120,6 +3120,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (rbrrtx_key_pressed(RBRKEY_GROUND_LAYER)) {
     g_layerOn = !g_layerOn;
     rbrrtx_layer_enable(g_layerOn);
+    rbrrtx_apiworld_reset(L"ground layer switched");   // RLDouble* instances carry layer A only
     wchar_t msg[64];
     swprintf_s(msg, L"%s: ground second layer %s", rbrrtx_key_name(RBRKEY_GROUND_LAYER), g_layerOn ? L"ON" : L"off");
     log_frame(msg);
@@ -4395,11 +4396,13 @@ void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   decl->lpVtbl->Release(decl);
 }
 
-// The world through the Remix API (apiworld.cpp): static RL* world-space scenery, one texture, declarations only.
+// The world through the Remix API (apiworld.cpp): static RL* world-space scenery, declarations only. RLDouble* (two-
+// texture ground) only while the ground second layer (Alt+Y) is off: Remix draws it with layer A alone then, as the
+// instance does; the layer's decal draw needs the D3D9 draw (layer_draw).
 bool api_world_class() {
   if (!g_enabled || !g_apiOk || !g_primaryRT || !g_haveCam || g_testMode != 0 || !g_curInfo || g_vin != kVinDecl) return false;
   const unsigned f = g_curInfo->flags;
-  return (f & SH_SCENERY) && (f & SH_WORLDSPACE) && !(f & (SH_ANIM | SH_BTB | SH_DOUBLE));
+  return (f & SH_SCENERY) && (f & SH_WORLDSPACE) && !(f & (SH_ANIM | SH_BTB)) && (!(f & SH_DOUBLE) || !g_layerOn);
 }
 
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
