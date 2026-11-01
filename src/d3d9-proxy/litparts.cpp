@@ -45,12 +45,14 @@ namespace {
 constexpr unsigned kMaxPrims = 4000, kSettle = 12, kSwitchWindow = 60;
 // Signals, and the glow kinds: tail = the unlit brake lens while the lamps are on; lamps by day = a lit head lamp lens
 // with the sun up (user 2026-10-30: "too dim to be noticed in the daytime, good at night").
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kKinds = 5 };
-const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day" };
+// brake disc = a brake part that moves with a wheel, its own glow since 2026-11-01 (user: lamp emissives separate from the
+// discs, lamps 75 % dimmer; the discs and the brake lenses shared one material per car atlas until then).
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kKinds = 6 };
+const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day", L"brake disc" };
 
 struct Cfg {
   bool enabled = true;
-  float glow[kKinds] = { 12.0f, 20.0f, 15.0f, 6.0f, 120.0f };
+  float glow[kKinds] = { 3.0f, 5.0f, 3.75f, 1.5f, 30.0f, 12.0f };
   float dayAbove = 5.0f;                                 // sun height (degrees) from which lamp lenses use the day glow
   // Brake discs (user 2026-10-30: "the emissives of the BRAKE DISCS ... seemed to glow constantly"): a brake part drawn
   // with another matrix than the body's moves with a wheel - a disc - and glows only after the brake has been held
@@ -150,6 +152,7 @@ void load_cfg() {
   c.glow[kReverse] = std::clamp(f(L"reverse_glow", c.glow[kReverse]), 0.0f, 10000.0f);
   c.glow[kTail] = std::clamp(f(L"tail_glow", c.glow[kTail]), 0.0f, 10000.0f);
   c.glow[kLampsDay] = std::clamp(f(L"lamp_glow_day", c.glow[kLampsDay]), 0.0f, 10000.0f);
+  c.glow[kDisc] = std::clamp(f(L"brake_disc_glow", c.glow[kDisc]), 0.0f, 10000.0f);
   c.dayAbove = f(L"lamp_glow_day_above_sun", c.dayAbove);
   c.discDelay = std::clamp(f(L"brake_disc_delay", c.discDelay), 0.0f, 60.0f);
   g_cfg = c;
@@ -461,9 +464,9 @@ void rbrrtx_litparts_startup() {
   }
   if (!g_cfg.enabled) g_entries.clear();
   publish_locked();
-  llog(L"lit parts: %s, glow brake %.1f (discs after %.1f s) / lamps %.1f, by day %.1f (sun from %.0f deg) / reverse %.1f / "
+  llog(L"lit parts: %s, glow brake lens %.1f, discs %.1f (after %.1f s) / lamps %.1f, by day %.1f (sun from %.0f deg) / reverse %.1f / "
        L"tail (unlit brake lens, lamps on) %.1f; %zu known from earlier runs", g_cfg.enabled ? L"on" : L"OFF (materials.ini)",
-       g_cfg.glow[kBrake], g_cfg.discDelay, g_cfg.glow[kLamps], g_cfg.glow[kLampsDay], g_cfg.dayAbove, g_cfg.glow[kReverse],
+       g_cfg.glow[kBrake], g_cfg.glow[kDisc], g_cfg.discDelay, g_cfg.glow[kLamps], g_cfg.glow[kLampsDay], g_cfg.dayAbove, g_cfg.glow[kReverse],
        g_cfg.glow[kTail], g_entries.size());
 }
 
@@ -556,6 +559,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0) kind = kTail;
   if (kind == kLamps && g_sunEl >= g_cfg.dayAbove) kind = kLampsDay;
+  if (kind == kBrake && p.disc()) kind = kDisc;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);

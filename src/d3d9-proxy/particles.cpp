@@ -292,6 +292,10 @@ struct DustCfg {
   int collisionMode = 2;                               // Remix: 0 bounce (takes the hit surface's velocity), 1 stop, 2 kill
   float restitution = 0.0f;                            // bounce: share of the speed kept
   bool holdColour = false;                             // start colour held for half the life, then to the end colour
+  // Rain/snow: Remix Plus lights particles from its froxel radiance cache, which is near black under trees and heavy
+  // cloud: flakes went black against the sky (user 2026-11-01, Toivonvaara HeavySnow). A little white emission keeps
+  // them visible there (emissive intensity; 0 = none).
+  float selfLight = 0.0f;
   int spawner = 0;                                     // 0 squares (above), 1 car shell: roof + sides + rear (snow wake)
   float wakeOnKmh = 25.0f;                             // [snow_wake]: drawn from this car speed, rate in speed steps
   wchar_t tex[64] = L"dust_puff.dds";
@@ -502,6 +506,7 @@ void load_fx(DustCfg& c) {
   c.collisionMode = static_cast<int>(cfg_float(L"collision_mode", static_cast<float>(c.collisionMode), 0.0f, 2.0f));
   c.restitution = cfg_float(L"collision_restitution", c.restitution, 0.0f, 1.0f);
   c.holdColour = cfg_float(L"hold_colour", c.holdColour ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+  c.selfLight = cfg_float(L"self_light", c.selfLight, 0.0f, 100.0f);
   c.wakeOnKmh = cfg_float(L"on_above_kmh_wake", c.wakeOnKmh, 0.0f, 300.0f);
   GetPrivateProfileStringW(g_sec, L"texture", c.tex, c.tex, 64, g_cfgPath);
 }
@@ -1177,7 +1182,9 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
   mi.albedoTexture = haveTex ? tex[kind] : L"";
   mi.normalTexture = L"";
   mi.tangentTexture = L"";
-  mi.emissiveTexture = L"";
+  mi.emissiveTexture = c.selfLight > 0.0f && haveTex ? tex[kind] : L"";   // the sprite's own shape and colour glow
+  mi.emissiveIntensity = c.selfLight;
+  mi.emissiveColorConstant = { 1.0f, 1.0f, 1.0f };
   mi.filterMode = 1;
   mi.wrapModeU = mi.wrapModeV = 2;
   if (g_api->CreateMaterial(&mi, &f.mat) != REMIXAPI_ERROR_CODE_SUCCESS) {

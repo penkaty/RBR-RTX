@@ -109,7 +109,7 @@ struct Settings {
   float rearCone = 36.0f * 0.6f + 5.0f, rearSoftness = 0.15f;
   float rearPitch = 11.3f;                             // degrees below straight back (atan 0.2)
   float rearBack = 0.05f;                              // metres behind the lamp node (outside the lens)
-  bool reverseLight = true;                            // right rear lamp white in reverse (user 2026-10-24)
+  bool reverseLight = true;                            // two white reversing lamps in reverse gear (user 2026-11-01; was the right rear lamp)
   float reverseRadiance[3] = { 6000.0f, 6000.0f, 6000.0f };
   float brakeOn = 0.05f;                               // brake input (0..1) that lights them; off again below half of it
   // Backfire flash
@@ -421,6 +421,8 @@ struct CarModel {
   V3 lf = {}, rf = {};                                 // lamp positions in the root frame
   bool rear = false;                                   // rear lamps found (Point_light_brake_lb/rb, else _lb/_rb)
   V3 lb = {}, rb = {};
+  bool reverse = false;                                // Point_light_reverse_lb / _rb found (105-108 of 109 models)
+  V3 revl = {}, revr = {};                             // else the rear lamps
   bool exhaust = false;                                // Point_exhaust1 (pipe tip) found
   V3 exhaustTip = {}, exhaustDir = {};                 // tip and its outward direction (from Point_exhaust2)
   V3 forward = { 0, 0, -1 };                           // model forward axis (up = +y)
@@ -755,6 +757,13 @@ void load_car_model(const std::wstring& file) {
     if (hl && !hr) g_car.rb = { 2.0f * c - g_car.lb.x, g_car.lb.y, g_car.lb.z };
     if (hr && !hl) g_car.lb = { 2.0f * c - g_car.rb.x, g_car.rb.y, g_car.rb.z };
     g_car.rear = hl || hr;
+    // Reversing lamps (user 2026-11-01: most cars light two reverse lenses, e_light_reverse_lb/rb_lit): a white light at
+    // each Point_light_reverse_* node; a missing side mirrors the other, none at all = the rear lamps' places.
+    const bool vl = usable("Point_light_reverse_lb", sl, g_car.revl), vr = usable("Point_light_reverse_rb", -sl, g_car.revr);
+    if (vl && !vr) g_car.revr = { 2.0f * c - g_car.revl.x, g_car.revl.y, g_car.revl.z };
+    if (vr && !vl) g_car.revl = { 2.0f * c - g_car.revr.x, g_car.revr.y, g_car.revr.z };
+    g_car.reverse = vl || vr;
+    if (!g_car.reverse) { g_car.revl = g_car.lb; g_car.revr = g_car.rb; }
   }
   V3 ex2 = {};
   if (lamp("Point_exhaust1", g_car.exhaustTip)) {      // the tip; Point_exhaust2 lies further in along the pipe
@@ -800,6 +809,8 @@ void load_car_model(const std::wstring& file) {
        L"(%.2f %.2f %.2f), %d points, flatness %.3f", g_car.glassName.c_str(), g_car.glass ? L"found" : g_car.glassRejected ? L"REJECTED (not where a windscreen goes): lamp-based plane" : L"NOT found: lamp-based plane",
        g_car.glassBottom.x, g_car.glassBottom.y, g_car.glassBottom.z, g_car.glassWb, g_car.glassTop.x, g_car.glassTop.y,
        g_car.glassTop.z, g_car.glassWt, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassPoints, g_car.glassFlat);
+  hlog(L"headlights: reversing lamps %s l (%.3f %.3f %.3f) r (%.3f %.3f %.3f)", g_car.reverse ? L"found" : L"not in the model: at the rear lamps",
+       g_car.revl.x, g_car.revl.y, g_car.revl.z, g_car.revr.x, g_car.revr.y, g_car.revr.z);
   hlog(L"headlights: rear lamps %s lb (%.3f %.3f %.3f) rb (%.3f %.3f %.3f), exhaust %s tip (%.3f %.3f %.3f) out (%.2f %.2f %.2f)",
        g_car.rear ? L"found" : L"MISSING", g_car.lb.x, g_car.lb.y, g_car.lb.z, g_car.rb.x, g_car.rb.y, g_car.rb.z,
        g_car.exhaust ? L"found" : L"MISSING", g_car.exhaustTip.x, g_car.exhaustTip.y, g_car.exhaustTip.z,
@@ -1028,16 +1039,23 @@ constexpr unsigned kHoldFrames = 10;                   // at most this many, the
 int g_matchCands = 0, g_matchEligible = 0;
 unsigned g_matchPrims = 0;
 float g_matchD = 0.0f, g_matchD2 = 0.0f;
+// This car's body size: the biggest pick that sat on the prediction (run 20261101-052355 Osli: after L toggles and a
+// camera switch the 40042-triangle body group was gone for 15 s; 4519-12606-triangle parts, roots up to 2 m apart,
+// won in turn, and "near last frame's body" followed them away from the car). A pick must be half of it and near the
+// prediction too; without one the lamps take the prediction (cm-accurate with the lag known).
+unsigned g_bodyPrimsRef = 0;
 
 bool match_body(float out[16]) {
   float P[16];
   V3 phys;
   if (!physics_pose(P, &phys) || !pred_pose(P)) return false;
   const float v = hist_speed();
-  V3 want = row(P, 3);
+  const V3 pred = row(P, 3);
+  V3 want = pred;
   float tol = g_lagKnown ? 0.6f + 0.04f * v : (std::min)(1.2f + 0.12f * v, 5.0f);
+  const float tolPred = g_lagKnown ? 0.35f + 0.015f * v : tol;   // the prediction bounds the chain below
   if (g_bodyFrames) { want = row(g_bodyM, 3) + (phys - g_bodyObj); tol = 0.4f + 0.02f * v; }
-  struct Cand { float C[16]; unsigned prims; float d; };
+  struct Cand { float C[16]; unsigned prims; float d, dPred; };
   Cand cand[24];
   int n = 0;
   unsigned maxPrims = 0;
@@ -1050,6 +1068,7 @@ bool match_body(float out[16]) {
     if (!axes) continue;
     c.prims = g.prims;
     c.d = len(row(c.C, 3) - want);
+    c.dPred = len(row(c.C, 3) - pred);
     maxPrims = (std::max)(maxPrims, g.prims);
     ++n;
   }
@@ -1058,7 +1077,8 @@ bool match_body(float out[16]) {
   g_matchEligible = 0;
   g_matchD2 = 0.0f;
   for (int i = 0; i < n; ++i)
-    if (cand[i].prims * 100 >= maxPrims * 35 && cand[i].d < tol) {
+    if (cand[i].prims * 100 >= maxPrims * 35 && cand[i].d < tol && cand[i].dPred < tolPred &&
+        cand[i].prims * 2 >= g_bodyPrimsRef) {
       ++g_matchEligible;
       if (!best || cand[i].d < best->d) { if (best) g_matchD2 = best->d; best = &cand[i]; }
       else if (!g_matchD2 || cand[i].d < g_matchD2) g_matchD2 = cand[i].d;
@@ -1066,6 +1086,7 @@ bool match_body(float out[16]) {
   g_matchPrims = best ? best->prims : 0;
   g_matchD = best ? best->d : 0.0f;
   if (!best) return false;
+  if (g_lagKnown && best->dPred < 0.15f) g_bodyPrimsRef = (std::max)(g_bodyPrimsRef, best->prims);
   std::memcpy(out, best->C, sizeof(best->C));
   return true;
 }
@@ -1171,10 +1192,11 @@ FILE* g_poseCsv = nullptr;
 unsigned g_lampFrame = 0;                              // last frame a car lamp was sent
 struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; float rad[3] = {};
               unsigned sent = ~0u; };                  // sent = frame it was last drawn
-// RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire)
-Lamp g_lamps[8] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
-                    { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
-                    { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL } };
+// RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire), RBRRVLFT / RGT (reversing)
+Lamp g_lamps[10] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
+                     { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
+                     { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL }, { nullptr, 0x52425252'564C4654ULL },
+                     { nullptr, 0x52425252'56524754ULL } };
 unsigned g_creates = 0;
 bool g_reversing = false;                              // reverse lamp lit (gear 0)
 unsigned g_reverseSwitches = 0;
@@ -1560,10 +1582,14 @@ void send_lamps(const float C[16], const wchar_t* src) {
     const float pr = g_cfg.rearPitch * 0.0174533f;
     const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
     const float* rad = g_braking ? g_cfg.brakeRadiance : g_cfg.tailRadiance;
-    if (g_tailOn || g_braking)
+    if (g_tailOn || g_braking) {
       draw_lamp(g_lamps[5], to_world(C, g_car.lb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
-    draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone,   // reverse: this lamp is white
-              g_reversing ? g_cfg.reverseRadiance : rad, g_cfg.rearSoftness);
+      draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+    }
+    if (g_reversing) {                                 // two white reversing lamps, as the game lights both lenses
+      draw_lamp(g_lamps[8], to_world(C, g_car.revl + back), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness);
+      draw_lamp(g_lamps[9], to_world(C, g_car.revr + back), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness);
+    }
   }
   if (g_popOn && g_car.exhaust)                        // backfire: a point light just beyond the pipe tip
     draw_lamp(g_lamps[7], to_world(C, g_car.exhaustTip + g_car.exhaustDir * g_cfg.popOut), up, 180.0f, g_cfg.popRadiance,
@@ -1626,7 +1652,7 @@ void rbrrtx_headlights_emit() {
   if (braking != g_braking && ++g_brakeSwitches <= 3)
     hlog(L"headlights: brake lights %s (brake input %.2f)", braking ? L"ON" : L"off", brake);
   g_braking = braking;
-  int gear = 1;                                        // reverse: the right rear lamp turns white
+  int gear = 1;                                        // reverse: two white lamps at Point_light_reverse_lb/rb
   const bool reversing = g_cfg.reverseLight && rbrrtx_player_car_gear(&gear) && gear == 0;
   if (reversing != g_reversing && ++g_reverseSwitches <= 3)
     hlog(L"headlights: reverse light %s (gear %d)", reversing ? L"ON" : L"off", gear);
@@ -1928,7 +1954,8 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     g_bodyFrames = 0;                                  // it is the game's timing, not the car's)
     g_bodyHeld = 0;
     g_bodyGapMax = 0.0f;
-    g_gameLampsSent = -1;                              // the stage's world starts with the model ini's states
+    g_bodyPrimsRef = 0;
+    g_gameLampsSent = -1;                            // the stage's world starts with the model ini's states
     g_hhWorld = nullptr;
     const std::wstring model = car_model_path(si.carId);
     const size_t slash = model.find_last_of(L"\\/"), dot = model.find_last_of(L'.');

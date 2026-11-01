@@ -23,6 +23,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
+#include <fstream>
+#include <string>
 
 // Log files stay open (one handle per file name, appended with WriteFile, no CRT buffer): a line costs microseconds
 // and still reaches the OS at once (kept after a crash). Opening and closing the file per line cost ~8 ms a line
@@ -151,6 +153,42 @@ void seed_user_conf(const wchar_t* addon) {
   if (CopyFileW(seed, L"user.conf", TRUE)) log(L"user.conf seeded from %s", seed);
 }
 
+// Options the proxy drives per stage/frame through the Remix API land in Remix's User Settings layer, so Save on the
+// first Alt+X page writes the current stage's values into user.conf, and the next start (main menu included) used them:
+// user 2026-11-01, Toivonvaara's NUMOS fog (697 m) in the main menu after a restart. Dropped from user.conf before Remix
+// reads it; every other line (the user's own settings) stays. Was only in the dev launcher (Remove-ProxyOptions).
+bool proxy_owned_option(const std::string& key) {
+  static const char* const exact[] = {
+    "rtx.atmosphere.sunRotation", "rtx.atmosphere.sunElevation", "rtx.atmosphere.sunIntensity",
+    "rtx.atmosphere.realMoonEnabled", "rtx.atmosphere.timeCycleEnable", "rtx.atmosphere.fogVisibilityMeters",
+    "rtx.atmosphere.fogAlbedo", "rtx.atmosphere.aerosolDensity", "rtx.atmosphere.groundLevelWorldUnits",
+    "rtx.atmosphere.groundLevelAuto", "rtx.atmosphere.directionalLightRadianceScale", "rtx.weather.gameWeather",
+    "rtx.weather.gameWeatherBlend", "rtx.enableFog", "rtx.enableRaytracing", "rtx.debugView.debugViewIdx",
+    "rtx.enableReplacementAssets", "rtx.captureHotKey", "rtx.captureShowMenuOnHotkey", "rtx.skyProvider.worldChangeCount" };
+  for (const char* k : exact) if (key == k) return true;
+  return key.rfind("rtx.atmosphere.moon0.", 0) == 0;
+}
+
+void clean_user_conf() {
+  std::ifstream in("user.conf");
+  if (!in) return;
+  std::string line, kept, dropped;
+  unsigned n = 0;
+  while (std::getline(in, line)) {
+    const size_t eq = line.find('=');
+    std::string key = eq == std::string::npos ? std::string() : line.substr(0, eq);
+    while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+    while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
+    if (!key.empty() && key[0] != '#' && proxy_owned_option(key)) { dropped += (n++ ? ", " : "") + key; continue; }
+    kept += line + "\n";
+  }
+  in.close();
+  if (!n) return;
+  std::ofstream out("user.conf", std::ios::trunc | std::ios::binary);
+  out << kept;
+  log(L"user.conf: dropped %u option(s) the proxy sets per stage (saved from Alt+X): %hs", n, dropped.c_str());
+}
+
 // Before Remix starts (it opens the mods it finds then): the generated mod (genmod.cpp) with the lit lamp textures, the
 // lit car parts and the foliage known from earlier runs. Remix reloads it when the proxy changes it later.
 void write_lit_mod() {
@@ -168,7 +206,7 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
   DWORD n = GetEnvironmentVariableW(L"RBRRTX_D3D9_BACKEND", g_backend_path, MAX_PATH);
   if (n > 0 && n < MAX_PATH) {
     write_lit_mod();
-    if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(nullptr); return TRUE; }
+    if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(nullptr); clean_user_conf(); return TRUE; }
   } else {
     wchar_t dir[MAX_PATH];
     DWORD len = GetModuleFileNameW(g_self, dir, MAX_PATH);
@@ -189,7 +227,7 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
         default_env_path(L"DEFAULT_MODS_DIR", addon, L"rtx-remix\\mods");
         default_env_path(L"DXVK_CAPTURE_PATH", addon, L"rtx-remix\\captures");
         write_lit_mod();
-        if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(addon); return TRUE; }
+        if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(addon); clean_user_conf(); return TRUE; }
       }
     }
   }
