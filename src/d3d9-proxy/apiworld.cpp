@@ -335,6 +335,8 @@ void rbrrtx_apiworld_init(const RbrApiExt* ext) {
   g_hideFrames = static_cast<unsigned>((std::max)(0, geti(L"hide_frames", 30)));
   wchar_t v[16] = {};
   if (GetEnvironmentVariableW(L"RBRRTX_API_WORLD", v, 16)) g_cfgOn = v[0] != L'0';
+  g_mode = g_cfgOn ? 0 : 2;                            // enabled = 0: starts off, Alt+W still turns it on
+  g_cfgOn = true;
   if (ext) {
     g_createMesh = reinterpret_cast<PFN_remixapi_CreateMeshBatched>(ext->createMeshBatched);
     g_destroyMesh = reinterpret_cast<PFN_remixapi_DestroyMesh>(ext->destroyMesh);
@@ -356,7 +358,7 @@ void rbrrtx_apiworld_init(const RbrApiExt* ext) {
   g_avail = calls;
   wlog(L"api world (materials.ini [api_world]): %s; static scenery %s, foliage %s, %s normals, budget %u meshes / %u "
        L"vertices per frame, hide after %u frames in view not drawn%s",
-       !g_cfgOn ? L"off" : g_avail ? L"ON (retained instances, D3D9 texture import)"
+       g_mode == 2 && g_avail ? L"off at start (Alt+W turns it on)" : g_avail ? L"ON (retained instances, D3D9 texture import)"
        : L"unavailable (runtime/bridge without retained instances or D3D9 import)",
        g_cfgStatic ? L"yes" : L"no", g_cfgSway ? L"yes" : L"no", g_flat ? L"flat" : L"smooth", g_maxBuilds, g_maxVerts,
        g_hideFrames, calls && probe != REMIXAPI_ERROR_CODE_SUCCESS ? L" (import probe not yet ready)" : L"");
