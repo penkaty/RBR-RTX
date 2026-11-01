@@ -1675,6 +1675,14 @@ void rbrrtx_headlights_emit() {
   if (reversing != g_reversing && ++g_reverseSwitches <= 3)
     hlog(L"headlights: reverse light %s (gear %d)", reversing ? L"ON" : L"off", gear);
   g_reversing = reversing;
+  {                                                    // game particles are off for good: the g_pop sprite is never drawn (0 flashes in 21 runs, 2026-11-01)
+    static unsigned noPop = 0;
+    static bool noted = false;
+    if (g_cfg.pop && !g_popSeen && !noted && ++noPop == 3600) {
+      noted = true;
+      hlog(L"headlights: backfire: no flame sprite (particles off), the flash light needs a draw of the g_pop sprite; nothing in %u headlight updates", noPop);
+    }
+  }
   const bool pop = g_cfg.pop && g_popSeen &&
                    std::chrono::duration<float>(std::chrono::steady_clock::now() - g_lastPop).count() <= g_cfg.popHold;
   if (pop && !g_popActive && ++g_popFlashes <= 3) hlog(L"headlights: backfire flash (%u pop draws so far)", g_popDraws);
