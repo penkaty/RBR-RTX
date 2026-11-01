@@ -17,6 +17,7 @@
 #include <d3d9.h>
 #include "third_party/remix_c.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -32,8 +33,9 @@ struct Kind {
   float offset[3] = {};
   float lumens = 8000.0f, kelvin = 3000.0f, radius = 0.15f, volumetric = 1.0f;
   int where = 0;                                       // 0 anywhere, 1 menu only, 2 stages only
-  bool hasUv = false;
-  float uv[4] = {};
+  std::vector<std::array<float, 4>> uvs;               // uv, uv2.. uv4: lamp rectangles in the texture
+  bool pole = false;                                   // auto = 1: keep a vertex group only on a pole (comp.cpp)
+  float minHeight = 3.0f;                              // pole test: group at least this far above the draw beneath
 };
 struct Lamp {
   uint64_t hash = 0;
@@ -80,14 +82,11 @@ void destroy(Lamp& l) {
   l.sentK = -1.0f;
 }
 
-void load() {
-  wchar_t path[MAX_PATH * 2];
-  rbrrtx_config_path(L"RBRRTX_LIGHTS", L"lights.ini", path, MAX_PATH * 2);
-  g_on = ini_f(path, L"lights", L"enabled", 1.0f) != 0.0f;
-  g_onBelow = ini_f(path, L"lights", L"on_below_sun", 6.0f);
-  g_fade = (std::max)(0.1f, ini_f(path, L"lights", L"fade_degrees", 4.0f));
-  g_max = static_cast<unsigned>((std::max)(0.0f, ini_f(path, L"lights", L"max_lights", 24.0f)));
-  std::vector<wchar_t> names(32768);
+// One file's [lamp.*] sections into g_kinds (a later file replaces an earlier one's kind for the same texture).
+// dflt: [auto] values of lights.ini for the generated file's sections (they carry only texture, uv and auto).
+size_t load_kinds(const wchar_t* path, const wchar_t* dfltPath) {
+  size_t count = 0;
+  std::vector<wchar_t> names(1 << 20);
   const DWORD n = GetPrivateProfileSectionNamesW(names.data(), static_cast<DWORD>(names.size()), path);
   for (const wchar_t* s = names.data(); s < names.data() + n && *s; s += wcslen(s) + 1) {
     if (_wcsnicmp(s, L"lamp.", 5)) continue;
@@ -95,28 +94,54 @@ void load() {
     GetPrivateProfileStringW(s, L"texture", L"", v, 512, path);
     Kind k;
     k.name = s + 5;
+    const wchar_t* d = dfltPath ? dfltPath : path;           // generated sections: values from lights.ini [auto]
+    const wchar_t* ds = dfltPath ? L"auto" : s;
     wchar_t a[32] = {};
-    GetPrivateProfileStringW(s, L"anchor", L"top", a, 32, path);
+    GetPrivateProfileStringW(ds, L"anchor", L"top", a, 32, d);
     k.top = _wcsicmp(a, L"centre") && _wcsicmp(a, L"center");
-    GetPrivateProfileStringW(s, L"offset", L"0, 0, 0", a, 32, path);
+    GetPrivateProfileStringW(ds, L"offset", L"0, 0, 0", a, 32, d);
     swscanf_s(a, L"%f , %f , %f", &k.offset[0], &k.offset[1], &k.offset[2]);
-    k.lumens = ini_f(path, s, L"lumens", k.lumens);
-    k.kelvin = ini_f(path, s, L"colour_temperature", k.kelvin);
-    k.radius = (std::max)(0.01f, ini_f(path, s, L"radius", k.radius));
-    k.volumetric = ini_f(path, s, L"volumetric", k.volumetric);
-    wchar_t u[96] = {};
-    GetPrivateProfileStringW(s, L"uv", L"", u, 96, path);
-    k.hasUv = u[0] && swscanf_s(u, L"%f , %f , %f , %f", &k.uv[0], &k.uv[1], &k.uv[2], &k.uv[3]) == 4;
+    k.lumens = ini_f(d, ds, L"lumens", k.lumens);
+    k.kelvin = ini_f(d, ds, L"colour_temperature", k.kelvin);
+    k.radius = (std::max)(0.01f, ini_f(d, ds, L"radius", k.radius));
+    k.volumetric = ini_f(d, ds, L"volumetric", k.volumetric);
+    k.minHeight = ini_f(d, ds, L"min_height", k.minHeight);
+    k.pole = ini_f(path, s, L"auto", 0.0f) != 0.0f;
+    for (const wchar_t* key : { L"uv", L"uv2", L"uv3", L"uv4" }) {
+      wchar_t u[96] = {};
+      std::array<float, 4> r = {};
+      GetPrivateProfileStringW(s, key, L"", u, 96, path);
+      if (u[0] && swscanf_s(u, L"%f , %f , %f , %f", &r[0], &r[1], &r[2], &r[3]) == 4) k.uvs.push_back(r);
+    }
     GetPrivateProfileStringW(s, L"where", L"any", a, 32, path);
     k.where = !_wcsicmp(a, L"menu") ? 1 : !_wcsicmp(a, L"stage") ? 2 : 0;
     // texture = one hash or several, comma separated
     for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx)) {
       const uint64_t hx = _wcstoui64(t, nullptr, 16);
-      if (hx) g_kinds[hx] = k;
+      if (hx) { g_kinds[hx] = k; ++count; }
     }
   }
-  rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights (%s): %s, %zu lamp texture(s), on below sun %.1f deg (fade %.1f), at most %u",
-                path, g_on ? L"on" : L"OFF", g_kinds.size(), g_onBelow, g_fade, g_max);
+  return count;
+}
+
+// lights.ini, and lights-auto.ini next to it (tools\lights\find_bulbs.py: bulbs found in stage textures, pole test on)
+// unless [lights] auto = 0. lights.ini is read last: its sections win for the same texture.
+void load() {
+  wchar_t path[MAX_PATH * 2];
+  rbrrtx_config_path(L"RBRRTX_LIGHTS", L"lights.ini", path, MAX_PATH * 2);
+  g_on = ini_f(path, L"lights", L"enabled", 1.0f) != 0.0f;
+  g_onBelow = ini_f(path, L"lights", L"on_below_sun", 6.0f);
+  g_fade = (std::max)(0.1f, ini_f(path, L"lights", L"fade_degrees", 4.0f));
+  g_max = static_cast<unsigned>((std::max)(0.0f, ini_f(path, L"lights", L"max_lights", 24.0f)));
+  size_t autoKinds = 0;
+  std::wstring autoPath = path;
+  autoPath = autoPath.substr(0, autoPath.find_last_of(L'\\') + 1) + L"lights-auto.ini";
+  if (ini_f(path, L"lights", L"auto", 1.0f) != 0.0f && GetFileAttributesW(autoPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+    autoKinds = load_kinds(autoPath.c_str(), path);
+  const size_t own = load_kinds(path, nullptr);
+  rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights (%s): %s, %zu lamp texture(s) (%zu own, %zu found in textures), on below sun "
+                L"%.1f deg (fade %.1f), at most %u", path, g_on ? L"on" : L"OFF", g_kinds.size(), own, autoKinds, g_onBelow,
+                g_fade, g_max);
 }
 
 }  // namespace
@@ -129,11 +154,13 @@ void rbrrtx_world_lights_init(const remixapi_Interface* api) {
 bool rbrrtx_world_lights_wanted() { return g_api && g_on && !g_kinds.empty(); }
 bool rbrrtx_world_lights_texture(unsigned long long hash) { return g_kinds.count(hash) != 0; }
 
-bool rbrrtx_world_lights_uv(unsigned long long hash, float rect[4]) {
+int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight) {
   const auto it = g_kinds.find(hash);
-  if (it == g_kinds.end() || !it->second.hasUv) return false;
-  std::copy(it->second.uv, it->second.uv + 4, rect);
-  return true;
+  if (it == g_kinds.end()) return 0;
+  const int n = (std::min)(max, static_cast<int>(it->second.uvs.size()));
+  for (int i = 0; i < n; ++i) std::copy(it->second.uvs[i].begin(), it->second.uvs[i].end(), rects[i]);
+  *poleMinHeight = it->second.pole ? it->second.minHeight : 0.0f;
+  return n;
 }
 
 // A draw with a lamp texture, its bounding sphere in world space.

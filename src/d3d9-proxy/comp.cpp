@@ -3840,7 +3840,8 @@ void load_skip_textures() {
 // the rectangle (stream 0 only), in the draw's own space; cached per buffer range like cull_entry.
 std::unordered_map<uint64_t, std::vector<std::array<float, 3>>> g_uvLampCache;
 
-const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, const float rect[4], unsigned long long tex) {
+const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, const float (*rects)[4], int nRects,
+                                                      float poleMin, unsigned long long tex) {
   IDirect3DVertexBuffer9* vb = nullptr;
   UINT offset = 0, stride = 0;
   if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) return nullptr;
@@ -3878,28 +3879,63 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
     const uint32_t f = e == 0 ? sgn : sgn | ((e + 112) << 23) | (m << 13);
     float r; std::memcpy(&r, &f, 4); return r;
   };
-  std::vector<std::array<float, 4>> groups;            // sum x, y, z, count
+  struct Group { float sum[3], n, lo[3], hi[3]; };
+  std::vector<Group> groups;
+  std::vector<std::array<float, 3>> all;               // pole test: every vertex of the draw
+  if (poleMin > 0) all.reserve(g_drawNumVert);
   const uint8_t* p = static_cast<const uint8_t*>(data);
   for (UINT i = 0; i < g_drawNumVert; ++i, p += stride) {
+    float x[3];
+    std::memcpy(x, p + posOff, 12);
+    if (poleMin > 0) all.push_back({ x[0], x[1], x[2] });
     float uv[2];
     if (uvType == D3DDECLTYPE_FLOAT2) std::memcpy(uv, p + uvOff, 8);
     else { uint16_t h[2]; std::memcpy(h, p + uvOff, 4); uv[0] = half(h[0]); uv[1] = half(h[1]); }
     const float u = uv[0] - std::floor(uv[0]), v = uv[1] - std::floor(uv[1]);   // tiled UVs: the atlas cell
-    if (u < rect[0] || u > rect[2] || v < rect[1] || v > rect[3]) continue;
-    float x[3];
-    std::memcpy(x, p + posOff, 12);
+    bool in = false;
+    for (int r = 0; r < nRects && !in; ++r)
+      in = u >= rects[r][0] && u <= rects[r][2] && v >= rects[r][1] && v <= rects[r][3];
+    if (!in) continue;
     bool joined = false;
     for (auto& g : groups) {
-      const float dx = g[0] / g[3] - x[0], dy = g[1] / g[3] - x[1], dz = g[2] / g[3] - x[2];
-      if (dx * dx + dy * dy + dz * dz < 1.5f * 1.5f) { g[0] += x[0]; g[1] += x[1]; g[2] += x[2]; g[3] += 1; joined = true; break; }
+      const float dx = g.sum[0] / g.n - x[0], dy = g.sum[1] / g.n - x[1], dz = g.sum[2] / g.n - x[2];
+      if (dx * dx + dy * dy + dz * dz < 1.5f * 1.5f) {
+        for (int k = 0; k < 3; ++k) { g.sum[k] += x[k]; g.lo[k] = (std::min)(g.lo[k], x[k]); g.hi[k] = (std::max)(g.hi[k], x[k]); }
+        g.n += 1;
+        joined = true;
+        break;
+      }
     }
-    if (!joined && groups.size() < 64) groups.push_back({ x[0], x[1], x[2], 1.0f });
+    if (!joined && groups.size() < 256) groups.push_back({ { x[0], x[1], x[2] }, 1.0f, { x[0], x[1], x[2] }, { x[0], x[1], x[2] } });
   }
   vb->lpVtbl->Unlock(vb);
   vb->lpVtbl->Release(vb);
-  for (const auto& g : groups) out.push_back({ g[0] / g[3], g[1] / g[3], g[2] / g[3] });
-  clog(L"world lights: texture %016llX: %zu lamp(s) in a draw of %u vertices (uv %.3f %.3f - %.3f %.3f)", tex, out.size(),
-       g_drawNumVert, rect[0], rect[1], rect[2], rect[3]);
+  // Pole test (lights-auto.ini, auto = 1; Y up): the group is a lamp head when it is small, nothing of the same draw
+  // stands more than 0.5 m above it within 0.6 m (a window or a sign in a wall has the roof or the board above), and
+  // the draw reaches at least poleMin below it within 1.5 m (its pole; a bright patch on a low sign has no 3 m drop).
+  unsigned rejected = 0;
+  for (const auto& g : groups) {
+    const float c[3] = { g.sum[0] / g.n, g.sum[1] / g.n, g.sum[2] / g.n };
+    if (poleMin > 0) {
+      const float size = (std::max)(g.hi[0] - g.lo[0], (std::max)(g.hi[1] - g.lo[1], g.hi[2] - g.lo[2]));
+      float low = c[1];
+      bool covered = false;
+      for (const auto& q : all) {
+        const float dx = q[0] - c[0], dz = q[2] - c[2], h2 = dx * dx + dz * dz;
+        if (h2 < 1.5f * 1.5f) low = (std::min)(low, q[1]);
+        if (h2 < 0.6f * 0.6f && q[1] > g.hi[1] + 0.5f) covered = true;
+      }
+      if (size > 1.5f || covered || c[1] - low < poleMin) { ++rejected; continue; }
+      out.push_back({ c[0], g.lo[1], c[2] });          // the bulb sits at the bottom of the glass
+      continue;
+    }
+    out.push_back({ c[0], c[1], c[2] });
+  }
+  static unsigned s_logged = 0;                        // generated kinds: hundreds of textures, log the finds
+  if (poleMin <= 0 || !out.empty() || ++s_logged <= 20)
+    clog(L"world lights: texture %016llX: %zu lamp(s) in a draw of %u vertices (%d rect(s), first %.3f %.3f - %.3f %.3f)%s",
+         tex, out.size(), g_drawNumVert, nRects, rects[0][0], rects[0][1], rects[0][2], rects[0][3],
+         poleMin > 0 ? (L", pole test: " + std::to_wstring(rejected) + L" group(s) rejected").c_str() : L"");
   return &out;
 }
 
@@ -3918,10 +3954,10 @@ void world_light_draw(IDirect3DDevice9* dev) {
            screen_space_input(dev) ? L" in screen space" : L"");
     return;
   }
-  float rect[4];
-  if (rbrrtx_world_lights_uv(hx, rect)) {
+  float rects[4][4], poleMin = 0.0f;
+  if (const int nRects = rbrrtx_world_lights_uvs(hx, rects, 4, &poleMin)) {
     if (!g_curInfo || g_drawNumVert == 0) return;
-    const auto* pts = uv_lamp_points(dev, rect, hx);
+    const auto* pts = uv_lamp_points(dev, rects, nRects, poleMin, hx);
     if (!pts) return;
     const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
     const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
@@ -3933,6 +3969,7 @@ void world_light_draw(IDirect3DDevice9* dev) {
     }
     return;
   }
+  if (poleMin > 0) return;                                  // generated kinds place lamps from rectangles only
   float c[3], r = 0.0f;
   if (draw_world_sphere(dev, c, &r, true)) rbrrtx_world_lights_seen(hx, c, r, g_inMenu);
 }

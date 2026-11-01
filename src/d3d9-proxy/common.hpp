@@ -167,7 +167,8 @@ void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this
 void rbrrtx_world_lights_init(const remixapi_Interface* api);
 bool rbrrtx_world_lights_wanted();                              // any lamp texture listed (else no per-draw work)
 bool rbrrtx_world_lights_texture(unsigned long long hash);
-bool rbrrtx_world_lights_uv(unsigned long long hash, float rect[4]);   // lamp in an atlas: its TEXCOORD0 rectangle
+// Lamp in an atlas: its TEXCOORD0 rectangles (count, up to max); poleMinHeight > 0 = keep only groups on a pole.
+int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight);
 void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
