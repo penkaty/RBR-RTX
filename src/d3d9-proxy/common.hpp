@@ -108,6 +108,8 @@ const wchar_t* rbrrtx_wetness_name(int wetness);
 struct StageWeather {
   bool found = false;
   std::wstring section, description;
+  std::wstring descriptionAbove;                               // comment lines right above the section header (<= 2 lines, <= 60 chars)
+  bool descAbove = false;                                      // description is that comment (the section has no words of its own)
   bool useFog = true, haveUseFog = false;
   int haveFog = 0;                                             // bit 1 FogStart, bit 2 FogEnd
   float fogStart = 0.0f, fogEnd = 0.0f, fogCol[3] = { -1.0f, -1.0f, -1.0f };

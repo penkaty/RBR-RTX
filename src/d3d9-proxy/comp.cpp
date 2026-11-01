@@ -1392,8 +1392,8 @@ void atmo_frame() {
         }
       }
       if (g_stageWx.found)
-        clog(L"stage weather: section [%s], description \"%s\" -> %s%s%s%s%s%s; game fog %s %.0f..%.0f m, colour (%.2f %.2f %.2f)",
-             g_stageWx.section.c_str(), g_stageWx.description.c_str(),
+        clog(L"stage weather: section [%s], description \"%s\"%s -> %s%s%s%s%s%s; game fog %s %.0f..%.0f m, colour (%.2f %.2f %.2f)",
+             g_stageWx.section.c_str(), g_stageWx.description.c_str(), g_stageWx.descAbove ? L" (comment above the section)" : L"",
              g_stageWxNamed ? L"names" : L"names nothing (the section name counts)",
              g_stageWxText.sky >= 0 ? L" sky " : L"", g_stageWxText.sky >= 0 ? rbrrtx_sky_name(g_stageWxText.sky) : L"",
              g_stageWxText.clouds >= 0 ? (std::wstring(L" clouds ") + rbrrtx_cloud_name(g_stageWxText.clouds)).c_str() : L"",
