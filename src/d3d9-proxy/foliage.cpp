@@ -37,6 +37,10 @@ constexpr double kQuiet = 5.0;
 
 struct Cfg {
   bool enabled = true;
+  // RBR-RTX runtime (RBR-RTX-remixplus, CardNormals port): every swaying foliage texture seen goes to
+  // rtx.cardNormalsTextures, so cards get bent normals on every stage, encrypted ones included (user 2026-11-01:
+  // CardNormals before 3D replacement). Stock runtimes refuse the option (logged as refused): harmless.
+  bool cardNormals = true;
   float thickness = 0.5f;                                // subsurface_measurement_distance, mm (Remix: 0..16)
   float transmittance[3] = { 0.5f, 0.5f, 0.5f };         // subsurface_transmittance_color: keep it grey
   float brightest = 0.8f;                                // scattering albedo = texture colour, brightest channel this
@@ -51,6 +55,21 @@ bool g_dirty = false;
 std::chrono::steady_clock::time_point g_lastNew;
 std::wstring g_cacheFile;
 unsigned g_newThisRun = 0, g_unhashed = 0;
+size_t g_cardNormalsSent = 0;                            // textures in the last rtx.cardNormalsTextures sent
+
+// The known foliage textures as rtx.cardNormalsTextures, once the API is up and again when the list grew.
+void send_card_normals() {
+  if (!g_cfg.cardNormals || g_leaves.size() == g_cardNormalsSent) return;
+  std::string list;
+  char h[24];
+  for (const auto& kv : g_leaves) {
+    sprintf_s(h, "%s0x%016llX", list.empty() ? "" : ", ", static_cast<unsigned long long>(kv.first));
+    list += h;
+  }
+  if (!rbrrtx_remix_set("rtx.cardNormalsTextures", list.c_str())) return;
+  g_cardNormalsSent = g_leaves.size();
+  flog(L"foliage: %zu textures sent as rtx.cardNormalsTextures (bent card normals; RBR-RTX runtime only)", g_cardNormalsSent);
+}
 
 void load_cfg() {
   wchar_t path[MAX_PATH * 2] = {};
@@ -69,6 +88,7 @@ void load_cfg() {
   };
   Cfg c;
   c.enabled = f(L"thin_opaque", 1.0f) != 0.0f;
+  c.cardNormals = f(L"card_normals", 1.0f) != 0.0f;
   c.thickness = std::clamp(f(L"thickness_mm", c.thickness), 0.001f, 16.0f);
   rgb(L"transmittance", c.transmittance);
   c.brightest = std::clamp(f(L"scattering_brightest", c.brightest), 0.0f, 1.0f);
@@ -160,6 +180,7 @@ void rbrrtx_foliage_frame() {
   // (once per texture: one hash lookup).
   static unsigned frames = 0;
   if (++frames % 900 == 0) g_seen.clear();
+  if (frames % 60 == 0) send_card_normals();
   if (g_dirty && std::chrono::duration<double>(std::chrono::steady_clock::now() - g_lastNew).count() >= kQuiet) {
     publish();
     flog(L"foliage: %zu foliage textures in the generated mod (%u new this run)", g_leaves.size(), g_newThisRun);

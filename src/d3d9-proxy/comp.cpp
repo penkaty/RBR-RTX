@@ -4486,6 +4486,12 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
 
 }  // namespace
 
+bool rbrrtx_remix_set(const char* key, const char* value) {
+  if (!g_apiOk || !g_api.SetConfigVariable) return false;
+  remix_set(key, value);
+  return true;
+}
+
 std::wstring rbrrtx_stage_line(const RbrStageInfo& si) { return stage_line(si); }   // report.cpp
 
 void rbrrtx_comp_install(void* d3d9, HMODULE backend) {

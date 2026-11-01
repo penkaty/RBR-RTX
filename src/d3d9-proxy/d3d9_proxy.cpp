@@ -164,7 +164,7 @@ bool proxy_owned_option(const std::string& key) {
     "rtx.atmosphere.fogAlbedo", "rtx.atmosphere.aerosolDensity", "rtx.atmosphere.groundLevelWorldUnits",
     "rtx.atmosphere.groundLevelAuto", "rtx.atmosphere.directionalLightRadianceScale", "rtx.weather.gameWeather",
     "rtx.weather.gameWeatherBlend", "rtx.enableFog", "rtx.enableRaytracing", "rtx.debugView.debugViewIdx",
-    "rtx.enableReplacementAssets", "rtx.captureHotKey", "rtx.captureShowMenuOnHotkey", "rtx.skyProvider.worldChangeCount" };
+    "rtx.enableReplacementAssets", "rtx.captureHotKey", "rtx.captureShowMenuOnHotkey", "rtx.skyProvider.worldChangeCount", "rtx.cardNormalsTextures" };
   for (const char* k : exact) if (key == k) return true;
   return key.rfind("rtx.atmosphere.moon0.", 0) == 0;
 }
