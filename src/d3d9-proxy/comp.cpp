@@ -266,6 +266,7 @@ struct Orig {
   decltype(IDirect3DQuery9Vtbl::Release) QueryRelease;
   decltype(IDirect3DVertexBuffer9Vtbl::Lock) VBLock;
   decltype(IDirect3DVertexBuffer9Vtbl::Unlock) VBUnlock;
+  decltype(IDirect3DIndexBuffer9Vtbl::Lock) IBLock;
 } o{};
 
 HMODULE g_backend = nullptr;
@@ -2183,6 +2184,7 @@ unsigned g_clockSlot = 0;
 
 HRESULT STDMETHODCALLTYPE hk_VBLock(IDirect3DVertexBuffer9* vb, UINT off, UINT size, void** data, DWORD flags) {
   const HRESULT hr = o.VBLock(vb, off, size, data, flags);
+  if (SUCCEEDED(hr) && !(flags & D3DLOCK_READONLY)) rbrrtx_apiworld_written(vb);   // API world: buffer is dynamic
   if (vb == g_clockVB) {
     g_clockData = SUCCEEDED(hr) && data && off == 0 && !(flags & D3DLOCK_READONLY) ? *data : nullptr;
     g_clockBytes = size;
@@ -2210,6 +2212,23 @@ HRESULT STDMETHODCALLTYPE hk_VBUnlock(IDirect3DVertexBuffer9* vb) {
     g_clockData = nullptr;
   }
   return o.VBUnlock(vb);
+}
+
+HRESULT STDMETHODCALLTYPE hk_IBLock(IDirect3DIndexBuffer9* ib, UINT off, UINT size, void** data, DWORD flags) {
+  const HRESULT hr = o.IBLock(ib, off, size, data, flags);
+  if (SUCCEEDED(hr) && !(flags & D3DLOCK_READONLY)) rbrrtx_apiworld_written(ib);
+  return hr;
+}
+
+// apiworld.cpp built instances from these buffers: hook Lock on their vtables (shared by every buffer of the kind)
+// so a later write by the game reaches rbrrtx_apiworld_written.
+void watch_buffer_writes(void* vb, void* ib) {
+  if (vb) {
+    IDirect3DVertexBuffer9Vtbl* v = static_cast<IDirect3DVertexBuffer9*>(vb)->lpVtbl;
+    patch(&v->Lock, &hk_VBLock, o.VBLock);
+    patch(&v->Unlock, &hk_VBUnlock, o.VBUnlock);
+  }
+  if (ib) patch(&static_cast<IDirect3DIndexBuffer9*>(ib)->lpVtbl->Lock, &hk_IBLock, o.IBLock);
 }
 
 void clock_note(IDirect3DDevice9* dev) {
@@ -4828,6 +4847,8 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
 }
 
 }  // namespace
+
+void rbrrtx_watch_buffer_writes(void* vb, void* ib) { watch_buffer_writes(vb, ib); }
 
 bool rbrrtx_remix_set(const char* key, const char* value) {
   if (!g_apiOk || !g_api.SetConfigVariable) return false;

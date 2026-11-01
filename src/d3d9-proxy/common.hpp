@@ -181,6 +181,8 @@ void rbrrtx_apiworld_replay();                                  // first BeginSc
 void rbrrtx_apiworld_frame_end(const float* viewProj, bool active);   // Present (viewProj null = no world camera)
 void rbrrtx_apiworld_reset(const wchar_t* why);                 // menu <-> stage, device released
 void rbrrtx_apiworld_forget(const void* buffer);                // the game created a buffer at this address
+void rbrrtx_apiworld_written(const void* buffer);               // the game locked a buffer for writing
+void rbrrtx_watch_buffer_writes(void* vb, void* ib);           // comp.cpp: report write locks of these buffers' kinds
 // hudglow.cpp: RBRHUD gauge displays (s0 render target + s15 emissive mask) glow through Kim's material protocol.
 void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol); // materials.ini [hud_glow]; patches SetTexture / SetPixelShaderConstantB
 void rbrrtx_hudglow_before(void* device);                       // around each D3D9 draw sent to Remix

@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #define wlog(...) rbrrtx_log_to(L"rbrrtx_comp.log", __VA_ARGS__)
@@ -89,6 +90,11 @@ std::unordered_map<Key, Entry, KeyHash> g_entries;
 std::unordered_map<uint64_t, Material> g_materials;    // material key -> material
 std::unordered_map<uint64_t, remixapi_TextureHandle> g_textures;   // texture hash -> imported (null = refused)
 std::unordered_map<const void*, unsigned> g_gen;       // bumped when the game creates a buffer at an address
+// Buffer change detection (overnight plan P3.1): a buffer some instance was built from is watched; the game locking it
+// for writing makes it dynamic (clock digits, running marshals, flags, any CPU-animated RL* geometry): its instances
+// go and it stays D3D9 until a new buffer is created at that address or the scene changes.
+std::unordered_set<const void*> g_watched, g_dynamic;
+unsigned g_dynamicDropped = 0;
 std::vector<remixapi_RetainedInstanceUpdate> g_updates;
 uint64_t g_meshSerial = 0;                             // mesh hashes: never repeated in a session (skipRepeatedMeshCreate)
 unsigned g_frame = 1, g_builtFrame = 0, g_vertsFrame = 0, g_drawnWorld = 0, g_replayedFrame = 0;
@@ -392,6 +398,14 @@ bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d) {
   dev->lpVtbl->GetIndices(dev, &ib);
   dev->lpVtbl->GetVertexDeclaration(dev, &decl);
   dev->lpVtbl->GetTexture(dev, 0, &tex);
+  if ((vb && g_dynamic.count(vb)) || (ib && g_dynamic.count(ib))) {   // written by the game: stays D3D9
+    if (vb) vb->lpVtbl->Release(vb);
+    if (ib) ib->lpVtbl->Release(ib);
+    if (decl) decl->lpVtbl->Release(decl);
+    if (tex) tex->lpVtbl->Release(tex);
+    ++g_passed;
+    return false;
+  }
   Key k = {};
   k.vb = vb; k.ib = ib; k.decl = decl; k.tex = tex;
   k.vbGen = vb ? g_gen[vb] : 0;
@@ -473,6 +487,7 @@ bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d) {
     } else {
       e.failed = false;
       e.visible = true;
+      if (g_watched.insert(vb).second | g_watched.insert(ib).second) rbrrtx_watch_buffer_writes(vb, ib);
       e.seen = e.shownAt = g_frame;
       ++g_live; ++g_visibleCount; ++g_built; ++g_builtFrame; ++g_drawnWorld;
       g_vertsFrame += static_cast<unsigned>(verts.size());
@@ -563,12 +578,32 @@ void rbrrtx_apiworld_reset(const wchar_t* why) {
   g_entries.clear();
   g_materials.clear();
   g_textures.clear();
+  g_watched.clear();
+  g_dynamic.clear();
   g_updates.clear();
   g_live = g_visibleCount = 0;
 }
 
 // A new buffer at an address: entries of the old one stay until hidden (in view, not drawn), new draws get new keys.
-void rbrrtx_apiworld_forget(const void* buffer) { if (buffer) ++g_gen[buffer]; }
+void rbrrtx_apiworld_forget(const void* buffer) {
+  if (!buffer) return;
+  ++g_gen[buffer];
+  g_dynamic.erase(buffer);                             // a new buffer: may be static again
+}
+
+// The game locked a buffer for writing (comp.cpp Lock hooks). Called for every write lock of every buffer once any
+// is watched, so the common case is one set lookup.
+void rbrrtx_apiworld_written(const void* buffer) {
+  if (!buffer || !g_watched.erase(buffer)) return;
+  g_dynamic.insert(buffer);
+  unsigned n = 0;
+  for (auto it = g_entries.begin(); it != g_entries.end();) {
+    if (it->first.vb == buffer || it->first.ib == buffer) { destroy_entry(it->second); it = g_entries.erase(it); ++n; }
+    else ++it;
+  }
+  if (++g_dynamicDropped <= 8)
+    wlog(L"api world: buffer %p written by the game: %u instance(s) dropped, it stays D3D9", buffer, n);
+}
 
 const wchar_t* rbrrtx_apiworld_cycle() {
   g_mode = (g_mode + 1) % 3;
