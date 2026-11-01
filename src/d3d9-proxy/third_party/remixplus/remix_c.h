@@ -56,17 +56,20 @@
 #define REMIXAPI_VERSION_GET_MINOR(version) (((uint64_t)(version) >> 16) & (uint64_t)0xFFFFFFFF)
 #define REMIXAPI_VERSION_GET_PATCH(version) (((uint64_t)(version)      ) & (uint64_t)0xFFFF)
 
-// Remix Plus has its own ABI line, MAJOR 1, distinct from NVIDIA dxvk-remix
-// (0.x) and from other forks. remixapi_InitializeLibrary accepts a caller whose
-// MAJOR equals the runtime's and whose MINOR is at most the runtime's. It also
-// accepts 0.1000.x callers (rebased-9-19 and rc1), whose interface table and
-// structs are the same as 1.0's, and rejects every other 0.x caller.
-// Bump MINOR for additions (new structs, exports or appended table entries) and
-// MAJOR for any change to an existing layout. PATCH does not affect the check.
-// See docs/RemixApi-Migration.md, "Version and compatibility".
-#define REMIXAPI_VERSION_MAJOR 1
-#define REMIXAPI_VERSION_MINOR 0
-#define REMIXAPI_VERSION_PATCH 0
+// Remix Plus carries its own ABI line, distinct from stock NVIDIA dxvk-remix
+// (which is 0.6.x). The reserved MINOR (1000) marks Remix Plus and, because the
+// compat check treats every minor as breaking while MAJOR==0, makes the runtime
+// reject binaries built against stock Remix 0.6.x or older Remix Plus 0.6.x —
+// the struct layout and category-bit ABI differ. Bump MINOR again on any
+// further breaking ABI change.
+//
+// PATCH 1 tracks upstream 0.6.5: remixapi_MaterialInfoOpaqueEXT grew by the four
+// DLSS control-mask fields. The runtime (and the bridge client) only read those
+// fields from callers reporting >= 0.1000.1, so binaries built against 0.1000.0
+// keep working and receive upstream's defaults.
+#define REMIXAPI_VERSION_MAJOR 0
+#define REMIXAPI_VERSION_MINOR 1000
+#define REMIXAPI_VERSION_PATCH 1
 
 
 // External
@@ -74,6 +77,7 @@ typedef struct IDirect3D9Ex       IDirect3D9Ex;
 typedef struct IDirect3DDevice9Ex IDirect3DDevice9Ex;
 typedef struct IDirect3DSurface9  IDirect3DSurface9;
 typedef struct IDirect3DTexture9  IDirect3DTexture9;
+typedef struct IDirect3DBaseTexture9 IDirect3DBaseTexture9;
 
 #ifndef REMIX_WINAPI_NO_INCLUDE
   typedef HWND remixapi_HWND;
@@ -150,7 +154,9 @@ extern "C" {
     // sType cannot collide with them.
     REMIXAPI_STRUCT_TYPE_CAMERA_INFO_FRAME_EVENTS_EXT         = 0x4E560001,
     REMIXAPI_STRUCT_TYPE_ASSET_KEY_EXT                        = 0x4E560002,
-    REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT                   = 0x4E560003,
+    // The terrain-layers struct type lives in a separate range, so upstream additions can never collide with it.
+    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TERRAIN_LAYERS_EXT     = 0x7F000001,
+    // 0x4E560003 is reserved for REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT.
     REMIXAPI_STRUCT_TYPE_COLOR_GRADE_EXT                      = 0x4E560004,
     // NOTE: if adding a new struct, register it in 'rtx_remix_specialization.inl'
     //       and only extend this enum by appending, never adjust the order of these 
@@ -185,9 +191,6 @@ extern "C" {
     REMIXAPI_ERROR_CODE_HRESULT_VK_CREATE_INSTANCE_FAIL       = 0x88960004,
     REMIXAPI_ERROR_CODE_HRESULT_VK_CREATE_DEVICE_FAIL         = 0x88960005,
     REMIXAPI_ERROR_CODE_HRESULT_GRAPHICS_QUEUE_FAMILY_MISSING = 0x88960006,
-    // Remix Plus error codes live from 0x4E560000 on, like the Remix Plus struct types.
-    // The device or the current output does not support the requested feature.
-    REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE                   = 0x4E560001,
   } remixapi_ErrorCode;
 
   typedef uint32_t remixapi_Bool;
@@ -367,6 +370,38 @@ extern "C" {
     remixapi_Bool       useDiffuseLayer;
   } remixapi_MaterialInfoTranslucentEXT;
 
+#define REMIXAPI_TERRAIN_MAX_LAYERS 8
+
+  // Multi-layer terrain blended per hit in the opaque material shader. Valid only if remixapi_MaterialInfo
+  // contains remixapi_MaterialInfoOpaqueEXT in its pNext chain (MaterialInfo -> OpaqueEXT -> TerrainLayersEXT).
+  // Per hit, with uv = the mesh texcoord and weightUV = uv * weightUvScale + weightUvOffset:
+  //   w0123 = weightTextures[0](weightUV), w4567 = weightTextures[1](weightUV)   (bilinear, clamp to edge)
+  //   albedo = sum_i w_i * albedoTextures[i](uv)                                (not renormalised)
+  //   albedo *= tintTexture(weightUV).rgb                                        (if present)
+  //   albedo = max(albedo, 0)            (layers and tint may be float textures, see TextureInfoHostImportEXT.vkFormat)
+  //   normal = normalize(sum_i w_i * decode(normalTextures[i](uv)))             (missing normal layer = (0,0,1))
+  // Roughness/metallic come from the OpaqueEXT constants. Set MaterialInfo.albedoTexture to layer 0 as a fallback.
+  // Parallax (POM), when any heightTextures[i] is set and OpaqueEXT.displaceIn/displaceOut > 0: the march runs on the
+  //   blended height field depth(uv) = sum_i w_i * (1 - heightTextures[i](uv).r) / sum_i w_i, with the weights read once
+  //   at the undisplaced weightUV (a layer without a height map counts as flat, i.e. white = the surface itself).
+  //   Depth comes from OpaqueEXT.displaceIn/displaceOut; always the raymarch POM (QuadtreePOM needs one texture).
+  // Textures: "0x%016llX" of a remixapi_TextureInfo.hash passed to CreateTexture, or file paths; NULL/"" = none.
+  typedef struct remixapi_MaterialInfoTerrainLayersEXT {
+    remixapi_StructType sType;
+    void*               pNext;
+    uint32_t            layerCount;                                   // 1..REMIXAPI_TERRAIN_MAX_LAYERS
+    remixapi_Path       albedoTextures[REMIXAPI_TERRAIN_MAX_LAYERS];
+    remixapi_Path       normalTextures[REMIXAPI_TERRAIN_MAX_LAYERS];
+    remixapi_Path       weightTextures[2];                            // RGBA UNORM: [0] = layers 0-3, [1] = layers 4-7
+    remixapi_Path       tintTexture;                                  // optional RGB multiplier (UNORM)
+    remixapi_Float2D    weightUvScale;
+    remixapi_Float2D    weightUvOffset;
+    remixapi_Bool       normalsRgbTangentSpace;                       // 1: RGB 0.5-biased DirectX tangent space, 0: octahedral
+    // Optional per-layer height maps (terrain POM), R channel, white = top. NULL/"" = flat layer.
+    // Client, bridge and runtime must be built from the same header (the bridge serialises every field).
+    remixapi_Path       heightTextures[REMIXAPI_TERRAIN_MAX_LAYERS];
+  } remixapi_MaterialInfoTerrainLayersEXT;
+
   typedef struct remixapi_MaterialInfoPortalEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -449,8 +484,8 @@ extern "C" {
   // of ignoring the repeated registration.
   //
   // Intended for CPU-deformed geometry whose topology is fixed but whose vertex
-  // positions are rewritten by the host every few frames (e.g. facial morphs
-  // for lip sync, blinks, and expressions). Re-using the hash is what
+  // positions are rewritten by the host every few frames (e.g. Fallout 4 FaceGen
+  // morphs for lip sync, blinks, and expressions). Re-using the hash is what
   // makes this work: the mesh handle IS the hash, and the handle feeds both
   // ExternalDrawState::computeExternalDrawIdentityHash and the spatial-map hash,
   // so minting a fresh hash per update would hand the scene manager a brand-new
@@ -523,10 +558,17 @@ extern "C" {
   //   ORIGIN_SHIFT: every render-space position moved by originShift this frame (new = old + originShift), because
   //     the host moved its render origin. The camera history is shifted with it, so the move is neither camera
   //     motion nor a camera cut. (Retained instances follow the origin given to DrawRetainedInstances.)
+  //   FALLBACK: the camera is only the host's statement of the frame's view, for a frame whose draws give the
+  //     runtime no Main camera of their own (a D3D9 host whose world reached the scene through the API, so the
+  //     frame has no world draw to infer a camera from). WORLD type only. It is held, and at the frame's ray
+  //     tracing applied as the Main camera exactly as a D3D9 draw's camera would be -- only if no draw set one
+  //     this frame; it never replaces or competes with a draw's camera. It carries no origin and the other flags
+  //     are ignored with it: the D3D9 camera's origin handling applies. A held camera expires after one frame.
   // A runtime that predates the struct ignores it.
   #define REMIXAPI_CAMERA_FRAME_EVENT_CAMERA_CUT      0x1u
   #define REMIXAPI_CAMERA_FRAME_EVENT_HISTORY_INVALID 0x2u
   #define REMIXAPI_CAMERA_FRAME_EVENT_ORIGIN_SHIFT    0x8u
+  #define REMIXAPI_CAMERA_FRAME_EVENT_FALLBACK        0x10u
   typedef struct remixapi_CameraInfoFrameEventsEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -538,7 +580,8 @@ extern "C" {
   // key mods, captures and caches use for this asset instead of the default (the mesh hash / the material's runtime
   // content hash), and aliases, the keys older host versions produced, so mods made against them keep matching.
   // Replacements are looked up by key, then by each alias in order. 0 is never a key. assetName is optional (logs,
-  // captures). A runtime that predates the struct ignores it.
+  // captures). Honoured while the runtime option rtx.scene.assetKeys is on; a runtime that predates the struct
+  // ignores it.
   typedef struct remixapi_AssetKeyEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -1183,9 +1226,23 @@ extern "C" {
     remixapi_HostSettingHandle handle, double value);
   REMIXAPI void REMIXAPI_CALL remixapi_ClearHostSettings(void);
 
-  // Color grading: the grade the tone mapper applies to the linear scene color before the tone curve.
+  // Bridge client only (32-bit hosts, where every call above is a round trip
+  // to NvRemixBridge.exe); the runtime does not export it. *out_generation
+  // receives the current generation and, only when it differs from
+  // last_generation, out_values[i] receives the value of handles[i] (NaN for
+  // a handle the runtime does not know). With an unchanged generation
+  // out_values is left untouched. An unchanged generation is answered from
+  // the copy the server publishes at each Present, without a round trip; a
+  // changed one (or last_generation ~0) costs one synchronous round trip.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_PollHostSettings)(
+    uint64_t last_generation, uint64_t* out_generation, double* out_values,
+    const remixapi_HostSettingHandle* handles, uint32_t count);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_PollHostSettings(
+    uint64_t last_generation, uint64_t* out_generation, double* out_values,
+    const remixapi_HostSettingHandle* handles, uint32_t count);
+  // Colour grading: the grade the tone mapper applies to the linear scene colour before the tone curve.
   // Optional named exports; the versioned Interface table is unchanged. Probe with
-  // GetProcAddress(dll, "remixapi_SetColorGradePreset") and so on. See docs/RemixApi.md, "Color grading".
+  // GetProcAddress(dll, "remixapi_SetColorGradePreset") and so on. See docs/RemixApi.md, "Colour grading".
   //
   // The grade runs in this order, and the default values below are the neutral grade, which changes nothing:
   //   color = matrix * color                                      matrix: row-major 3x3, identity
@@ -1252,44 +1309,6 @@ extern "C" {
     const char* name, const remixapi_ColorGradeEXT* grade);
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SaveColorGradePreset(
     const char* name, const remixapi_ColorGradeEXT* grade);
-
-  // External frame: the presented image, shared with another Vulkan device or process without a CPU readback.
-  // An optional named export; the versioned Interface table is unchanged. Probe with
-  // GetProcAddress(dll, "remixapi_ConfigureExternalFrame"). See docs/RemixApi.md, "External frame".
-  //
-  // Call it after Startup, on the thread that calls Present. On success, every Present copies the frame (after
-  // tone mapping and upscaling, without the developer menu) into the shared image, releases the image to
-  // VK_QUEUE_FAMILY_EXTERNAL in VK_IMAGE_LAYOUT_GENERAL and signals readySemaphore. The copy after the first one waits
-  // on releasedSemaphore on the GPU, so the consumer must answer every ready with a released. When Present returns,
-  // the submission that signals readySemaphore is in the Vulkan queue, so the consumer can wait on it at once.
-  //
-  // The image is 2D, R8G8B8A8_UNORM, one mip and one layer, optimal tiling, exclusive sharing, no create flags, usage
-  // TRANSFER_SRC | TRANSFER_DST | SAMPLED, in a dedicated allocation. Its values are the presented, display-encoded
-  // values. The three handles are new NT handles (OPAQUE_WIN32) owned by the caller. The semaphores are binary.
-  //
-  // frame == NULL stops the export. Calling it again replaces the image and the semaphores, for example after the
-  // window was resized. The consumer keeps whatever it imported from the old set.
-  // Returns REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE when the device cannot export memory or semaphores, or when the
-  // output cannot be expressed as R8G8B8A8_UNORM.
-  typedef struct remixapi_ExternalFrameEXT {
-    remixapi_StructType sType;              // REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT
-    void*               pNext;
-    uint32_t            version;            // in: 1
-    uint32_t            width;              // out: the back buffer width
-    uint32_t            height;             // out: the back buffer height
-    uint32_t            format;             // out: VkFormat, VK_FORMAT_R8G8B8A8_UNORM
-    uint32_t            memoryTypeIndex;    // out
-    uint64_t            allocationSize;     // out
-    uint8_t             deviceUUID[16];     // out: VkPhysicalDeviceIDProperties::deviceUUID
-    void*               memoryHandle;       // out: NT handle, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
-    void*               readySemaphore;     // out: NT handle, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT
-    void*               releasedSemaphore;  // out: NT handle, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT
-  } remixapi_ExternalFrameEXT;
-
-  #define REMIXAPI_EXTERNAL_FRAME_VERSION 1u
-
-  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_ConfigureExternalFrame)(remixapi_ExternalFrameEXT* frame);
-  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_ConfigureExternalFrame(remixapi_ExternalFrameEXT* frame);
 
   // Screen overlay API
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_DrawScreenOverlay)(
@@ -1708,6 +1727,36 @@ typedef remixapi_ErrorCode (REMIXAPI_CALL* PFN_remixapi_DrawScreenOverlayD3D11Ex
 // ("remixapi_ReplaceD3D11TextureEx").
 typedef remixapi_ErrorCode (REMIXAPI_CALL* PFN_remixapi_ReplaceD3D11TextureEx)(
   remixapi_D3D11TextureToken token, remixapi_TextureHandle handle, uint32_t encoding);
+
+// D3D9 texture import: register a texture of the registered D3D9 device
+// (remixapi_dxvk_RegisterD3D9Device) as a Remix API texture under `hash`,
+// sampling the game's own image in place -- no pixel copy, no second VRAM
+// copy. The result is used exactly like a CreateTexture'd texture: materials
+// name it by the "0x%016llX" pseudo-path of `hash`, and DestroyTexture
+// (handle = hash) releases it. Remix holds a reference to the image, so the
+// host may release the D3D9 texture at any time; the memory lives until
+// DestroyTexture.
+// Accepted: a 2D IDirect3DTexture9 in D3DPOOL_MANAGED or D3DPOOL_DEFAULT
+// without RENDERTARGET / DEPTHSTENCIL / DYNAMIC / AUTOGENMIPMAP usage. A
+// MANAGED texture's pending uploads are submitted first (D3D9 uploads managed
+// textures lazily, at their first draw). Ordering: the import is queued on the
+// device's command stream, so every write issued to the texture before the
+// call is visible to Remix. Writes issued AFTER the call (LockRect on a
+// MANAGED texture, UpdateTexture into a DEFAULT one) also reach the imported
+// texture: only import textures whose content will not change.
+// flags: REMIXAPI_D3D9_TEXTURE_IMPORT_*. encoding: REMIXAPI_TEXTURE_ENCODING_*.
+// Returns GENERAL_FAILURE while rtx.hostImport.enableD3D9TextureImport is off,
+// INVALID_ARGUMENTS for a texture it cannot share (other device, pool or
+// usage above, SYSTEMMEM, a format with no sRGB view when SRGB is asked for).
+// A call with texture == NULL and out_handle == NULL is a capability probe: it
+// returns SUCCESS when an import could be made now, otherwise the error an
+// import would get (device not registered, option off). Optional named export
+// ("remixapi_ImportD3D9Texture"); its presence is the capability check.
+#define REMIXAPI_D3D9_TEXTURE_IMPORT_SRGB         0x1u  // sample through the texture's sRGB view
+#define REMIXAPI_D3D9_TEXTURE_IMPORT_OPAQUE_ALPHA 0x2u  // alpha reads as 1 (e.g. DXT1 as an opaque BC1)
+typedef remixapi_ErrorCode (REMIXAPI_CALL* PFN_remixapi_ImportD3D9Texture)(
+  IDirect3DBaseTexture9* texture, uint64_t hash, uint32_t flags, uint32_t encoding,
+  remixapi_TextureHandle* out_handle);
 
 // Per-instance material override. Chain on remixapi_InstanceInfo (DrawInstance,
 // CreateRetainedInstance, UpdateRetainedInstance). Every surface of the mesh is

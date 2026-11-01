@@ -52,6 +52,7 @@ struct NvLightInfo {
 constexpr int kNvParticleSystem = 25, kNvGpuInstancing = 26, kNvCameraMedium = 27;
 
 remixapi_Interface g_rp = {};
+RbrApiExt g_ext = {};
 uint32_t g_renames = 0;                                // creates that needed another hash (destroyed this frame)
 unsigned g_converted = 0;                              // chains rebuilt (logged once)
 std::unordered_map<uint64_t, uint64_t> g_liveHash;     // caller's hash -> hash of its live light in the runtime
@@ -180,16 +181,30 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
   if (!init) return REMIXAPI_ERROR_CODE_GET_PROC_ADDRESS_FAILURE;
   remixapi_InitializeLibraryInfo info = {};
   info.sType = REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
+  // The header is Kim's (Kim2091/dxvk-remix fnv/main, API 0.1000.1; our runtime builds on it since 2026-11-01). The
+  // Remix Plus 2.0.0 release says 1.0.0. Same 39-slot table and the same structs we use (header diff 2026-11-01: only
+  // terrain layers, host-setting polls and D3D9 texture import added, all outside the table): either version works here.
   info.version = REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR, REMIXAPI_VERSION_MINOR, REMIXAPI_VERSION_PATCH);
   remixapi_ErrorCode err = init(&info, &g_rp);
   if (err == REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION) {
-    // Kim's fork (Kim2091/dxvk-remix fnv/main, our feat/*-kim-* runtime) reports API 0.1000.1: the same 39-slot table
-    // and the same structs we use (header diff 2026-11-01: only terrain layers, host-setting polls and D3D9 texture
-    // import added, all outside the table), so the 1.0.0 converters below hold.
-    info.version = REMIXAPI_VERSION_MAKE(0, 1000, 1);
+    info.version = REMIXAPI_VERSION_MAKE(1, 0, 0);
     err = init(&info, &g_rp);
   }
   if (err != REMIXAPI_ERROR_CODE_SUCCESS) return err;
+  // Calls beyond the table (bridge named exports; their presence is the capability check): the API world's retained
+  // scenery, batched meshes, game textures imported without a copy (rbrrtx_api_ext).
+  g_ext = {};
+  g_ext.createRetained = GetProcAddress(backend, "remixapi_CreateRetainedInstances");
+  g_ext.updateRetained = GetProcAddress(backend, "remixapi_UpdateRetainedInstances");
+  g_ext.destroyRetained = GetProcAddress(backend, "remixapi_DestroyRetainedInstances");
+  g_ext.drawRetained = GetProcAddress(backend, "remixapi_DrawRetainedInstances");
+  g_ext.importD3D9Texture = GetProcAddress(backend, "remixapi_ImportD3D9Texture");
+  g_ext.createMeshBatched = reinterpret_cast<void*>(g_rp.CreateMeshBatched);
+  g_ext.setupCamera = reinterpret_cast<void*>(g_rp.SetupCamera);
+  g_ext.createMaterial = reinterpret_cast<void*>(g_rp.CreateMaterial);
+  g_ext.drawInstance = reinterpret_cast<void*>(g_rp.DrawInstance);
+  g_ext.destroyMesh = reinterpret_cast<void*>(g_rp.DestroyMesh);
+  g_ext.version = info.version;
   // The bridge fills only what it forwards (migration guide section 7); the proxy needs these.
   if (!in_module(reinterpret_cast<const void*>(g_rp.CreateLight), backend) ||
       !in_module(reinterpret_cast<const void*>(g_rp.DestroyLight), backend) ||
@@ -210,6 +225,8 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
   std::memcpy(nvTable, &t, sizeof(t));
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
+
+const RbrApiExt* rbrrtx_api_ext() { return g_ext.version ? &g_ext : nullptr; }
 
 unsigned rbrrtx_remixplus_converted() { return g_converted; }
 

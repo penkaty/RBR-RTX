@@ -594,9 +594,16 @@ void init_remix_api() {
       // A stage's weather at once (user 2026-10-30: the stage started in the last weather and moved into its own):
       // blend 1 = "the game blends itself, fully in the new one" (rtx_numos_weather.cpp), no 2-10 s transition.
       if (g_numos) remix_set("rtx.weather.gameWeatherBlend", "1");
-      clog(L"sun: Remix API ready (Remix Plus, API 1.0.0 through remixplus_api.cpp); NUMOS sky %s", g_numos
+      const RbrApiExt* x = rbrrtx_api_ext();
+      clog(L"sun: Remix API ready (Remix Plus, API %llu.%llu.%llu through remixplus_api.cpp); NUMOS sky %s",
+           x ? x->version >> 48 : 0ull, x ? (x->version >> 16) & 0xFFFFFFFFull : 0ull, x ? x->version & 0xFFFFull : 0ull, g_numos
            ? L"on: the sun, weather and fog go to rtx.atmosphere.* / rtx.weather.*, no proxy sun light"
            : L"off (rtx.skyMode is not 1): the proxy's own sun and haze as on Remix 1.5.2");
+      if (x)
+        clog(L"Remix API through the bridge: retained instances %s, batched meshes %s, D3D9 texture import %s, camera %s, "
+             L"materials %s, per-frame instances %s", x->createRetained && x->drawRetained ? L"yes" : L"NO",
+             x->createMeshBatched ? L"yes" : L"NO", x->importD3D9Texture ? L"yes" : L"NO", x->setupCamera ? L"yes" : L"NO",
+             x->createMaterial ? L"yes" : L"NO", x->drawInstance ? L"yes" : L"NO");
     }
   } else if (g_apiOk) clog(L"sun: Remix API ready");
   if (g_apiOk) return;
