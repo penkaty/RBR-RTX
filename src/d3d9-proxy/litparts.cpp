@@ -48,17 +48,23 @@ constexpr unsigned kMaxPrims = 4000, kSettle = 12, kSwitchWindow = 60;
 // with the sun up (user 2026-10-30: "too dim to be noticed in the daytime, good at night").
 // brake disc = a brake part that moves with a wheel, its own glow since 2026-11-01 (user: lamp emissives separate from the
 // discs, lamps 75 % dimmer; the discs and the brake lenses shared one material per car atlas until then).
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kKinds = 6 };
-const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day", L"brake disc" };
+// A brake disc has kDiscLevels glow kinds, one per heat step (kDisc .. kDisc + kDiscLevels - 1; a twin and a material each).
+constexpr int kDiscLevels = 6;
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kKinds = kDisc + kDiscLevels };
+const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day", L"brake disc heat 1/6",
+                                              L"brake disc heat 2/6", L"brake disc heat 3/6", L"brake disc heat 4/6",
+                                              L"brake disc heat 5/6", L"brake disc heat 6/6" };
 
 struct Cfg {
   bool enabled = true;
-  float glow[kKinds] = { 3.0f, 5.0f, 3.75f, 1.5f, 30.0f, 12.0f };
+  float glow[kKinds] = { 3.0f, 5.0f, 3.75f, 1.5f, 30.0f };   // the disc steps are filled in by load_cfg
   float dayAbove = 5.0f;                                 // sun height (degrees) from which lamp lenses use the day glow
-  // Brake discs (user 2026-10-30: "the emissives of the BRAKE DISCS ... seemed to glow constantly"): a brake part drawn
-  // with another matrix than the body's moves with a wheel - a disc - and glows only after the brake has been held
-  // this long. Brake lamp lenses (drawn with the body's matrix) light at once.
-  float discDelay = 1.5f;
+  // Brake discs (user 2026-10-30: "the emissives of the BRAKE DISCS ... seemed to glow constantly"; 2026-11-02: "lights
+  // too often, keeps warmth between brakings, starts WAY too intense and bluish"): a brake part drawn with another matrix
+  // than the body's moves with a wheel - a disc. Brake lamp lenses (drawn with the body's matrix) light at once. A disc
+  // has a heat: braking (pedal x speed) raises it, it cools with time and faster with speed (air), and it glows only above
+  // discStart, dull red first, orange at the top, in kDiscLevels steps up to discGlow (the emissive intensity at heat 1).
+  float discGlow = 3.0f, discRate = 0.04f, discCool = 45.0f, discStart = 0.35f, discFull = 1.0f;
 } g_cfg;
 
 // Evidence comes only from clean switches (switch_seen): one signal flips, the others stay settled the same, and the
@@ -77,6 +83,7 @@ struct Part {
   unsigned prims = 0;
   unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
   bool disc() const { return offBody >= 3; }             // turned against the body (a lens never is): a brake disc
+  bool discQueued = false;                               // its heat steps are on their way to the generated mod
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
 unsigned g_frame = 0;
@@ -84,7 +91,11 @@ unsigned g_carDrawsThisFrame = 0;
 std::vector<uint64_t> g_drawn;                           // this frame's part keys
 struct DrawnAt { uint64_t key; float m[12]; };            // the draw's matrix rows 0-2 (axes)
 std::vector<DrawnAt> g_drawnAt;                          // this frame's lit-part draws and where (matrix row 3)
-ULONGLONG g_brakeSince = 0;                              // when the brake came on (0 = off)
+float g_heat = 0.0f;                                     // brake disc heat (0 cold, 1 full glow, more is capped by the glow only)
+int g_discLevel = 0;                                     // glow step now (0 = none, 1..kDiscLevels)
+float g_kmh = 0.0f;                                      // car speed, smoothed
+float g_lastPos[3] = {};
+ULONGLONG g_heatTick = 0;                                // last heat update (0 = none yet)
 float g_sunEl = 90.0f;                                   // sun height at the last Present
 struct Side { bool valid = false; unsigned frame = 0; int st[kSignals] = {}; std::vector<uint64_t> keys; };
 Side g_side[kSignals];                                   // per signal: the last judged frame with it settled
@@ -153,9 +164,14 @@ void load_cfg() {
   c.glow[kReverse] = std::clamp(f(L"reverse_glow", c.glow[kReverse]), 0.0f, 10000.0f);
   c.glow[kTail] = std::clamp(f(L"tail_glow", c.glow[kTail]), 0.0f, 10000.0f);
   c.glow[kLampsDay] = std::clamp(f(L"lamp_glow_day", c.glow[kLampsDay]), 0.0f, 10000.0f);
-  c.glow[kDisc] = std::clamp(f(L"brake_disc_glow", c.glow[kDisc]), 0.0f, 10000.0f);
+  c.discGlow = std::clamp(f(L"brake_disc_glow", c.discGlow), 0.0f, 10000.0f);
+  c.discRate = std::clamp(f(L"brake_disc_heat_rate", c.discRate), 0.0f, 10.0f);
+  c.discCool = std::clamp(f(L"brake_disc_cool_seconds", c.discCool), 1.0f, 3600.0f);
+  c.discStart = std::clamp(f(L"brake_disc_glow_start", c.discStart), 0.0f, 5.0f);
+  c.discFull = std::clamp(f(L"brake_disc_glow_full", c.discFull), c.discStart + 0.05f, 6.0f);
+  for (int i = 0; i < kDiscLevels; ++i)                  // step i of kDiscLevels: a little over linear, so the first steps stay dull
+    c.glow[kDisc + i] = c.discGlow * std::pow(static_cast<float>(i + 1) / kDiscLevels, 1.4f);
   c.dayAbove = f(L"lamp_glow_day_above_sun", c.dayAbove);
-  c.discDelay = std::clamp(f(L"brake_disc_delay", c.discDelay), 0.0f, 60.0f);
   g_cfg = c;
 }
 
@@ -201,9 +217,16 @@ std::string material_for(const Entry& e) {
       "                    colorSpace = \"auto\"\n"
       "                )\n"
       "                float inputs:emissive_intensity = " + glow + "\n";
+  std::string in2 = in;
+  if (e.signal >= kDisc) {                               // heat colour over the atlas's own: dull red at the first step, orange at the last
+    const float t = static_cast<float>(e.signal - kDisc) / (kDiscLevels - 1);
+    char col[120];
+    sprintf_s(col, "                color3f inputs:emissive_color_constant = (1, %.3f, %.3f)\n", 0.10f + 0.32f * t, 0.02f + 0.07f * t);
+    in2 += col;
+  }
   char c[96];
   sprintf_s(c, "lit car part (%ls), atlas %016llX:", kSignalName[e.signal], static_cast<unsigned long long>(e.src));
-  return rbrrtx_genmod_material(e.twin, std::string(c) + " " + a, in);
+  return rbrrtx_genmod_material(e.twin, std::string(c) + " " + a, in2);
 }
 
 // Section "litparts" from every entry, and the cache file. Caller holds g_mx.
@@ -435,7 +458,60 @@ void judge_frame(const int st[kSignals]) {
   g_drawn.clear();
 }
 
+// Brake disc heat, per Present (user 2026-11-02): the pedal x speed heats, time and the air flow cool. The glow is a step of
+// the heat above discStart (kDiscLevels steps; each is a twin and a material of its own, so no material changes while playing).
+void update_heat(float brake) {
+  float r[20];
+  const ULONGLONG now = GetTickCount64();
+  if (g_cfg.discGlow <= 0.0f || !rbrrtx_player_car_raw(r)) { g_heatTick = 0; g_discLevel = 0; return; }
+  if (g_heatTick && now - g_heatTick < 20) return;       // GetTickCount64 steps ~16 ms: a speed from two close ticks is noise
+  const float* pos = r + 16;
+  if (g_heatTick) {
+    const float real = static_cast<float>(now - g_heatTick) * 0.001f;
+    const float d = std::sqrt((pos[0] - g_lastPos[0]) * (pos[0] - g_lastPos[0]) + (pos[1] - g_lastPos[1]) * (pos[1] - g_lastPos[1]) +
+                              (pos[2] - g_lastPos[2]) * (pos[2] - g_lastPos[2]));
+    if (real < 0.5f && d / real < 100.0f) g_kmh += (d / real * 3.6f - g_kmh) * 0.3f;   // a teleport or a long gap is no speed
+    const float dt = (std::min)(real, 0.1f);
+    const float v = g_kmh / 100.0f;
+    g_heat += brake * v * g_cfg.discRate * dt;
+    g_heat -= g_heat * (1.0f + v) / g_cfg.discCool * dt;
+    g_heat = std::clamp(g_heat, 0.0f, 3.0f);
+  }
+  g_heatTick = now;
+  std::memcpy(g_lastPos, pos, sizeof(g_lastPos));
+  const float frac = std::clamp((g_heat - g_cfg.discStart) / (g_cfg.discFull - g_cfg.discStart), 0.0f, 1.0f);
+  const int level = frac <= (g_discLevel ? 0.0f : 0.02f) ? 0 : std::clamp(static_cast<int>(std::ceil(frac * kDiscLevels - 0.001f)), 1, kDiscLevels);
+  if ((level > 0) != (g_discLevel > 0))
+    llog(L"lit parts: brake discs %s (heat %.2f, %.0f km/h)", level ? L"start to glow" : L"cooled below the glow", g_heat, g_kmh);
+  g_discLevel = level;
+}
+
+// A brake disc part seen: all its heat steps are made known to the generated mod now, not at the first hot moment (a twin
+// shows as noise until Remix has loaded its material).
+void queue_disc_levels(IDirect3DDevice9* dev, Part& p) {
+  IDirect3DBaseTexture9* t0 = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t0);
+  if (!t0) return;
+  const uint64_t src = rbrrtx_texture_hash(t0);
+  D3DSURFACE_DESC d = {};
+  const bool is2d = t0->lpVtbl->GetType(t0) == D3DRTYPE_TEXTURE &&
+                    SUCCEEDED(reinterpret_cast<IDirect3DTexture9*>(t0)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(t0), 0, &d));
+  t0->lpVtbl->Release(t0);
+  if (!src || !is2d) return;
+  std::lock_guard<std::mutex> g(g_mx);
+  for (int k = kDisc; k < kDisc + kDiscLevels; ++k) {
+    const uint64_t th = twin_hash(src, k);
+    bool queued = g_entries.count(th) != 0;
+    for (const Pending& q : g_pending) queued = queued || q.twin == th;
+    if (!queued) g_pending.push_back({ th, src, k, car_dir(), d.Width, d.Height });
+  }
+  p.discQueued = true;
+}
+
 void forget_car() {
+  g_heat = 0.0f;
+  g_discLevel = 0;
+  g_heatTick = 0;
   g_parts.clear();
   g_drawn.clear();
   g_drawnAt.clear();
@@ -465,9 +541,10 @@ void rbrrtx_litparts_startup() {
   }
   if (!g_cfg.enabled) g_entries.clear();
   publish_locked();
-  llog(L"lit parts: %s, glow brake lens %.1f, discs %.1f (after %.1f s) / lamps %.1f, by day %.1f (sun from %.0f deg) / reverse %.1f / "
+  llog(L"lit parts: %s, glow brake lens %.1f, discs up to %.1f (heat rate %.3f/s at 100 km/h, cooling %.0f s, glow from heat %.2f to %.2f) "
+       L"/ lamps %.1f, by day %.1f (sun from %.0f deg) / reverse %.1f / "
        L"tail (unlit brake lens, lamps on) %.1f; %zu known from earlier runs", g_cfg.enabled ? L"on" : L"OFF (materials.ini)",
-       g_cfg.glow[kBrake], g_cfg.glow[kDisc], g_cfg.discDelay, g_cfg.glow[kLamps], g_cfg.glow[kLampsDay], g_cfg.dayAbove, g_cfg.glow[kReverse],
+       g_cfg.glow[kBrake], g_cfg.discGlow, g_cfg.discRate, g_cfg.discCool, g_cfg.discStart, g_cfg.discFull, g_cfg.glow[kLamps], g_cfg.glow[kLampsDay], g_cfg.dayAbove, g_cfg.glow[kReverse],
        g_cfg.glow[kTail], g_entries.size());
 }
 
@@ -496,7 +573,7 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
   int st[kSignals];
   for (int i = 0; i < kSignals; ++i) st[i] = before[i] == g_state[i] ? g_state[i] : 0;
   judge_frame(st);
-  g_brakeSince = raw[kBrake] > 0 ? (g_brakeSince ? g_brakeSince : GetTickCount64()) : 0;
+  update_heat(br ? brake : 0.0f);
   g_sunEl = rbrrtx_sun_shown_elevation();
   float body[16];                                      // lens or disc: drawn with the body's matrix or not
   if (!g_drawnAt.empty() && rbrrtx_car_body_draw(body))
@@ -515,7 +592,7 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
       if (turn < 1e-3f) ++p.onBody; else ++p.offBody;
       if (p.disc() != wasDisc && (p.mask & (1u << kBrake)))
         llog(L"lit parts: a %u-triangle brake part is %s", p.prims, p.disc()
-             ? L"drawn off the body (moves with a wheel): a brake disc, it glows after the brake is held a while"
+             ? L"drawn off the body (moves with a wheel): a brake disc, it glows by its heat"
              : L"drawn with the body: a brake lamp lens, it lights at once");
     }
   g_drawnAt.clear();
@@ -558,16 +635,20 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
     g_drawnAt.push_back({ key, { world[0], world[1], world[2], world[3], world[4], world[5], world[6], world[7],
                                  world[8], world[9], world[10], world[11] } });
   // Which glow: the signal that shows it now (the brake over the lamps on a shared tail lens), else the unlit brake
-  // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states. A brake disc only once the brake
-  // has been held discDelay seconds (until then it is drawn as the game textures it).
-  const bool discHot = g_brakeSince && GetTickCount64() - g_brakeSince >= static_cast<ULONGLONG>(g_cfg.discDelay * 1000.0f);
-  if ((p.mask & (1u << kBrake)) && p.disc() && !discHot) return nullptr;
+  // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states. A brake disc glows by its heat
+  // (update_heat; until it is hot it is drawn as the game textures it).
+  const bool isDisc = (p.mask & (1u << kBrake)) && p.disc();
+  if (isDisc) {
+    if (g_cfg.discGlow <= 0.0f) return nullptr;
+    if (!p.discQueued) queue_disc_levels(dev, p);
+    if (!g_discLevel) return nullptr;
+  }
   int kind = -1;
   for (int i : { kBrake, kReverse, kLamps }) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] > 0) kind = i;
   if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0) kind = kTail;
   if (kind == kLamps && g_sunEl >= g_cfg.dayAbove) kind = kLampsDay;
-  if (kind == kBrake && p.disc()) kind = kDisc;
+  if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
@@ -581,14 +662,17 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   uint64_t th = 0;
   IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
   if (!twin) return nullptr;
+  bool published = true;
   {
     std::lock_guard<std::mutex> g(g_mx);
     if (!g_entries.count(th)) {
+      published = false;
       bool queued = false;
       for (const Pending& q : g_pending) queued = queued || q.twin == th;
       if (!queued) g_pending.push_back({ th, src, kind, car_dir(), d.Width, d.Height });
     }
   }
+  if (kind >= kDisc && !published) return nullptr;     // a disc waits for its material (no noise-textured disc)
   ++g_swapped;
   return twin;
 }
