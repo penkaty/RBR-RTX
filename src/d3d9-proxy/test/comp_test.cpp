@@ -9,6 +9,7 @@
 // name in the constant table, column_major registers) and a moved camera. Needs d3dcompiler_47.dll (Windows has it).
 // A seventh frame moves camera, terrain and car ~3 km from the origin (Peklo Snow R): the world matrix derived from
 // c0 x VP^-1 is off by metres there, RBR's own c8 must be used (2026-10-30: lamps jumping around the car).
+// An eighth frame puts a bonnet camera on that car: c8 must still be taken with points within 1 m of the camera plane.
 #define WIN32_LEAN_AND_MEAN
 #define CINTERFACE
 #include <windows.h>
@@ -162,7 +163,15 @@ int main() {
   float rows[4][4];
 
   int failures = 0;
-  for (int frame = 0; frame < 7; ++frame) {
+  for (int frame = 0; frame < 8; ++frame) {
+    if (frame == 7) {                         // bonnet camera on the same far car (Osli, run 20261101-035724): the
+                                              // car's origin 0.6 m behind the camera, its forward axis 0.4 m ahead
+      const float fw[3] = { world._31, world._32, world._33 };
+      for (int i = 0; i < 3; ++i) { eye[i] = (&world._41)[i] + fw[i] * 0.6f; at[i] = eye[i] + fw[i] * 10.0f; }
+      eye[1] += 0.9f; at[1] += 0.9f;
+      view = look_at_lh(eye, at, up);
+      proj = perspective_lh(0.98f, 16.0f / 9.0f, 0.15f, 100000.0f);
+    }
     if (frame == 6) {                         // far from the origin like Peklo Snow R (-2900, 195, 3100), TV camera;
                                               // frame 5 is a plain one: right after BTB the proxy takes c8 anyway
       const float shift[3] = { -3020.0f, 165.0f, 3290.0f };   // 80 m from the car, near plane 0.11 (P._43 -0.110)
@@ -280,8 +289,12 @@ int main() {
     to_rows(mul(mul(world, view), proj), rows);
     // Frame 6: RBR's float W*V*P rounds differently from ours; 2-3 ulps on c0 (relative 3e-7) are what its ~10^4
     // ill-conditioned depth row (P._33 ~ 1.0001) turns into metres in c0 x VP^-1 (in game 2.3-2.9 at 3 km).
-    if (frame == 6)
+    if (frame >= 6)
       for (int i = 0; i < 4; ++i) for (int k = 0; k < 4; ++k) rows[i][k] *= 1.0f + (((i + k) & 1) ? 3e-7f : -3e-7f);
+    // Frame 7: the translation is W's ~2600 minus the camera's ~2600, cancelled in float: a few ulps (2.4e-4 at that
+    // range) of absolute error, which x / w turns into 0.008 NDC for points 0.4 m ahead of the camera (refused in game).
+    if (frame == 7)
+      for (int i = 0; i < 4; ++i) rows[i][3] += (i & 1) ? 1e-3f : -1e-3f;
     dev->lpVtbl->SetVertexShaderConstantF(dev, 0, &rows[0][0], 4);
     if (frame == 6) {                       // what the derived W = c0 x VP^-1 would be off by here (double inverse)
       float c0[4][4], vpr[4][4];

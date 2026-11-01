@@ -2404,7 +2404,10 @@ bool before_draw(IDirect3DDevice9* dev) {
         a[j] = fwd.m[12 + j] + (k < 3 ? fwd.m[k * 4 + j] : 0.0);
         b[j] = c0.m[12 + j] + (k < 3 ? c0.m[k * 4 + j] : 0.0);
       }
-      if (a[3] < 1e-3 || b[3] < 1e-3) {               // behind the camera: compare clip space relative to its size
+      // Behind the camera or within 1 m of it: compare clip space relative to its size. Near the camera plane x / w
+      // magnifies c0's float rounding (bonnet/cockpit views, run 20261101-035724 Osli: 2 car draws a frame refused at
+      // 0.008 NDC, their derived W up to 4.35 m off, the body match lost: lamps flipped between body and prediction).
+      if (a[3] < 1.0 || b[3] < 1.0) {
         const double m = (std::max)({ 1.0, std::fabs(b[0]), std::fabs(b[1]), std::fabs(b[3]) });
         scr = (std::max)(scr, (std::max)({ std::fabs(a[0] - b[0]), std::fabs(a[1] - b[1]), std::fabs(a[3] - b[3]) }) / m);
         continue;
@@ -3670,8 +3673,12 @@ void cull_frame_tick() { ++g_csFrames; }
 bool cull_toggle() { g_cull.enabled = !g_cull.enabled; for (auto& e : g_cullCache) e.second.culled = false; return g_cull.enabled; }
 
 // True = do not draw. Counts statistics even with culling off, so the log shows what it would do.
+// Only with this frame's camera (g_frameCam): the camera comes from the frame's first world-space draw, which runs after
+// this test. With an older camera (Toikkala/Toivonvaara, run 20261024-000533: the menu's camera at (4, -1, 63) kept
+// while the stage sat at (2838, 139, 1049)) every world-space draw was culled as off-screen before it could renew the
+// camera, so it never renewed: 827 of 849 draws culled for the whole stage, "only ~15 draws, unknown shaders".
 bool cull_draw(IDirect3DDevice9* dev) {
-  if (!g_primaryRT || !g_enabled || !g_haveCam || !g_curVS || g_drawNumVert == 0 || !cull_class()) return false;
+  if (!g_primaryRT || !g_enabled || !g_frameCam || !g_curVS || g_drawNumVert == 0 || !cull_class()) return false;
   CullEntry* e = cull_entry(dev);
   if (!e) return false;
   float c[3] = { e->c[0], e->c[1], e->c[2] };
