@@ -20,8 +20,9 @@ namespace {
 bool g_on = true, g_loaded = false;
 float g_base[3] = { 0.0f, 0.4f, 0.7f };               // start value for RBR's Dry / Damp / Wet track condition
 float g_rainTarget = 1.0f, g_rainMin = 2.0f, g_dryMin = 15.0f, g_headStart = 1.0f, g_snowTarget = -1.0f;
-std::string g_option = "rtx.wet.globalWetness", g_rainOption;
+std::string g_option = "rtx.wet.globalWetness", g_rainOption, g_dropsOption;
 float g_w = 0.0f, g_sent = -1.0f, g_rainSent = -1.0f;
+int g_dropsSent = -1;
 int g_track = -1, g_cond = -1;
 LARGE_INTEGER g_last = {}, g_qpf = {};
 unsigned g_frames = 0;
@@ -55,7 +56,8 @@ void load() {
   g_headStart = (std::max)(0.0f, ini_f(path, L"rain_head_start_minutes", g_headStart));
   g_snowTarget = ini_f(path, L"snow_target", g_snowTarget);
   g_option = ini_s(path, L"option", "rtx.wet.globalWetness");
-  g_rainOption = ini_s(path, L"rain_option", "");
+  g_rainOption = ini_s(path, L"rain_option", "rtx.wet.rainIntensity");
+  g_dropsOption = ini_s(path, L"raindrops_option", "rtx.wet.raindrops");
   QueryPerformanceFrequency(&g_qpf);
   rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness (%s): %s, start dry %.2f damp %.2f wet %.2f, rain -> %.2f (%.1f min), dries in "
                 L"%.1f min, head start %.1f min, -> %S%s%S", path, g_on ? L"on" : L"OFF", g_base[0], g_base[1], g_base[2],
@@ -126,10 +128,14 @@ void rbrrtx_wetness_frame(bool hold) {
     sprintf_s(v, "%.3f", g_w);
     if (rbrrtx_remix_set(g_option.c_str(), v)) g_sent = g_w;
   }
-  if (!g_rainOption.empty() && std::fabs(rain - g_rainSent) > 0.01f) {
+  const float drops = snow ? 0.0f : rain;              // raindrop rings on puddles and wet ground while it rains
+  if (!g_rainOption.empty() && std::fabs(drops - g_rainSent) > 0.01f) {
     char v[32];
-    sprintf_s(v, "%.2f", rain);
-    if (rbrrtx_remix_set(g_rainOption.c_str(), v)) g_rainSent = rain;
+    sprintf_s(v, "%.2f", drops);
+    if (rbrrtx_remix_set(g_rainOption.c_str(), v)) g_rainSent = drops;
+  }
+  if (!g_dropsOption.empty() && (drops > 0.01f ? 1 : 0) != g_dropsSent) {
+    if (rbrrtx_remix_set(g_dropsOption.c_str(), drops > 0.01f ? "True" : "False")) g_dropsSent = drops > 0.01f ? 1 : 0;
   }
 }
 
