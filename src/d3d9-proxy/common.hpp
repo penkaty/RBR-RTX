@@ -151,6 +151,8 @@ void rbrrtx_headlights_destroy();
 int rbrrtx_headlights_history_frames();                          // NUMOS froxel history while car lamps are lit (0 = none)
 bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
 unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of the backfire sprite to watch for (0 = none now)
+unsigned long long rbrrtx_headlights_halo_texture();            // Remix hash of the lamp halo sprite (light.dds), 0 = leave it
+void* rbrrtx_headlights_halo_twin(void* device);               // its thinned twin texture to bind (nullptr = none)
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
 void rbrrtx_headlights_write_lit_mod();                         // before Remix starts: lit lamp textures made emissive (genmod)
 int rbrrtx_headlights_game_lamps();                             // the game's lamp switch as last sent: 1 on, 0 off, -1 unknown

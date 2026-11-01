@@ -117,6 +117,13 @@ struct Settings {
   float popRadiance[3] = { 53460.0f, 24057.0f, 6415.0f };   // orange (flame), point light; the high beams before their -15 % (user 2026-10-23)
   float popRadius = 0.08f, popHold = 0.06f, popOut = 0.12f;   // m, s after the last pop draw, m beyond the pipe tip
   unsigned long long popTexture = 0x93E4994710A5380BULL;
+  // Lamp halo sprite (user 2026-11-02: the glow around a lit lamp is too big and strong and the lamp mesh clips through it):
+  // Cars\*\textures\light.dds, a 64x64 white disc with a soft alpha edge that RBR draws additive for every lamp, is drawn
+  // as a generated twin with a steeper edge. core = the part of the radius kept as the game has it, scale = how much of the
+  // rest is left, falloff = how steeply that fades (exponent).
+  bool halo = true;
+  unsigned long long haloTexture = 0x660BCAB491C6BCCAULL;
+  float haloCore = 0.25f, haloScale = 0.6f, haloFalloff = 2.0f;
   bool gameLamps = true;                               // L also switches the game's own lit lamp meshes / glow sprites
   // Pose (rewrite 2026-10-30, see "Pose of the lamps" below): the drawn car's lag behind RBR's car object, seconds;
   // < 0 = measured while driving (headlights.ini pose_lag = auto).
@@ -125,6 +132,7 @@ struct Settings {
   // Lamp type (lamp_photometry): what the head lamps and brights are, for the log.
   std::wstring lampNote = L"custom (radiance keys)";
 } g_cfg;
+bool g_haloStale = true;                               // load_settings ran: rebuild the halo twin on its next draw
 
 // The player's car slot (headlights_frame_end), for the lamp type by year.
 int g_carSlot = -1;
@@ -368,6 +376,13 @@ void load_settings() {
     wchar_t tex[32] = {};
     ini_str(L"backfire_texture", tex, 32, path);
     if (tex[0]) s.popTexture = wcstoull(tex, nullptr, 16);
+    s.halo = ini_float(path, L"halo", 1.0f) != 0.0f;
+    wchar_t ht[32] = {};
+    ini_str(L"halo_texture", ht, 32, path);
+    if (ht[0]) s.haloTexture = wcstoull(ht, nullptr, 16);
+    s.haloCore = std::clamp(ini_float(path, L"halo_core", s.haloCore), 0.0f, 0.95f);
+    s.haloScale = std::clamp(ini_float(path, L"halo_scale", s.haloScale), 0.05f, 1.0f);
+    s.haloFalloff = std::clamp(ini_float(path, L"halo_falloff", s.haloFalloff), 0.5f, 8.0f);
     s.gameLamps = ini_float(path, L"game_lamps", 1.0f) != 0.0f;
     wchar_t lag[32] = {};
     ini_str(L"pose_lag", lag, 32, path);
@@ -384,7 +399,10 @@ void load_settings() {
     lamp_photometry(path, s);                          // head lamps and brights: type, colour, candela
   }
   g_cfg = s;
+  g_haloStale = true;                                  // the twin is made again from the new settings
   hlog(L"headlights: lamps %s", s.lampNote.c_str());
+  hlog(L"headlights: lamp halo sprite %016llX %s (core %.2f, scale %.2f, falloff %.1f)", s.haloTexture, s.halo ? L"thinned" : L"as the game draws it",
+       s.haloCore, s.haloScale, s.haloFalloff);
   if (!g_carSection.empty()) {
     wchar_t keys[16] = {};
     const bool own = GetPrivateProfileSectionW(g_carSection.c_str(), keys, 16, path) > 0;
@@ -1983,6 +2001,62 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   }
   g_autoWant = want;
   sync_game_lamps();
+}
+
+// ---- lamp halo twin: RBR's light.dds (a white disc, alpha 255 in the middle, 0 at the edge; measured from the DXT3 dump of
+// 660BCAB491C6BCCA) redrawn with the same middle and a steeper, smaller edge. Same use as the lit-parts twins: bound for
+// the draws of that texture only, Remix sees an ordinary texture (no tag of the original hash is needed).
+namespace {
+
+IDirect3DTexture9* g_haloTex = nullptr;
+
+float halo_original(float rho) {                       // the game's alpha at radius rho (1 = the texture's edge)
+  static const float t[9] = { 1.0f, 1.0f, 0.933f, 0.83f, 0.63f, 0.40f, 0.165f, 0.03f, 0.0f };
+  if (rho >= 1.0f) return 0.0f;
+  const float x = rho * 8.0f;
+  const int i = static_cast<int>(x);
+  return t[i] + (t[i + 1] - t[i]) * (x - static_cast<float>(i));
+}
+
+float halo_alpha(float rho) {
+  const float a = halo_original(rho);
+  if (rho <= g_cfg.haloCore) return a;
+  const float t = (rho - g_cfg.haloCore) / (1.0f - g_cfg.haloCore);
+  if (t >= g_cfg.haloScale) return 0.0f;
+  return a * std::pow(1.0f - t / g_cfg.haloScale, g_cfg.haloFalloff);
+}
+
+}  // namespace
+
+unsigned long long rbrrtx_headlights_halo_texture() {
+  return g_cfg.enabled && g_cfg.halo ? g_cfg.haloTexture : 0;
+}
+
+void* rbrrtx_headlights_halo_twin(void* device) {
+  if (!g_haloStale) return g_haloTex;                  // (nullptr if the last build failed: not retried until the settings change)
+  if (g_haloTex) { g_haloTex->lpVtbl->Release(g_haloTex); g_haloTex = nullptr; }
+  g_haloStale = false;
+  IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+  if (FAILED(dev->lpVtbl->CreateTexture(dev, 64, 64, 7, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_haloTex, nullptr)) || !g_haloTex) {
+    g_haloTex = nullptr;
+    return nullptr;
+  }
+  for (UINT l = 0; l < 7; ++l) {
+    D3DLOCKED_RECT lr = {};
+    if (FAILED(g_haloTex->lpVtbl->LockRect(g_haloTex, l, &lr, nullptr, 0)) || !lr.pBits) continue;
+    const int n = 64 >> l;
+    for (int y = 0; y < n; ++y) {
+      uint32_t* row = reinterpret_cast<uint32_t*>(static_cast<char*>(lr.pBits) + y * lr.Pitch);
+      for (int x = 0; x < n; ++x) {
+        const float dx = (x + 0.5f) / n - 0.5f, dy = (y + 0.5f) / n - 0.5f;
+        const float a = std::clamp(halo_alpha(2.0f * std::sqrt(dx * dx + dy * dy)), 0.0f, 1.0f);
+        row[x] = (static_cast<uint32_t>(a * 255.0f + 0.5f) << 24) | 0x00FFFAFFu;   // the game's white (255, 250, 255)
+      }
+    }
+    g_haloTex->lpVtbl->UnlockRect(g_haloTex, l);
+  }
+  hlog(L"headlights: lamp halo twin built (core %.2f, scale %.2f, falloff %.1f)", g_cfg.haloCore, g_cfg.haloScale, g_cfg.haloFalloff);
+  return g_haloTex;
 }
 
 unsigned long long rbrrtx_headlights_pop_texture() {

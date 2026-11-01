@@ -5029,6 +5029,20 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     IDirect3DBaseTexture9* ft = nullptr;
     if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &ft)) && ft) { ft->lpVtbl->Release(ft); rbrrtx_foliage_draw(ft); }
   }
+  if (!litSwap && g_primaryRT && g_enabled) {                // the lamp halo sprite (headlights.ini halo_*): a thinner twin
+    if (const unsigned long long halo = rbrrtx_headlights_halo_texture()) {
+      IDirect3DBaseTexture9* ht = nullptr;
+      if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &ht)) && ht) {
+        if (rbrrtx_texture_hash(ht) == halo)
+          if (void* twin = rbrrtx_headlights_halo_twin(dev)) {
+            litPrev = ht;                                   // restored (and released) after the draw
+            ht = nullptr;
+            litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(twin)));
+          }
+        if (ht) ht->lpVtbl->Release(ht);
+      }
+    }
+  }
   if (lampGlow && !litSwap) {                                // a marked lamp's glass glows (worldlights.cpp): its twin texture
     dev->lpVtbl->GetTexture(dev, 0, &litPrev);
     litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(lampGlow)));
