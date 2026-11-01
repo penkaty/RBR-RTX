@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <array>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -2863,7 +2864,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (g_enabled && g_apiOk) rbrrtx_headlights_refine();   // no UI trigger this frame: lamps before Present
   if (g_apiOk) {                                            // generated mod: lit car parts, foliage (Remix reloads it)
     rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps());
-    rbrrtx_foliage_frame();
+    rbrrtx_foliage_frame(g_inMenu);
     rbrrtx_genmod_tick();
   }
   if (g_sweepDumpFrames && --g_sweepDumpFrames == 0) sweep_dump_end();
@@ -3754,6 +3755,87 @@ bool draw_world_sphere(IDirect3DDevice9* dev, float c[3], float* r, bool force) 
   return true;
 }
 
+// materials.ini [skip_draws] textures = <hash>, ...: draws never made (user 2026-11-01: the game's sun flare
+// 40AA313D3EE0E9B6, a screen-space additive sprite at the sun; only ignored in Remix it drew as a square).
+std::unordered_set<unsigned long long> g_skipTex;
+unsigned g_skipTexDraws = 0;
+
+void load_skip_textures() {
+  wchar_t path[MAX_PATH * 2], v[2048] = {};
+  rbrrtx_config_path(L"RBRRTX_MATERIALS", L"materials.ini", path, MAX_PATH * 2);
+  GetPrivateProfileStringW(L"skip_draws", L"textures", L"", v, 2048, path);
+  for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
+    if (const unsigned long long h = _wcstoui64(t, nullptr, 16)) g_skipTex.insert(h);
+  clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws])", g_skipTex.size());
+}
+
+// A lamp inside an atlas (lights.ini uv = ...): the centres of the groups of this draw's vertices whose TEXCOORD0 lies in
+// the rectangle (stream 0 only), in the draw's own space; cached per buffer range like cull_entry.
+std::unordered_map<uint64_t, std::vector<std::array<float, 3>>> g_uvLampCache;
+
+const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, const float rect[4], unsigned long long tex) {
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT offset = 0, stride = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) return nullptr;
+  const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) * 0x9E3779B97F4A7C15ull) ^
+                       (static_cast<uint64_t>(g_vbGen[vb]) << 56) ^ (static_cast<uint64_t>(offset) << 40) ^
+                       (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert ^ (tex * 0xC2B2AE3D27D4EB4Full);
+  auto it = g_uvLampCache.find(key);
+  if (it != g_uvLampCache.end()) { vb->lpVtbl->Release(vb); return &it->second; }
+  std::vector<std::array<float, 3>>& out = g_uvLampCache[key];
+  int posOff = -1, uvOff = -1, uvType = -1;
+  IDirect3DVertexDeclaration9* decl = nullptr;
+  if (SUCCEEDED(dev->lpVtbl->GetVertexDeclaration(dev, &decl)) && decl) {
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+    UINT n = MAXD3DDECLLENGTH + 1;
+    if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n)))
+      for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
+        if (el[i].Stream != 0 || el[i].UsageIndex != 0) continue;
+        if (el[i].Usage == D3DDECLUSAGE_POSITION && (el[i].Type == D3DDECLTYPE_FLOAT3 || el[i].Type == D3DDECLTYPE_FLOAT4)) posOff = el[i].Offset;
+        if (el[i].Usage == D3DDECLUSAGE_TEXCOORD) { uvOff = el[i].Offset; uvType = el[i].Type; }
+      }
+    decl->lpVtbl->Release(decl);
+  }
+  D3DVERTEXBUFFER_DESC desc = {};
+  void* data = nullptr;
+  const UINT start = offset + g_drawFirstVert * stride, bytes = g_drawNumVert * stride;
+  if (posOff < 0 || uvOff < 0 || (uvType != D3DDECLTYPE_FLOAT2 && uvType != D3DDECLTYPE_FLOAT16_2) || stride < 12 ||
+      FAILED(vb->lpVtbl->GetDesc(vb, &desc)) || start + bytes > desc.Size ||
+      FAILED(vb->lpVtbl->Lock(vb, start, bytes, &data, D3DLOCK_READONLY)) || !data) {
+    vb->lpVtbl->Release(vb);
+    clog(L"world lights: texture %016llX: vertices not readable here (position %d, uv %d type %d)", tex, posOff, uvOff, uvType);
+    return &out;                                       // empty: tried once
+  }
+  auto half = [](uint16_t h) {                         // IEEE half -> float (no denormals needed for UVs)
+    const uint32_t e = (h >> 10) & 0x1F, m = h & 0x3FF, sgn = (h & 0x8000u) << 16;
+    const uint32_t f = e == 0 ? sgn : sgn | ((e + 112) << 23) | (m << 13);
+    float r; std::memcpy(&r, &f, 4); return r;
+  };
+  std::vector<std::array<float, 4>> groups;            // sum x, y, z, count
+  const uint8_t* p = static_cast<const uint8_t*>(data);
+  for (UINT i = 0; i < g_drawNumVert; ++i, p += stride) {
+    float uv[2];
+    if (uvType == D3DDECLTYPE_FLOAT2) std::memcpy(uv, p + uvOff, 8);
+    else { uint16_t h[2]; std::memcpy(h, p + uvOff, 4); uv[0] = half(h[0]); uv[1] = half(h[1]); }
+    const float u = uv[0] - std::floor(uv[0]), v = uv[1] - std::floor(uv[1]);   // tiled UVs: the atlas cell
+    if (u < rect[0] || u > rect[2] || v < rect[1] || v > rect[3]) continue;
+    float x[3];
+    std::memcpy(x, p + posOff, 12);
+    bool joined = false;
+    for (auto& g : groups) {
+      const float dx = g[0] / g[3] - x[0], dy = g[1] / g[3] - x[1], dz = g[2] / g[3] - x[2];
+      if (dx * dx + dy * dy + dz * dz < 1.5f * 1.5f) { g[0] += x[0]; g[1] += x[1]; g[2] += x[2]; g[3] += 1; joined = true; break; }
+    }
+    if (!joined && groups.size() < 64) groups.push_back({ x[0], x[1], x[2], 1.0f });
+  }
+  vb->lpVtbl->Unlock(vb);
+  vb->lpVtbl->Release(vb);
+  for (const auto& g : groups) out.push_back({ g[0] / g[3], g[1] / g[3], g[2] / g[3] });
+  clog(L"world lights: texture %016llX: %zu lamp(s) in a draw of %u vertices (uv %.3f %.3f - %.3f %.3f)", tex, out.size(),
+       g_drawNumVert, rect[0], rect[1], rect[2], rect[3]);
+  return &out;
+}
+
 // Lamp textures (worldlights.cpp): the lamp sits on this draw's bounding sphere.
 void world_light_draw(IDirect3DDevice9* dev) {
   if (!g_primaryRT || !g_frameCam || !g_curVS || !rbrrtx_world_lights_wanted()) return;
@@ -3762,6 +3844,21 @@ void world_light_draw(IDirect3DDevice9* dev) {
   const unsigned long long hx = rbrrtx_texture_hash(bt);
   bt->lpVtbl->Release(bt);
   if (!rbrrtx_world_lights_texture(hx)) return;
+  float rect[4];
+  if (rbrrtx_world_lights_uv(hx, rect)) {
+    if (!g_curInfo || g_drawNumVert == 0) return;
+    const auto* pts = uv_lamp_points(dev, rect, hx);
+    if (!pts) return;
+    const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
+    const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+    for (const auto& q : *pts) {
+      float c[3] = { q[0], q[1], q[2] };
+      if (!world)
+        for (int k = 0; k < 3; ++k) c[k] = q[0] * w.m[0][k] + q[1] * w.m[1][k] + q[2] * w.m[2][k] + w.m[3][k];
+      rbrrtx_world_lights_seen(hx, c, 0.0f, g_inMenu);
+    }
+    return;
+  }
   float c[3], r = 0.0f;
   if (draw_world_sphere(dev, c, &r, true)) rbrrtx_world_lights_seen(hx, c, r, g_inMenu);
 }
@@ -4283,6 +4380,14 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (midQuad) { ++g_midQuadSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"mid-scene quad"); return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"experiment (key K)"); return D3D_OK; }   // performance experiment (key K)
   if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
+  if (g_primaryRT && !g_skipTex.empty()) {                  // materials.ini [skip_draws]: never drawn (the game's sun flare)
+    IDirect3DBaseTexture9* t = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &t)) && t) {
+      const unsigned long long hx = rbrrtx_texture_hash(t);
+      t->lpVtbl->Release(t);
+      if (g_skipTex.count(hx)) { ++g_skipTexDraws; return D3D_OK; }
+    }
+  }
   // Rain/snow replaced by Remix particles (particles.cpp): the game's drops are not drawn (pools are 0 as well).
   if (g_primaryRT && rbrrtx_rain_cutting() && (!g_curVS || (g_curInfo && (g_curInfo->flags & SH_PARTICLE)))) {
     IDirect3DBaseTexture9* t = nullptr;
@@ -4559,6 +4664,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_world_lights_init(g_apiOk ? &g_api : nullptr);
+  load_skip_textures();
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");

@@ -8,6 +8,9 @@
 // (a lamp head drawn in two pieces). The lights shine while the sun shown (rbrrtx_sun_shown_elevation: stage sun, menu
 // sun, debug sun) stands below on_below_sun, fading in over fade_degrees; drawn ones only, at most max_lights nearest
 // the camera. Power in lumens (an LED street lamp 6,000-12,000 lm), colour as a temperature.
+// uv = u0, v0, u1, v1 (a lamp in a texture atlas, e.g. the main menu's lamp post, 04153DADDBE42CA1, drawn in batches
+// of swaying scenery 10-50 m across): instead of the draw's sphere, the vertices whose TEXCOORD0 falls in that
+// rectangle, grouped within 1.5 m, each group's centre (comp.cpp world_light_draw).
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
@@ -29,6 +32,8 @@ struct Kind {
   float offset[3] = {};
   float lumens = 8000.0f, kelvin = 3000.0f, radius = 0.15f, volumetric = 1.0f;
   int where = 0;                                       // 0 anywhere, 1 menu only, 2 stages only
+  bool hasUv = false;
+  float uv[4] = {};
 };
 struct Lamp {
   uint64_t hash = 0;
@@ -99,6 +104,9 @@ void load() {
     k.kelvin = ini_f(path, s, L"colour_temperature", k.kelvin);
     k.radius = (std::max)(0.01f, ini_f(path, s, L"radius", k.radius));
     k.volumetric = ini_f(path, s, L"volumetric", k.volumetric);
+    wchar_t u[96] = {};
+    GetPrivateProfileStringW(s, L"uv", L"", u, 96, path);
+    k.hasUv = u[0] && swscanf_s(u, L"%f , %f , %f , %f", &k.uv[0], &k.uv[1], &k.uv[2], &k.uv[3]) == 4;
     GetPrivateProfileStringW(s, L"where", L"any", a, 32, path);
     k.where = !_wcsicmp(a, L"menu") ? 1 : !_wcsicmp(a, L"stage") ? 2 : 0;
     // texture = one hash or several, comma separated
@@ -120,6 +128,13 @@ void rbrrtx_world_lights_init(const remixapi_Interface* api) {
 
 bool rbrrtx_world_lights_wanted() { return g_api && g_on && !g_kinds.empty(); }
 bool rbrrtx_world_lights_texture(unsigned long long hash) { return g_kinds.count(hash) != 0; }
+
+bool rbrrtx_world_lights_uv(unsigned long long hash, float rect[4]) {
+  const auto it = g_kinds.find(hash);
+  if (it == g_kinds.end() || !it->second.hasUv) return false;
+  std::copy(it->second.uv, it->second.uv + 4, rect);
+  return true;
+}
 
 // A draw with a lamp texture, its bounding sphere in world space.
 void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu) {

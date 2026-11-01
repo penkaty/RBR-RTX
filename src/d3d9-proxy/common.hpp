@@ -160,6 +160,7 @@ void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this
 void rbrrtx_world_lights_init(const remixapi_Interface* api);
 bool rbrrtx_world_lights_wanted();                              // any lamp texture listed (else no per-draw work)
 bool rbrrtx_world_lights_texture(unsigned long long hash);
+bool rbrrtx_world_lights_uv(unsigned long long hash, float rect[4]);   // lamp in an atlas: its TEXCOORD0 rectangle
 void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
@@ -184,7 +185,7 @@ void rbrrtx_litparts_destroy();
 // foliage.cpp: swaying foliage textures get Remix thin-opaque (subsurface) materials. Settings: materials.ini [foliage].
 void rbrrtx_foliage_startup();                                 // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_foliage_draw(void* texture);                       // a swaying foliage draw's stage-0 texture
-void rbrrtx_foliage_frame();                                   // per Present
+void rbrrtx_foliage_frame(bool inMenu);                        // per Present; new foliage reaches the mod in the menu only
 void rbrrtx_foliage_status(wchar_t* out, size_t n);
 // comp.cpp: set a Remix option through the API (logged to rbrrtx_api_options.log; dropped from user.conf at the next start
 // if listed in d3d9_proxy.cpp proxy_owned_option). False before the API is up.

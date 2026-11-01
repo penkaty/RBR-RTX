@@ -181,7 +181,14 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
   remixapi_InitializeLibraryInfo info = {};
   info.sType = REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
   info.version = REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR, REMIXAPI_VERSION_MINOR, REMIXAPI_VERSION_PATCH);
-  const remixapi_ErrorCode err = init(&info, &g_rp);
+  remixapi_ErrorCode err = init(&info, &g_rp);
+  if (err == REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION) {
+    // Kim's fork (Kim2091/dxvk-remix fnv/main, our feat/*-kim-* runtime) reports API 0.1000.1: the same 39-slot table
+    // and the same structs we use (header diff 2026-11-01: only terrain layers, host-setting polls and D3D9 texture
+    // import added, all outside the table), so the 1.0.0 converters below hold.
+    info.version = REMIXAPI_VERSION_MAKE(0, 1000, 1);
+    err = init(&info, &g_rp);
+  }
   if (err != REMIXAPI_ERROR_CODE_SUCCESS) return err;
   // The bridge fills only what it forwards (migration guide section 7); the proxy needs these.
   if (!in_module(reinterpret_cast<const void*>(g_rp.CreateLight), backend) ||

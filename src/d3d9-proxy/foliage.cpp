@@ -28,6 +28,9 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <cstring>
+#include <cstdio>
 
 namespace {
 
@@ -56,19 +59,40 @@ std::chrono::steady_clock::time_point g_lastNew;
 std::wstring g_cacheFile;
 unsigned g_newThisRun = 0, g_unhashed = 0;
 size_t g_cardNormalsSent = 0;                            // textures in the last rtx.cardNormalsTextures sent
+// What the sway shader draws is not all foliage (2026-11-01, runs 20261101-102516/104520: 424 of 476 learned textures
+// were spectators, signs, props, road lines, atlases; the menu's lamp-post atlas got bent card normals = stepped
+// shading). config\foliage-classes.txt (tools/pbr/make_foliage_classes.py, from the catalog): "card" textures are leaves
+// from the first frame, "other" never; textures not in it (encrypted stages, the menu) are learned as before, minus
+// materials.ini [foliage] not_foliage. And no mid-stage changes any more: every mod rewrite made Remix reload the mod
+// and every new rtx.cardNormalsTextures rebuilt the instances (markers, clock, haybales flickered on Nechanice), so
+// textures learned on a stage reach the mod and the card list in the menu.
+std::unordered_map<uint64_t, bool> g_classes;           // catalog: true = card, false = other
+std::unordered_set<uint64_t> g_notFoliage;              // materials.ini [foliage] not_foliage
+size_t g_cardsKnown = 0;                                // "card" lines in foliage-classes.txt
 
-// The known foliage textures as rtx.cardNormalsTextures, once the API is up and again when the list grew.
-void send_card_normals() {
-  if (!g_cfg.cardNormals || g_leaves.size() == g_cardNormalsSent) return;
+// The catalog's cards and the learned foliage textures as rtx.cardNormalsTextures: once the API is up, then again only
+// in the menu when the list grew (a change rebuilds the instances that use them).
+void send_card_normals(bool inMenu) {
+  const size_t n = g_cardsKnown + g_leaves.size();
+  if (!g_cfg.cardNormals || n == g_cardNormalsSent || (g_cardNormalsSent && !inMenu)) return;
   std::string list;
+  list.reserve(n * 20);
   char h[24];
-  for (const auto& kv : g_leaves) {
-    sprintf_s(h, "%s0x%016llX", list.empty() ? "" : ", ", static_cast<unsigned long long>(kv.first));
+  auto add = [&](uint64_t x) {
+    sprintf_s(h, "%s0x%016llX", list.empty() ? "" : ", ", static_cast<unsigned long long>(x));
     list += h;
-  }
+  };
+  for (const auto& kv : g_classes) if (kv.second) add(kv.first);
+  for (const auto& kv : g_leaves) if (!g_classes.count(kv.first)) add(kv.first);
   if (!rbrrtx_remix_set("rtx.cardNormalsTextures", list.c_str())) return;
-  g_cardNormalsSent = g_leaves.size();
-  flog(L"foliage: %zu textures sent as rtx.cardNormalsTextures (bent card normals; RBR-RTX runtime only)", g_cardNormalsSent);
+  g_cardNormalsSent = n;
+  flog(L"foliage: %zu textures sent as rtx.cardNormalsTextures (%zu from the catalog; bent card normals; RBR-RTX runtime only)",
+       n, g_cardsKnown);
+}
+
+bool not_foliage(uint64_t h) {
+  const auto it = g_classes.find(h);
+  return (it != g_classes.end() && !it->second) || g_notFoliage.count(h);
 }
 
 void load_cfg() {
@@ -95,6 +119,21 @@ void load_cfg() {
   rgb(L"scattering_albedo", c.albedo);
   c.anisotropy = std::clamp(f(L"anisotropy", c.anisotropy), -0.99f, 0.99f);
   g_cfg = c;
+  wchar_t nf[2048] = {};
+  GetPrivateProfileStringW(L"foliage", L"not_foliage", L"", nf, 2048, path);
+  for (wchar_t* ctx = nullptr, *t = wcstok_s(nf, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
+    if (const uint64_t h = _wcstoui64(t, nullptr, 16)) g_notFoliage.insert(h);
+  wchar_t cp[MAX_PATH * 2] = {};
+  rbrrtx_config_path(L"RBRRTX_FOLIAGE_CLASSES", L"foliage-classes.txt", cp, MAX_PATH * 2);
+  std::ifstream in(cp);
+  for (std::string line; std::getline(in, line);) {
+    char kind[16] = {};
+    unsigned long long h = 0;
+    if (line.empty() || line[0] == '#' || sscanf_s(line.c_str(), "%llx %15s", &h, kind, 16) != 2) continue;
+    const bool card = !strcmp(kind, "card");
+    g_classes[h] = card;
+    g_cardsKnown += card;
+  }
 }
 
 void publish() {
@@ -140,14 +179,18 @@ void rbrrtx_foliage_startup() {
       if (sscanf_s(line.c_str(), "%llx %f %f %f", &h, &l.t[0], &l.t[1], &l.t[2]) != 4 || !h) continue;
       const float mx = (std::max)({ l.t[0], l.t[1], l.t[2] });   // first build's file: colour x 0.85
       for (float& c : l.t) c = mx > 0.0f ? c / mx : 0.0f;
-      g_leaves[h] = l;
+      if (!not_foliage(h)) g_leaves[h] = l;           // dropped: textures the catalog knows as no foliage
     }
   }
+  for (const auto& kv : g_classes)                      // the catalog's cards: leaf material from the first frame
+    if (kv.second && !g_leaves.count(kv.first)) g_leaves[kv.first] = Leaf{ { 0.0f, 0.0f, 0.0f } };
   publish();
   flog(L"foliage: thin opaque %s (thickness %.2f mm, transmittance %.2f %.2f %.2f, scattering albedo = leaf colour x %.2f, "
        L"anisotropy %.2f); %zu foliage textures known from earlier runs", g_cfg.enabled ? L"ON" : L"off (materials.ini)",
        g_cfg.thickness, g_cfg.transmittance[0], g_cfg.transmittance[1], g_cfg.transmittance[2], g_cfg.brightest,
        g_cfg.anisotropy, g_leaves.size());
+  flog(L"foliage: catalog classes %zu (%zu cards), %zu not_foliage (materials.ini)", g_classes.size(), g_cardsKnown,
+       g_notFoliage.size());
 }
 
 // A swaying foliage draw on the main target: its stage-0 texture.
@@ -161,7 +204,7 @@ void rbrrtx_foliage_draw(void* texture) {
     return;
   }
   g_seen[texture] = -1;
-  if (g_leaves.count(h)) return;
+  if (g_leaves.count(h) || not_foliage(h)) return;
   Leaf l;
   float rgb[3];
   const float mx = rbrrtx_texture_avg_rgb(texture, rgb) ? (std::max)({ rgb[0], rgb[1], rgb[2] }) : 0.0f;
@@ -175,13 +218,13 @@ void rbrrtx_foliage_draw(void* texture) {
          static_cast<unsigned long long>(h), l.t[0], l.t[1], l.t[2], g_newThisRun);
 }
 
-void rbrrtx_foliage_frame() {
+void rbrrtx_foliage_frame(bool inMenu) {
   // A texture address may be reused by another texture after a stage change: look at every one again now and then
   // (once per texture: one hash lookup).
   static unsigned frames = 0;
   if (++frames % 900 == 0) g_seen.clear();
-  if (frames % 60 == 0) send_card_normals();
-  if (g_dirty && std::chrono::duration<double>(std::chrono::steady_clock::now() - g_lastNew).count() >= kQuiet) {
+  if (frames % 60 == 0) send_card_normals(inMenu);
+  if (g_dirty && inMenu && std::chrono::duration<double>(std::chrono::steady_clock::now() - g_lastNew).count() >= kQuiet) {
     publish();
     flog(L"foliage: %zu foliage textures in the generated mod (%u new this run)", g_leaves.size(), g_newThisRun);
   }
