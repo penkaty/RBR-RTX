@@ -46,7 +46,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"alpha_cut", kAlt | '9', L"alpha-card cut-outs (clipped foliage cards) on/off"},
   {L"report_mark", '9', L"stage report: mark a problem now"},
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
-  {L"ground_layer", kAlt | 'Y', L"ground second layer (two-texture blend decals) on/off"},
+  {L"ground_layer", kAlt | 'Y', L"ground second layer: bake -> decal -> off"},
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},
   {L"foliage_normals", kAlt | 'R', L"radial foliage normals on/off (prototype, foliage-normals.ini)"},
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
