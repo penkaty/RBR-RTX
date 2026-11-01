@@ -3119,6 +3119,7 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   if (g_enabled && g_apiOk && !g_sweep) rbrrtx_windscreen_frame_end();   // drops on the windscreen RBR drew this frame
   rbrrtx_particles_frame_end();                       // particle test key, emit probe report
+  rbrrtx_wetness_frame(g_expStep >= 0);               // wetness.cpp: puddles build up while it rains
   {
     // Remix's fallback light (rtx.fallbackLightMode 1 = only while no light exists) went out whenever the
     // headlights came on at night (user 2026-10-23: it is their moonlight). Lights on and no sun: Always (2).

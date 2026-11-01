@@ -214,6 +214,9 @@ void rbrrtx_foliage_status(wchar_t* out, size_t n);
 // comp.cpp: set a Remix option through the API (logged to rbrrtx_api_options.log; dropped from user.conf at the next start
 // if listed in d3d9_proxy.cpp proxy_owned_option). False before the API is up.
 bool rbrrtx_remix_set(const char* key, const char* value);
+// wetness.cpp: rtx.wet.globalWetness from the stage (track Dry/Damp/Wet, the game's rain over time); wetness.ini
+void rbrrtx_wetness_frame(bool hold);                         // per Present; hold = a sweep owns the options
+float rbrrtx_wetness_now();
 
 // particles.cpp: Remix particles test build (docs/research/particles-remix.md): RBRRTX_EMIT_PROBE logs RBR's
 // CEmitter_Emit calls, RBRRTX_PARTICLE_TEST = Remix dust at the wheels (key dust = 7) and the game's dust never spawned.
