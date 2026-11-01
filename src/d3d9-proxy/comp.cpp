@@ -2592,7 +2592,21 @@ struct ExpStep {
   int sun = -1;                                              // 0 = Remix sun off for this step (-1 = as it was)
   bool shot = false, dump = false, capture = false;          // sweep: screenshot / draw list / Remix USD capture
   double measure = -1.0;                                     // measure_seconds for this step only (-1 = [run])
+  double settle = -1.0;                                      // settle_seconds for this step only (-1 = [run])
+  bool ref = false;                                          // perf reference: later steps are ranked against it
+  std::vector<std::pair<bool*, bool>> proxy;                 // proxy.<switch> = 0/1 (g_expSwitches)
 };
+// Proxy switches a sweep step can set (proxy.<name> = 0/1); all go back to their run-start values after each step.
+bool g_litOn = true;                                         // lit car parts twin textures (litparts.cpp)
+bool g_sweepPrecip = false;                                  // emit Remix rain/drops while a sweep runs (normally not)
+extern bool g_dirtOn, g_glassOn;
+const std::pair<const wchar_t*, bool*> g_expSwitches[] = {
+  {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip},
+};
+bool g_expSwitchSaved[std::size(g_expSwitches)] = {};
+struct PerfRow { std::wstring name; double ms, ref; };
+std::vector<PerfRow> g_perfRows;                             // steps after a ref step, ranked in summary.txt
+double g_perfRef = 0.0;
 std::vector<ExpStep> g_exp;                                  // [0] = baseline (no changes), then the ini steps
 std::vector<std::pair<std::string, std::string>> g_expBase;  // [baseline] option values, restored around every step
 std::vector<std::string> g_expDirty;                         // options the running step changed (restored next)
@@ -2681,6 +2695,15 @@ void exp_load(bool sweep) {
         step.ffSwayNear = _wtof(v.c_str()) > 0 ? static_cast<float>(_wtof(v.c_str())) : -1.0f;
       } else if (k == L"measure_seconds") {
         step.measure = (std::max)(0.1, _wtof(v.c_str()));
+      } else if (k == L"settle_seconds") {
+        step.settle = (std::max)(0.2, _wtof(v.c_str()));
+      } else if (k == L"ref") {
+        step.ref = _wtoi(v.c_str()) != 0;
+      } else if (k.rfind(L"proxy.", 0) == 0) {
+        bool found = false;
+        for (const auto& sw : g_expSwitches)
+          if (k.substr(6) == sw.first) { step.proxy.emplace_back(sw.second, _wtoi(v.c_str()) != 0); found = true; }
+        if (!found) clog(L"experiments: [%s] %s: unknown proxy switch", sec, k.c_str());
       } else if (k == L"sun") {
         step.sun = _wtoi(v.c_str()) != 0 ? 1 : 0;
       } else if (k == L"shot" || k == L"dump" || k == L"capture") {
@@ -2727,6 +2750,8 @@ void exp_apply(int step) {
   g_expSkipCache.clear();
   g_expSolidCache.clear();
   g_expStep = step;
+  for (size_t i = 0; i < std::size(g_expSwitches); ++i) *g_expSwitches[i].second = g_expSwitchSaved[i];
+  if (step > 0) for (const auto& sw : g_exp[step].proxy) *sw.first = sw.second;
   g_ffMode = step > 0 && g_exp[step].ff >= 0 ? g_exp[step].ff : g_ffBase;
   g_opaqueAlpha = step > 0 && g_exp[step].opaque >= 0 ? g_exp[step].opaque : g_opaqueBase;
   g_alphaCut = step > 0 && g_exp[step].alphacut >= 0 ? g_exp[step].alphacut : g_alphaCutBase;
@@ -2810,6 +2835,9 @@ void exp_frame() {
     QueryPerformanceFrequency(&g_qpf);
     g_expPos = 0;
     g_sunOnBefore = g_sunOn;
+    for (size_t i = 0; i < std::size(g_expSwitches); ++i) g_expSwitchSaved[i] = *g_expSwitches[i].second;
+    g_perfRows.clear();
+    g_perfRef = 0.0;
     g_expDirty.clear();
     if (g_expApplyBase) for (const auto& kv : g_expBase) exp_set(kv.first, kv.second);
     if (g_sweep) sweep_begin();
@@ -2826,7 +2854,7 @@ void exp_frame() {
   const double inStep = static_cast<double>(now.QuadPart - g_expStepStart.QuadPart) / g_qpf.QuadPart;
   const ExpStep& s = g_exp[g_expStep];
   if (!g_expMeasuring) {
-    if (inStep >= g_expSettle) {
+    if (inStep >= (s.settle > 0 ? s.settle : g_expSettle)) {
       g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0;
       if (g_sweep && s.dump) sweep_dump_start();
       if (g_sweep && s.capture) {                            // Remix USD capture: hotkey Pause for this step (sweep.ini sets it)
@@ -2843,6 +2871,8 @@ void exp_frame() {
   if (measured < (s.measure > 0 ? s.measure : g_expMeasure) || g_expFrames < 10) return;
   const double ms = measured * 1000.0 / g_expFrames;
   g_expMs.push_back(ms);
+  if (s.ref) g_perfRef = ms;
+  else if (g_perfRef > 0 && g_expStep > 0) g_perfRows.push_back({s.name, ms, g_perfRef});
   clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden, %.1f made solid per frame", g_expPos + 1,
        g_expOrder.size(), s.name.c_str(), ms, 1000.0 / ms, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames,
        static_cast<double>(g_expSolid) / g_expFrames);
@@ -3396,7 +3426,11 @@ HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
     if (g_apiOk) rbrrtx_apiworld_replay();             // retained world instances, before this frame's draws
     update_sun();
     if (g_enabled && g_apiOk) rbrrtx_headlights_emit();   // once per frame, with the sun: from RBR's car object
-    if (g_enabled && g_apiOk) { rbrrtx_particles_emit(g_sweep); rbrrtx_windscreen_emit(g_sweep); }   // particles.cpp, windscreen.cpp
+    if (g_enabled && g_apiOk) {                            // particles.cpp, windscreen.cpp (a sweep stops them unless proxy.precip)
+      const bool quiet = g_sweep && !g_sweepPrecip;
+      rbrrtx_particles_emit(quiet);
+      rbrrtx_windscreen_emit(quiet);
+    }
   }
   return hr;
 }
@@ -4065,7 +4099,18 @@ void sweep_end(const wchar_t* why) {
   g_sweepDumpFrames = 0;
   std::wstring r = L"RBR-RTX stage sweep: " + std::wstring(why) + L"\nstep\tframe ms\tfps\tdraws hidden\tscreenshot\tmean brightness\n";
   for (const auto& l : g_sweepLines) r += l + L"\n";
-  r += L"\nFiles: stage.txt (stage, weather, camera, sun, proxy modes), draws.tsv (every draw of one frame: shader, fate, "
+  if (!g_perfRows.empty()) {                                 // perf bisect: what each switched-off suspect saves
+    auto rows = g_perfRows;
+    std::sort(rows.begin(), rows.end(), [](const PerfRow& a, const PerfRow& b) { return a.ms - a.ref < b.ms - b.ref; });
+    r += L"\nPerf bisect, ranked (saving = reference ms - step ms; reference = the last ref step before it):\n"
+         L"saving ms\tstep ms\tref ms\tstep\n";
+    for (const auto& p : rows) {
+      wchar_t line[300];
+      swprintf_s(line, L"%+.2f\t%.2f\t%.2f\t%s\n", p.ref - p.ms, p.ms, p.ref, p.name.c_str());
+      r += line;
+    }
+  }
+  r += L"\nFiles:stage.txt (stage, weather, camera, sun, proxy modes), draws.tsv (every draw of one frame: shader, fate, "
        L"textures with Remix hashes), NN-*.png (one per step), textures.tsv (unique texture hashes of that frame).\n";
   sweep_write(L"summary.txt", r);
   rbrrtx_report_sweep(g_sweepDir.c_str());
@@ -4558,7 +4603,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   // mod makes emissive (albedo and glow from the car's atlas file). Swaying foliage: its texture becomes thin opaque.
   IDirect3DBaseTexture9* litPrev = nullptr;
   bool litSwap = false;
-  if (g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid) {
+  if (g_litOn && g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid) {
     if (void* twin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, g_carWorld)) {
       dev->lpVtbl->GetTexture(dev, 0, &litPrev);
       litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(twin)));
