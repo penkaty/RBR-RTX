@@ -1536,6 +1536,8 @@ void atmo_frame() {
   clog(L"atmosphere: %s", line);
 }
 
+void lamp_mark_frame();                                // lamp marker (below): finishes a pick, takes the key
+
 // sun_save key: keeps the sun now drawn (debug sun, or the game/override sun) for this stage and time of day.
 void sun_save() {
   const RbrStageInfo& si = g_atmoStage;
@@ -1546,6 +1548,8 @@ void sun_save() {
     az = std::atan2(g_sunDir[2], g_sunDir[0]) * 57.2958f;
   }
   if (g_inMenu || si.trackId <= 0 || !g_sunSavedPath[0]) { clog(L"sun save: no stage loaded, nothing saved"); return; }
+  // A sun below the horizon is the debug night sun, never a stage's sun (Zlin 478 kept -18 by accident, 2026-10-23)
+  if (el < 0.0f) { clog(L"sun save: sun below the horizon (%.1f deg), nothing saved", el); return; }
   if (GetFileAttributesW(g_sunSavedPath) == INVALID_FILE_ATTRIBUTES) {   // UTF-16 file: stage names keep their letters
     static const wchar_t head[] =
         L"\xFEFF; Suns kept in game with the sun_save key (\\ by default): one [stage.<RBR track id>] per stage,\r\n"
@@ -3106,6 +3110,7 @@ void end_frame(IDirect3DDevice9* dev) {
     g_sunMoving = moving;
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
+  lamp_mark_frame();                                   // lamp_mark key: finishes the armed pick, arms the next
   rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
   {
     D3DMATRIX vinv;
@@ -3557,6 +3562,7 @@ std::unordered_map<uint64_t, CullEntry> g_cullCache;
 std::unordered_map<const void*, unsigned> g_vbGen;          // bumped when the game creates a buffer at an address
 std::unordered_map<const ShaderInfo*, bool> g_cullClassCache, g_cullVisCache;
 UINT g_drawFirstVert = 0, g_drawNumVert = 0;                 // set by the draw hooks (0 = not cullable, e.g. UP draws)
+D3DPRIMITIVETYPE g_drawType = D3DPT_TRIANGLELIST;           // primitive type of the draw (lamp marker)
 struct CullStats { unsigned considered = 0, offscreen = 0, visibleFar = 0, kept = 0, unreadable = 0, misses = 0;
                    unsigned dist[5] = {};                       // dist buckets: <50, <100, <200, <400, >=400 m
                    unsigned size[5] = {}; } g_cs;               // visible candidates by screen size: <0.5, <1, <2, <5, >=5 %
@@ -3856,34 +3862,40 @@ void load_skip_textures() {
   clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws])", g_skipTex.size());
 }
 
-// A lamp inside an atlas (lights.ini uv = ...): the centres of the groups of this draw's vertices whose TEXCOORD0 lies in
-// the rectangle (stream 0 only), in the draw's own space; cached per buffer range like cull_entry.
+// A lamp inside an atlas (lights.ini uv = ...): the points of the groups of this draw's vertices whose TEXCOORD0 lies in
+// the rectangle (stream 0 only), in the draw's own space; cached per buffer range like cull_entry. A group's point is its
+// centre, or its highest / lowest y (anchor 0 top, 1 centre, 2 bottom; pole kinds: bottom).
 std::unordered_map<uint64_t, std::vector<std::array<float, 3>>> g_uvLampCache;
 
+// Stream-0 layout of the bound vertex declaration: offsets of POSITION (FLOAT3/FLOAT4) and TEXCOORD0, and its type; -1 = absent.
+void stream0_layout(IDirect3DDevice9* dev, int* posOff, int* uvOff, int* uvType) {
+  IDirect3DVertexDeclaration9* decl = nullptr;
+  if (FAILED(dev->lpVtbl->GetVertexDeclaration(dev, &decl)) || !decl) return;
+  D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+  UINT n = MAXD3DDECLLENGTH + 1;
+  if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n)))
+    for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
+      if (el[i].Stream != 0 || el[i].UsageIndex != 0) continue;
+      if (el[i].Usage == D3DDECLUSAGE_POSITION && (el[i].Type == D3DDECLTYPE_FLOAT3 || el[i].Type == D3DDECLTYPE_FLOAT4)) *posOff = el[i].Offset;
+      if (el[i].Usage == D3DDECLUSAGE_TEXCOORD) { *uvOff = el[i].Offset; *uvType = el[i].Type; }
+    }
+  decl->lpVtbl->Release(decl);
+}
+
 const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, const float (*rects)[4], int nRects,
-                                                      float poleMin, unsigned long long tex) {
+                                                      float poleMin, int anchor, unsigned long long tex) {
   IDirect3DVertexBuffer9* vb = nullptr;
   UINT offset = 0, stride = 0;
   if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) return nullptr;
   const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) * 0x9E3779B97F4A7C15ull) ^
                        (static_cast<uint64_t>(g_vbGen[vb]) << 56) ^ (static_cast<uint64_t>(offset) << 40) ^
-                       (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert ^ (tex * 0xC2B2AE3D27D4EB4Full);
+                       (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert ^ (tex * 0xC2B2AE3D27D4EB4Full) ^
+                       (static_cast<uint64_t>(anchor + 1) * 0x94D049BB133111EBull);
   auto it = g_uvLampCache.find(key);
   if (it != g_uvLampCache.end()) { vb->lpVtbl->Release(vb); return &it->second; }
   std::vector<std::array<float, 3>>& out = g_uvLampCache[key];
   int posOff = -1, uvOff = -1, uvType = -1;
-  IDirect3DVertexDeclaration9* decl = nullptr;
-  if (SUCCEEDED(dev->lpVtbl->GetVertexDeclaration(dev, &decl)) && decl) {
-    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
-    UINT n = MAXD3DDECLLENGTH + 1;
-    if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n)))
-      for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
-        if (el[i].Stream != 0 || el[i].UsageIndex != 0) continue;
-        if (el[i].Usage == D3DDECLUSAGE_POSITION && (el[i].Type == D3DDECLTYPE_FLOAT3 || el[i].Type == D3DDECLTYPE_FLOAT4)) posOff = el[i].Offset;
-        if (el[i].Usage == D3DDECLUSAGE_TEXCOORD) { uvOff = el[i].Offset; uvType = el[i].Type; }
-      }
-    decl->lpVtbl->Release(decl);
-  }
+  stream0_layout(dev, &posOff, &uvOff, &uvType);
   D3DVERTEXBUFFER_DESC desc = {};
   void* data = nullptr;
   const UINT start = offset + g_drawFirstVert * stride, bytes = g_drawNumVert * stride;
@@ -3949,7 +3961,7 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
       out.push_back({ c[0], g.lo[1], c[2] });          // the bulb sits at the bottom of the glass
       continue;
     }
-    out.push_back({ c[0], c[1], c[2] });
+    out.push_back({ c[0], anchor == 0 ? g.hi[1] : anchor == 2 ? g.lo[1] : c[1], c[2] });   // anchor: top / centre / bottom of the group
   }
   static unsigned s_logged = 0;                        // generated kinds: hundreds of textures, log the finds
   if (poleMin <= 0 || !out.empty() || ++s_logged <= 20)
@@ -3957,6 +3969,332 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
          tex, out.size(), g_drawNumVert, nRects, rects[0][0], rects[0][1], rects[0][2], rects[0][3],
          poleMin > 0 ? (L", pole test: " + std::to_wstring(rejected) + L" group(s) rejected").c_str() : L"");
   return &out;
+}
+
+// ---- lamp marker (key lamp_mark, Alt+B by default; user 2026-11-01: the automatic detector found no street lamps)
+// Aim the screen centre at a lamp head and press the key: the next primary frame casts a ray from the camera through the
+// screen centre against the triangles of every world draw (vertex shader, stream-0 position + TEXCOORD0, triangle
+// list/strip/fan, not the car). The nearest hit gives the texture and the island around it (triangles connected to the
+// hit one, vertices welded at the same place, all within 2.5 m of the hit point); the island's UV rectangle (the atlas
+// cell wrapped as uv_lamp_points does) is written to lights-marked.ini and the lamp kinds are re-read at once. Every
+// lamp drawn with that rectangle of the texture, on every stage that shares it, then gets a light.
+struct LampPick {
+  bool armed = false, ray = false, hit = false;
+  double org[3] = {}, dir[3] = {};
+  double t = 1e30;                                     // distance of the nearest hit
+  float point[3] = {}, rect[4] = {};
+  unsigned long long tex = 0;
+  unsigned island = 0, drawVerts = 0;                  // island vertices; vertices of the hit draw
+  unsigned draws = 0, tested = 0, unreadable = 0;
+  std::wstring shader;
+} g_pick;
+
+struct PickDraw {                                      // one draw's vertices in world space
+  std::vector<std::array<float, 3>> pos;
+  std::vector<std::array<float, 2>> uv;
+  std::vector<uint32_t> tri;                           // 3 vertex ids per triangle
+};
+
+float half_float(uint16_t h) {                         // IEEE half -> float (no denormals needed for UVs)
+  const uint32_t e = (h >> 10) & 0x1F, m = h & 0x3FF, sgn = (h & 0x8000u) << 16;
+  const uint32_t f = e == 0 ? sgn : sgn | ((e + 112) << 23) | (m << 13);
+  float r; std::memcpy(&r, &f, 4); return r;
+}
+
+// The hit triangle's island: triangles reachable through shared (welded) vertices, every vertex within 2.5 m of the hit
+// point. rect = its UV bounding box, padded, in the atlas cell of the hit triangle. Returns the vertex count.
+unsigned lamp_island(const PickDraw& d, size_t hitTri, const double hp[3], float rect[4]) {
+  const size_t nv = d.pos.size(), nt = d.tri.size() / 3;
+  std::unordered_map<uint64_t, uint32_t> weld;         // vertices at the same place (UV seams, hard normals duplicate them)
+  std::vector<uint32_t> w(nv);
+  for (size_t i = 0; i < nv; ++i) {
+    uint64_t k = 1469598103934665603ull;
+    for (int a = 0; a < 3; ++a) { k ^= static_cast<uint64_t>(static_cast<int64_t>(std::llround(d.pos[i][a] * 1000.0))); k *= 1099511628211ull; }
+    w[i] = weld.emplace(k, static_cast<uint32_t>(weld.size())).first->second;
+  }
+  std::vector<std::vector<uint32_t>> adj(weld.size());
+  for (size_t t = 0; t < nt; ++t) for (int k = 0; k < 3; ++k) adj[w[d.tri[t * 3 + k]]].push_back(static_cast<uint32_t>(t));
+  auto near_hit = [&](uint32_t v) {
+    const double dx = d.pos[v][0] - hp[0], dy = d.pos[v][1] - hp[1], dz = d.pos[v][2] - hp[2];
+    return dx * dx + dy * dy + dz * dz <= 2.5 * 2.5;
+  };
+  std::vector<char> seen(nt, 0), used(nv, 0);
+  std::vector<size_t> queue{ hitTri };
+  seen[hitTri] = 1;
+  for (size_t qi = 0; qi < queue.size(); ++qi)
+    for (int k = 0; k < 3; ++k) {
+      const uint32_t v = d.tri[queue[qi] * 3 + k];
+      used[v] = 1;
+      for (uint32_t t2 : adj[w[v]]) {
+        if (seen[t2] || !near_hit(d.tri[t2 * 3]) || !near_hit(d.tri[t2 * 3 + 1]) || !near_hit(d.tri[t2 * 3 + 2])) continue;
+        seen[t2] = 1;
+        queue.push_back(t2);
+      }
+    }
+  float cu = 0, cv = 0;                                // the hit triangle's UV centre picks the atlas cell
+  for (int k = 0; k < 3; ++k) { cu += d.uv[d.tri[hitTri * 3 + k]][0] / 3; cv += d.uv[d.tri[hitTri * 3 + k]][1] / 3; }
+  const float bu = cu - std::floor(cu), bv = cv - std::floor(cv);
+  float lo[2] = { 2.0f, 2.0f }, hi[2] = { -1.0f, -1.0f };
+  unsigned count = 0;
+  for (size_t i = 0; i < nv; ++i) {
+    if (!used[i]) continue;
+    ++count;
+    float du = d.uv[i][0] - cu, dv = d.uv[i][1] - cv;
+    du -= std::round(du);                              // the tiling copy nearest the hit triangle
+    dv -= std::round(dv);
+    lo[0] = (std::min)(lo[0], bu + du); hi[0] = (std::max)(hi[0], bu + du);
+    lo[1] = (std::min)(lo[1], bv + dv); hi[1] = (std::max)(hi[1], bv + dv);
+  }
+  const float pad = 0.002f;
+  rect[0] = std::clamp(lo[0] - pad, 0.0f, 1.0f); rect[1] = std::clamp(lo[1] - pad, 0.0f, 1.0f);
+  rect[2] = std::clamp(hi[0] + pad, 0.0f, 1.0f); rect[3] = std::clamp(hi[1] + pad, 0.0f, 1.0f);
+  return count;
+}
+
+// Per world draw while armed (comp_draw): the ray against this draw's triangles; keeps the nearest hit of the frame.
+void lamp_pick_draw(IDirect3DDevice9* dev) {
+  if (!g_pick.armed || !g_primaryRT || !g_frameCam || !g_curVS || !g_curInfo || g_drawNumVert == 0) return;
+  if (g_curInfo->flags & (SH_CAR | SH_SKY | SH_GLASS | SH_PARTICLE)) return;
+  if (g_drawType != D3DPT_TRIANGLELIST && g_drawType != D3DPT_TRIANGLESTRIP && g_drawType != D3DPT_TRIANGLEFAN) return;
+  if (!g_pick.ray) {                                   // the screen-centre ray (P._31/_32: an off-centre projection)
+    D3DMATRIX vi;
+    if (!inverse(g_V, vi) || std::fabs(g_P._11) < 1e-6f || std::fabs(g_P._22) < 1e-6f) return;
+    const double vx = -g_P._31 / g_P._11, vy = -g_P._32 / g_P._22;
+    double len = 0;
+    for (int k = 0; k < 3; ++k) {
+      g_pick.org[k] = vi.m[3][k];
+      g_pick.dir[k] = vx * vi.m[0][k] + vy * vi.m[1][k] + vi.m[2][k];
+      len += g_pick.dir[k] * g_pick.dir[k];
+    }
+    len = std::sqrt(len);
+    for (double& x : g_pick.dir) x /= len;
+    g_pick.ray = true;
+  }
+  const double* org = g_pick.org;
+  const double* dir = g_pick.dir;
+  ++g_pick.draws;
+  float sc[3], sr = 0.0f;
+  if (draw_world_sphere(dev, sc, &sr, true)) {         // cheap first: the bounding sphere must be on the ray
+    const double lx = sc[0] - org[0], ly = sc[1] - org[1], lz = sc[2] - org[2], reach = sr + 1.0;
+    const double tca = lx * dir[0] + ly * dir[1] + lz * dir[2];
+    if (lx * lx + ly * ly + lz * lz - tca * tca > reach * reach || tca + reach < 0 || (g_pick.hit && tca - reach > g_pick.t)) return;
+  }
+  ++g_pick.tested;
+  IDirect3DBaseTexture9* bt = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return;
+  const unsigned long long hx = rbrrtx_texture_hash(bt);
+  bt->lpVtbl->Release(bt);
+  int posOff = -1, uvOff = -1, uvType = -1;
+  stream0_layout(dev, &posOff, &uvOff, &uvType);
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT offset = 0, stride = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) { ++g_pick.unreadable; return; }
+  D3DVERTEXBUFFER_DESC desc = {};
+  void* data = nullptr;
+  const UINT nv = g_drawNumVert, start = offset + g_drawFirstVert * stride, bytes = nv * stride;
+  if (posOff < 0 || uvOff < 0 || (uvType != D3DDECLTYPE_FLOAT2 && uvType != D3DDECLTYPE_FLOAT16_2) || stride < 12 ||
+      FAILED(vb->lpVtbl->GetDesc(vb, &desc)) || start + bytes > desc.Size ||
+      FAILED(vb->lpVtbl->Lock(vb, start, bytes, &data, D3DLOCK_READONLY)) || !data) {
+    vb->lpVtbl->Release(vb);
+    ++g_pick.unreadable;
+    return;
+  }
+  const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
+  const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+  PickDraw d;
+  d.pos.resize(nv);
+  d.uv.resize(nv);
+  const uint8_t* p = static_cast<const uint8_t*>(data);
+  for (UINT i = 0; i < nv; ++i, p += stride) {
+    float x[3], uv[2];
+    std::memcpy(x, p + posOff, 12);
+    if (uvType == D3DDECLTYPE_FLOAT2) std::memcpy(uv, p + uvOff, 8);
+    else { uint16_t h[2]; std::memcpy(h, p + uvOff, 4); uv[0] = half_float(h[0]); uv[1] = half_float(h[1]); }
+    if (!world) {
+      const float q[3] = { x[0], x[1], x[2] };
+      for (int k = 0; k < 3; ++k) x[k] = q[0] * w.m[0][k] + q[1] * w.m[1][k] + q[2] * w.m[2][k] + w.m[3][k];
+    }
+    d.pos[i] = { x[0], x[1], x[2] };
+    d.uv[i] = { uv[0], uv[1] };
+  }
+  vb->lpVtbl->Unlock(vb);
+  vb->lpVtbl->Release(vb);
+  // The vertex sequence of the draw (indices relative to its first vertex, or 0..n-1), then its triangles.
+  std::vector<uint32_t> seq;
+  if (g_inDip) {
+    IDirect3DIndexBuffer9* ib = nullptr;
+    D3DINDEXBUFFER_DESC id = {};
+    void* ip = nullptr;
+    if (FAILED(dev->lpVtbl->GetIndices(dev, &ib)) || !ib) { ++g_pick.unreadable; return; }
+    const UINT isz = (ib->lpVtbl->GetDesc(ib, &id), id.Format == D3DFMT_INDEX32) ? 4 : 2;
+    const UINT nIdx = g_drawType == D3DPT_TRIANGLELIST ? g_dip.count * 3 : g_dip.count + 2;
+    if (g_dip.startIdx * isz + nIdx * isz > id.Size || FAILED(ib->lpVtbl->Lock(ib, g_dip.startIdx * isz, nIdx * isz, &ip, D3DLOCK_READONLY)) || !ip) {
+      ib->lpVtbl->Release(ib);
+      ++g_pick.unreadable;
+      return;
+    }
+    seq.resize(nIdx);
+    for (UINT i = 0; i < nIdx; ++i)
+      seq[i] = (isz == 4 ? static_cast<const uint32_t*>(ip)[i] : static_cast<const uint16_t*>(ip)[i]) - g_dip.minIdx;
+    ib->lpVtbl->Unlock(ib);
+    ib->lpVtbl->Release(ib);
+  } else {
+    seq.resize(nv);
+    for (UINT i = 0; i < nv; ++i) seq[i] = i;
+  }
+  auto add = [&](uint32_t a, uint32_t b, uint32_t c) {
+    if (a < nv && b < nv && c < nv && a != b && b != c && a != c) { d.tri.push_back(a); d.tri.push_back(b); d.tri.push_back(c); }
+  };
+  if (g_drawType == D3DPT_TRIANGLELIST) for (size_t i = 0; i + 2 < seq.size(); i += 3) add(seq[i], seq[i + 1], seq[i + 2]);
+  else if (g_drawType == D3DPT_TRIANGLESTRIP) for (size_t i = 0; i + 2 < seq.size(); ++i) add(seq[i], seq[i + 1], seq[i + 2]);
+  else for (size_t i = 1; i + 1 < seq.size(); ++i) add(seq[0], seq[i], seq[i + 1]);
+  // Moller-Trumbore, both sides (the glass of a lamp faces down, the winding does not matter).
+  double best = g_pick.t;
+  size_t bestTri = SIZE_MAX;
+  for (size_t t = 0; t < d.tri.size() / 3; ++t) {
+    const auto& A = d.pos[d.tri[t * 3]];
+    const auto& B = d.pos[d.tri[t * 3 + 1]];
+    const auto& C = d.pos[d.tri[t * 3 + 2]];
+    const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+    const double pv[3] = { dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0] };
+    const double det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+    if (std::fabs(det) < 1e-12) continue;
+    const double s[3] = { org[0] - A[0], org[1] - A[1], org[2] - A[2] };
+    const double u = (s[0] * pv[0] + s[1] * pv[1] + s[2] * pv[2]) / det;
+    if (u < 0.0 || u > 1.0) continue;
+    const double qv[3] = { s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0] };
+    const double v = (dir[0] * qv[0] + dir[1] * qv[1] + dir[2] * qv[2]) / det;
+    if (v < 0.0 || u + v > 1.0) continue;
+    const double tt = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) / det;
+    if (tt > 0.05 && tt < best) { best = tt; bestTri = t; }
+  }
+  if (bestTri == SIZE_MAX) return;
+  g_pick.hit = true;
+  g_pick.t = best;
+  g_pick.tex = hx;
+  g_pick.drawVerts = nv;
+  g_pick.shader = g_curInfo->name;
+  double hp[3];
+  for (int k = 0; k < 3; ++k) { hp[k] = org[k] + dir[k] * best; g_pick.point[k] = static_cast<float>(hp[k]); }
+  g_pick.island = lamp_island(d, bestTri, hp, g_pick.rect);
+}
+
+// Writes the mark into lights-marked.ini (plain text, CRLF): a new [lamp.mark_<hash>_<n>], or, when the rectangle
+// overlaps one already marked for the texture, that section's rectangle replaced. Returns the section name.
+std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const float rect[4], const std::string& note, bool* replaced) {
+  std::string text;
+  { std::ifstream in(path, std::ios::binary); if (in) text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()); }
+  std::vector<std::string> lines;
+  for (size_t a = 0; a < text.size();) {
+    size_t b = text.find('\n', a);
+    if (b == std::string::npos) b = text.size();
+    std::string l = text.substr(a, b - a);
+    if (!l.empty() && l.back() == '\r') l.pop_back();
+    lines.push_back(l);
+    a = b + 1;
+  }
+  if (lines.empty()) {
+    lines = { "; Lamps marked in game with the lamp_mark key (Alt+B by default): aim the screen centre at a lamp head and press it.",
+              "; One section per lamp type: the texture and the rectangle of it that the lamp head uses. Every lamp drawn with",
+              "; that part of the texture, on every stage, gets a light (worldlights.cpp; lumens, colour and size from lights.ini",
+              "; [auto]; lights show at dusk/night). Delete a section to remove it. Read at game start and right after a mark.",
+              "" };
+  }
+  char hex[24];
+  snprintf(hex, sizeof(hex), "%016llX", tex);
+  const std::string prefix = std::string("[lamp.mark_") + hex + "_";
+  auto overlaps = [](const float a[4], const float b[4]) {
+    const float ww = (std::min)(a[2], b[2]) - (std::max)(a[0], b[0]), hh = (std::min)(a[3], b[3]) - (std::max)(a[1], b[1]);
+    if (ww <= 0 || hh <= 0) return false;
+    return ww * hh > 0.25f * (std::min)((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]));
+  };
+  int maxN = 0, sameN = 0;
+  size_t sameStart = 0, sameEnd = 0;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].compare(0, prefix.size(), prefix) != 0) continue;
+    const int n = std::atoi(lines[i].c_str() + prefix.size());
+    maxN = (std::max)(maxN, n);
+    size_t end = i + 1;
+    float r[4] = {};
+    bool haveUv = false;
+    for (; end < lines.size() && !lines[end].empty() && lines[end][0] != '[' && lines[end][0] != ';'; ++end)
+      if (lines[end].compare(0, 2, "uv") == 0 && lines[end].find('=') != std::string::npos)
+        haveUv = sscanf_s(lines[end].c_str() + lines[end].find('=') + 1, "%f , %f , %f , %f", &r[0], &r[1], &r[2], &r[3]) == 4;
+    if (!sameN && haveUv && overlaps(rect, r)) {
+      sameN = n;
+      sameEnd = end;
+      sameStart = i;
+      while (sameStart > 0 && !lines[sameStart - 1].empty() && lines[sameStart - 1][0] == ';') --sameStart;   // its comment
+    }
+  }
+  const int n = sameN ? sameN : maxN + 1;
+  char name[64], uv[96];
+  snprintf(name, sizeof(name), "lamp.mark_%s_%d", hex, n);
+  snprintf(uv, sizeof(uv), "uv = %.4f, %.4f, %.4f, %.4f", rect[0], rect[1], rect[2], rect[3]);
+  const std::vector<std::string> block = { "; " + note, std::string("[") + name + "]", std::string("texture = ") + hex, uv, "anchor = bottom" };
+  if (sameN) {
+    lines.erase(lines.begin() + sameStart, lines.begin() + sameEnd);
+    lines.insert(lines.begin() + sameStart, block.begin(), block.end());
+  } else {
+    if (!lines.back().empty()) lines.push_back("");
+    lines.insert(lines.end(), block.begin(), block.end());
+    lines.push_back("");
+  }
+  std::string out;
+  for (const std::string& l : lines) out += l + "\r\n";
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  f.write(out.data(), static_cast<std::streamsize>(out.size()));
+  if (!f) return std::string();
+  *replaced = sameN != 0;
+  return name;
+}
+
+// After the armed frame (Present): the nearest hit becomes a mark.
+void lamp_pick_finish() {
+  g_pick.armed = false;
+  if (!g_pick.ray) { clog(L"lamp mark: no world camera this frame (menu or loading?), nothing marked"); MessageBeep(MB_ICONEXCLAMATION); return; }
+  if (!g_pick.hit || g_pick.t > 150.0) {
+    if (g_pick.hit)
+      clog(L"lamp mark: the nearest surface on the screen-centre ray is %.1f m away (limit 150 m; texture %016llX), nothing marked", g_pick.t, g_pick.tex);
+    else
+      clog(L"lamp mark: nothing hit by the ray through the screen centre (%u world draws, %u tested, %u with unreadable buffers; strips/fans/lists with vertex shaders only, not the car)",
+           g_pick.draws, g_pick.tested, g_pick.unreadable);
+    MessageBeep(MB_ICONEXCLAMATION);
+    return;
+  }
+  wchar_t path[MAX_PATH * 2];
+  rbrrtx_config_path(L"RBRRTX_LIGHTS_MARKED", L"lights-marked.ini", path, MAX_PATH * 2);
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  const RbrStageInfo& si = g_atmoStage;
+  std::string stage = "menu";
+  if (!g_inMenu) {
+    stage = "stage " + std::to_string(si.trackId) + " ";
+    for (const wchar_t* c = si.name; *c; ++c) stage += *c < 128 && *c >= 32 ? static_cast<char>(*c) : '?';
+  }
+  char note[320];
+  snprintf(note, sizeof(note), "%s, marked %04d-%02d-%02d %02d:%02d, hit at (%.2f %.2f %.2f) %.1f m away, %u island vertices", stage.c_str(),
+           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, g_pick.point[0], g_pick.point[1], g_pick.point[2], g_pick.t, g_pick.island);
+  bool replaced = false;
+  const std::string sec = lamp_mark_write(path, g_pick.tex, g_pick.rect, note, &replaced);
+  if (sec.empty()) { clog(L"lamp mark: FAILED to write %s", path); MessageBeep(MB_ICONEXCLAMATION); return; }
+  clog(L"lamp mark: %S texture %016llX (shader %s, %u vertices in the draw) hit at (%.2f %.2f %.2f), %.1f m away; island %u vertices, "
+       L"uv %.4f, %.4f, %.4f, %.4f -> [%S] %s in %s",
+       stage.c_str(), g_pick.tex, g_pick.shader.c_str(), g_pick.drawVerts, g_pick.point[0], g_pick.point[1], g_pick.point[2],
+       g_pick.t, g_pick.island, g_pick.rect[0], g_pick.rect[1], g_pick.rect[2], g_pick.rect[3], sec.c_str(),
+       replaced ? L"replaced" : L"added", path);
+  g_uvLampCache.clear();
+  rbrrtx_world_lights_reload();
+  MessageBeep(MB_OK);
+}
+
+// Per Present: finishes an armed pick, then the key arms the next frame's.
+void lamp_mark_frame() {
+  if (g_pick.armed) lamp_pick_finish();
+  if (rbrrtx_key_pressed(RBRKEY_LAMP_MARK)) {
+    g_pick = LampPick();
+    g_pick.armed = true;
+  }
 }
 
 // Lamp textures (worldlights.cpp): the lamp sits on this draw's bounding sphere.
@@ -3974,10 +4312,11 @@ void world_light_draw(IDirect3DDevice9* dev) {
            screen_space_input(dev) ? L" in screen space" : L"");
     return;
   }
-  float rects[4][4], poleMin = 0.0f;
-  if (const int nRects = rbrrtx_world_lights_uvs(hx, rects, 4, &poleMin)) {
+  float rects[8][4], poleMin = 0.0f;
+  int anchor = 1;
+  if (const int nRects = rbrrtx_world_lights_uvs(hx, rects, 8, &poleMin, &anchor)) {
     if (!g_curInfo || g_drawNumVert == 0) return;
-    const auto* pts = uv_lamp_points(dev, rects, nRects, poleMin, hx);
+    const auto* pts = uv_lamp_points(dev, rects, nRects, poleMin, anchor, hx);
     if (!pts) return;
     const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
     const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
@@ -4551,6 +4890,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"culling");
     return D3D_OK;
   }
+  lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
   world_light_draw(dev);                                     // lamp textures (lights.ini): a light at the object
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
@@ -4703,6 +5043,7 @@ UINT verts_for(D3DPRIMITIVETYPE t, UINT prims) {
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT start, UINT count) {
   g_pendingPrims = count;
+  g_drawType = t;
   g_drawFirstVert = start;
   g_drawNumVert = verts_for(t, count);
   g_dip.valid = false;
@@ -4712,6 +5053,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETY
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minIdx,
                                                   UINT numV, UINT startIdx, UINT count) {
   g_pendingPrims = count;
+  g_drawType = t;
   g_drawFirstVert = base >= 0 ? static_cast<UINT>(base) + minIdx : 0;
   g_drawNumVert = base >= 0 ? numV : 0;
   g_dip = { t == D3DPT_TRIANGLELIST && base >= 0, base, minIdx, numV, startIdx, count };

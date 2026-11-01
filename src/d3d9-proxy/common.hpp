@@ -167,11 +167,13 @@ void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this
 void rbrrtx_world_lights_init(const remixapi_Interface* api);
 bool rbrrtx_world_lights_wanted();                              // any lamp texture listed (else no per-draw work)
 bool rbrrtx_world_lights_texture(unsigned long long hash);
-// Lamp in an atlas: its TEXCOORD0 rectangles (count, up to max); poleMinHeight > 0 = keep only groups on a pole.
-int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight);
+// Lamp in an atlas: its TEXCOORD0 rectangles (count, up to max); poleMinHeight > 0 = keep only groups on a pole;
+// anchor: 0 top, 1 centre, 2 bottom of each group.
+int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight, int* anchor);
 void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
+void rbrrtx_world_lights_reload();                              // lights*.ini read again (after the lamp_mark key; lamps go)
 // apiworld.cpp: static stage draws as retained Remix API instances on Kim's runtime (materials.ini [api_world]).
 struct RbrWorldDraw { int base; unsigned minIdx, numV, startIdx, prims; bool sway; };
 void rbrrtx_apiworld_init(const RbrApiExt* ext);                // after the API is up (null = unavailable)
@@ -266,7 +268,7 @@ void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed);
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_API_WORLD, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_API_WORLD, RBRKEY_LAMP_MARK, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);
