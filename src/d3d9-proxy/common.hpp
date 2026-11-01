@@ -272,6 +272,7 @@ enum RbrKey {
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);
+void rbrrtx_lights_marked_path(wchar_t* out, size_t size, bool create);  // lights-marked.ini next to lights.ini
 void rbrrtx_keys_load();
 // True once per press (call every frame), only while the game window has the focus, Ctrl is up and Alt is held
 // only for Alt+ keys.

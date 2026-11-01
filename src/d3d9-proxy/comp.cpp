@@ -3971,7 +3971,7 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
   return &out;
 }
 
-// ---- lamp marker (key lamp_mark, Alt+Insert by default; user 2026-11-01: the automatic detector found no street lamps)
+// ---- lamp marker (key lamp_mark, Alt+PageUp by default; user 2026-11-01: the automatic detector found no street lamps)
 // Aim the screen centre at a lamp head and press the key: the next primary frame casts a ray from the camera through the
 // screen centre against the triangles of every world draw (vertex shader, stream-0 position + TEXCOORD0, triangle
 // list/strip/fan, not the car). The nearest hit gives the texture and the island around it (triangles connected to the
@@ -4194,7 +4194,7 @@ std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const f
     a = b + 1;
   }
   if (lines.empty()) {
-    lines = { "; Lamps marked in game with the lamp_mark key (Alt+Insert by default): aim the screen centre at a lamp head and press it.",
+    lines = { "; Lamps marked in game with the lamp_mark key (Alt+PageUp by default): aim the screen centre at a lamp head and press it.",
               "; One section per lamp type: the texture and the rectangle of it that the lamp head uses. Every lamp drawn with",
               "; that part of the texture, on every stage, gets a light (worldlights.cpp; lumens, colour and size from lights.ini",
               "; [auto]; lights show at dusk/night). Delete a section to remove it. Read at game start and right after a mark.",
@@ -4249,21 +4249,29 @@ std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const f
   return name;
 }
 
+// Audible result of a mark (off the render thread: Beep blocks): success = two short rising tones, failure = one low long.
+void lamp_mark_beep(bool ok) {
+  CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+    if (p) { Beep(880, 90); Beep(1320, 130); } else Beep(220, 450);
+    return 0;
+  }, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(ok ? 1 : 0)), 0, nullptr);
+}
+
 // After the armed frame (Present): the nearest hit becomes a mark.
 void lamp_pick_finish() {
   g_pick.armed = false;
-  if (!g_pick.ray) { clog(L"lamp mark: no world camera this frame (menu or loading?), nothing marked"); MessageBeep(MB_ICONEXCLAMATION); return; }
+  if (!g_pick.ray) { clog(L"lamp mark: no world camera this frame (menu or loading?), nothing marked"); lamp_mark_beep(false); return; }
   if (!g_pick.hit || g_pick.t > 150.0) {
     if (g_pick.hit)
       clog(L"lamp mark: the nearest surface on the screen-centre ray is %.1f m away (limit 150 m; texture %016llX), nothing marked", g_pick.t, g_pick.tex);
     else
       clog(L"lamp mark: nothing hit by the ray through the screen centre (%u world draws, %u tested, %u with unreadable buffers; strips/fans/lists with vertex shaders only, not the car)",
            g_pick.draws, g_pick.tested, g_pick.unreadable);
-    MessageBeep(MB_ICONEXCLAMATION);
+    lamp_mark_beep(false);
     return;
   }
   wchar_t path[MAX_PATH * 2];
-  rbrrtx_config_path(L"RBRRTX_LIGHTS_MARKED", L"lights-marked.ini", path, MAX_PATH * 2);
+  rbrrtx_lights_marked_path(path, MAX_PATH * 2, true);
   SYSTEMTIME st;
   GetLocalTime(&st);
   const RbrStageInfo& si = g_atmoStage;
@@ -4277,7 +4285,7 @@ void lamp_pick_finish() {
            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, g_pick.point[0], g_pick.point[1], g_pick.point[2], g_pick.t, g_pick.island);
   bool replaced = false;
   const std::string sec = lamp_mark_write(path, g_pick.tex, g_pick.rect, note, &replaced);
-  if (sec.empty()) { clog(L"lamp mark: FAILED to write %s", path); MessageBeep(MB_ICONEXCLAMATION); return; }
+  if (sec.empty()) { clog(L"lamp mark: FAILED to write %s", path); lamp_mark_beep(false); return; }
   clog(L"lamp mark: %S texture %016llX (shader %s, %u vertices in the draw) hit at (%.2f %.2f %.2f), %.1f m away; island %u vertices, "
        L"uv %.4f, %.4f, %.4f, %.4f -> [%S] %s in %s",
        stage.c_str(), g_pick.tex, g_pick.shader.c_str(), g_pick.drawVerts, g_pick.point[0], g_pick.point[1], g_pick.point[2],
@@ -4285,7 +4293,7 @@ void lamp_pick_finish() {
        replaced ? L"replaced" : L"added", path);
   g_uvLampCache.clear();
   rbrrtx_world_lights_reload();
-  MessageBeep(MB_OK);
+  lamp_mark_beep(true);
 }
 
 // Per Present: finishes an armed pick, then the key arms the next frame's.

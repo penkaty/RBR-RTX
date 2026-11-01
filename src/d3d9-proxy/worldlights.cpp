@@ -15,7 +15,7 @@
 // sphere the sphere's top, centre or bottom.
 //
 // Marking (user 2026-11-01: the automatic detector found no street lamps; European posts hang the head on an arm, the
-// glass faces down and the pole is a separate draw): the lamp_mark key (Alt+Insert, comp.cpp lamp marker) casts a ray from the
+// glass faces down and the pole is a separate draw): the lamp_mark key (Alt+PageUp, comp.cpp lamp marker) casts a ray from the
 // screen centre, takes the texture and UV rectangle of the lamp head hit, and appends a [lamp.mark_<hash>_<n>] section
 // to config\lights-marked.ini (anchor = bottom, no pole test, values from lights.ini [auto] unless the section sets them).
 // Marks of one texture merge into one kind (several rectangles). Load order: lights-auto.ini, lights-marked.ini,
@@ -167,7 +167,7 @@ void load() {
   if (ini_f(path, L"lights", L"auto", 1.0f) != 0.0f && GetFileAttributesW(autoPath.c_str()) != INVALID_FILE_ATTRIBUTES)
     autoKinds = load_kinds(autoPath.c_str(), path);
   wchar_t markedPath[MAX_PATH * 2];
-  rbrrtx_config_path(L"RBRRTX_LIGHTS_MARKED", L"lights-marked.ini", markedPath, MAX_PATH * 2);
+  rbrrtx_lights_marked_path(markedPath, MAX_PATH * 2, false);
   size_t markedKinds = 0;
   if (GetFileAttributesW(markedPath) != INVALID_FILE_ATTRIBUTES) markedKinds = load_kinds(markedPath, path, true);
   const size_t own = load_kinds(path, nullptr);

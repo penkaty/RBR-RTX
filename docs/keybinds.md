@@ -26,7 +26,7 @@ Change any key in `rbr-rtx\config\keys.ini` (restart the game); write `none` to 
 | `;` / `'` | Lower / raise the debug sun (hold). Below the horizon it becomes twilight and night. |
 | `\` | Keep the sun now shown for this stage and time of day (beep), saved to `rbr-rtx\config\sun-saved.ini` |
 | Alt+7 | Rain and snow: Remix particles or the game's own, to compare |
-| Alt+Insert | Lamp marker: aim the middle of the screen at a street lamp's head, press; every lamp of that type gets a light at night (saved in `config\lights-marked.ini`, result in the log) |
+| Alt+PageUp | Lamp marker: aim the middle of the screen at a street lamp's head, press; every lamp of that type gets a light at night (saved in `config\lights-marked.ini`, result in the log; two rising beeps = marked, one low beep = failed) |
 | Alt+L | Remix sun on/off |
 | Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |
 | Alt+9 | Experimental: foliage cards cut to the leaf outline |

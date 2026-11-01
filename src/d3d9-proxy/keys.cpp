@@ -52,7 +52,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
   {L"bounces", kAlt | '0', L"ray interactions: rtx.conf -> large (dense-forest test) -> secondary 1"},   // Alt+P = experiment
   {L"api_world", kAlt | 'W', L"world through the Remix API: all -> foliage only -> off"},
-  {L"lamp_mark", kAlt | VK_INSERT, L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-01 (was Alt+B: B quits the game for the user)
+  {L"lamp_mark", kAlt | VK_PRIOR, L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-02: Alt+PageUp (Alt+Insert before; user 2026-11-01 Alt+B quit the game)
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
@@ -131,6 +131,27 @@ void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, s
   wchar_t* slash = (len > 0 && len < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
   if (slash) *slash = 0;
   swprintf_s(out, size, L"%s\\rbr-rtx\\config\\%s", dir, file);
+}
+
+// lights-marked.ini (the lamp_mark key): the folder lights.ini is loaded from, so a dev run (RBRRTX_LIGHTS = the package
+// config) and an installed game (<game>\rbr-rtx\config) both write where they read. RBRRTX_LIGHTS_MARKED overrides.
+// create = make the folder when it is missing.
+void rbrrtx_lights_marked_path(wchar_t* out, size_t size, bool create) {
+  DWORD n = GetEnvironmentVariableW(L"RBRRTX_LIGHTS_MARKED", out, static_cast<DWORD>(size));
+  if (!(n > 0 && n < size)) {
+    rbrrtx_config_path(L"RBRRTX_LIGHTS", L"lights.ini", out, size);
+    wchar_t* slash = wcsrchr(out, L'\\');
+    swprintf_s(slash ? slash + 1 : out, slash ? size - (slash + 1 - out) : size, L"lights-marked.ini");
+  }
+  if (!create) return;
+  wchar_t dir[MAX_PATH * 2];
+  wcscpy_s(dir, out);
+  wchar_t* slash = wcsrchr(dir, L'\\');
+  if (!slash) return;
+  *slash = 0;
+  for (wchar_t* c = dir + 3; *c; ++c)                          // every level after the drive root
+    if (*c == L'\\') { *c = 0; CreateDirectoryW(dir, nullptr); *c = L'\\'; }
+  CreateDirectoryW(dir, nullptr);
 }
 
 void rbrrtx_keys_load() {
