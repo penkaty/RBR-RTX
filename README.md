@@ -86,7 +86,7 @@ the full list is in [Keybinds](docs/keybinds.md).
 | `/` | Debug sun on/off. Then `[` `]` turn it, `;` `'` lower / raise it |
 | `\` | Keep the sun now shown for this stage and time of day (beep) |
 | Alt+7 | Rain and snow: Remix or the game's own |
-| Alt+B | Lamp marker: aim the middle of the screen at a street lamp's head and press; every lamp of that type gets a light at night (`config\lights-marked.ini`) |
+| Alt+Insert | Lamp marker: aim the middle of the screen at a street lamp's head and press; every lamp of that type gets a light at night (`config\lights-marked.ini`) |
 | Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |
 | Alt+P | Performance test: hold still about a minute, results go to the log |
 | Alt+X | Remix's own menu (graphics settings, debug views) |

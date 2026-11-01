@@ -3971,7 +3971,7 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
   return &out;
 }
 
-// ---- lamp marker (key lamp_mark, Alt+B by default; user 2026-11-01: the automatic detector found no street lamps)
+// ---- lamp marker (key lamp_mark, Alt+Insert by default; user 2026-11-01: the automatic detector found no street lamps)
 // Aim the screen centre at a lamp head and press the key: the next primary frame casts a ray from the camera through the
 // screen centre against the triangles of every world draw (vertex shader, stream-0 position + TEXCOORD0, triangle
 // list/strip/fan, not the car). The nearest hit gives the texture and the island around it (triangles connected to the
@@ -4194,7 +4194,7 @@ std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const f
     a = b + 1;
   }
   if (lines.empty()) {
-    lines = { "; Lamps marked in game with the lamp_mark key (Alt+B by default): aim the screen centre at a lamp head and press it.",
+    lines = { "; Lamps marked in game with the lamp_mark key (Alt+Insert by default): aim the screen centre at a lamp head and press it.",
               "; One section per lamp type: the texture and the rectangle of it that the lamp head uses. Every lamp drawn with",
               "; that part of the texture, on every stage, gets a light (worldlights.cpp; lumens, colour and size from lights.ini",
               "; [auto]; lights show at dusk/night). Delete a section to remove it. Read at game start and right after a mark.",

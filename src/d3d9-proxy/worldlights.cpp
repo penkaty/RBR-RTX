@@ -15,7 +15,7 @@
 // sphere the sphere's top, centre or bottom.
 //
 // Marking (user 2026-11-01: the automatic detector found no street lamps; European posts hang the head on an arm, the
-// glass faces down and the pole is a separate draw): the lamp_mark key (Alt+B, comp.cpp lamp marker) casts a ray from the
+// glass faces down and the pole is a separate draw): the lamp_mark key (Alt+Insert, comp.cpp lamp marker) casts a ray from the
 // screen centre, takes the texture and UV rectangle of the lamp head hit, and appends a [lamp.mark_<hash>_<n>] section
 // to config\lights-marked.ini (anchor = bottom, no pole test, values from lights.ini [auto] unless the section sets them).
 // Marks of one texture merge into one kind (several rectangles). Load order: lights-auto.ini, lights-marked.ini,

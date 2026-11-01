@@ -52,7 +52,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
   {L"bounces", kAlt | '0', L"ray interactions: rtx.conf -> large (dense-forest test) -> secondary 1"},   // Alt+P = experiment
   {L"api_world", kAlt | 'W', L"world through the Remix API: all -> foliage only -> off"},
-  {L"lamp_mark", kAlt | 'B', L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-01
+  {L"lamp_mark", kAlt | VK_INSERT, L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-01 (was Alt+B: B quits the game for the user)
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
