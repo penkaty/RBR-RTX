@@ -142,7 +142,7 @@ BOOL CALLBACK enum_cb(const void* inst, void* user) {
 }  // namespace
 
 void rbrrtx_dinput_block_install() {
-  if (g_active || !rbrrtx_env_flag(L"RBRRTX_MENU_BLOCK_INPUT", true)) return;
+  if (g_active || !rbrrtx_env_flag(L"RBRRTX_MENU_BLOCK_INPUT", false)) return;
   HMODULE di8 = GetModuleHandleW(L"dinput8.dll");
   if (!di8) di8 = LoadLibraryW(L"dinput8.dll");
   const auto create = di8 ? reinterpret_cast<PFN_DirectInput8Create>(GetProcAddress(di8, "DirectInput8Create")) : nullptr;
