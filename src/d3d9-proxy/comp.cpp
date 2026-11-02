@@ -4043,6 +4043,7 @@ struct LampPick {
   bool probe = false;
   unsigned long long tex1 = 0;
   unsigned flags = 0;
+  std::string kind;                                    // what kind of draw the nearest hit is (F3 picker)
   IDirect3DBaseTexture9* keep[2] = {};
 } g_pick;
 
@@ -4125,12 +4126,45 @@ bool pick_ray_from_camera(LampPick& pk) {
   return true;
 }
 
+// Fixed-function vertex layout (plain XYZ + optional normal / point size / colours + first texture set as 2D) for draws
+// that have no declaration to read: offsets of POSITION and TEXCOORD0, -1 = absent.
+void fvf_layout(DWORD fvf, int* posOff, int* uvOff, int* uvType) {
+  if ((fvf & D3DFVF_POSITION_MASK) != D3DFVF_XYZ) return;
+  *posOff = 0;
+  int off = 12;
+  if (fvf & D3DFVF_NORMAL) off += 12;
+  if (fvf & D3DFVF_PSIZE) off += 4;
+  if (fvf & D3DFVF_DIFFUSE) off += 4;
+  if (fvf & D3DFVF_SPECULAR) off += 4;
+  if (((fvf & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT) >= 1 && (fvf & (3u << 16)) == 0) { *uvOff = off; *uvType = D3DDECLTYPE_FLOAT2; }
+}
+
+// What the draw is, for the F3 picker: the shader class (flags) or "fixed-function".
+const char* pick_kind(bool ff, unsigned flags) {
+  if (ff) return "fixed-function world draw (game's own transform)";
+  if (flags & SH_CAR) return "car";
+  if (flags & SH_GLASS) return "glass";
+  if (flags & SH_SWAY) return "swaying foliage (vertex shader)";
+  if (flags & SH_DOUBLE) return "ground / two-texture scenery (RLDouble)";
+  if ((flags & SH_SCENERY) && (flags & SH_WORLDSPACE)) return "static scenery (world-space vertex shader)";
+  if (flags & SH_SCENERY) return "scenery (object-space vertex shader)";
+  return "world draw (vertex shader)";
+}
+
 // Per world draw while armed (comp_draw): the ray against this draw's triangles; keeps the nearest hit of the frame.
+// The F3 picker (pk.probe) also takes the car, glass and fixed-function world draws (not screen-space ones: HUD, flare).
 void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   // Without this frame's camera the ray armed from the last stage camera (lamp_mark_frame) still stands: world-space
   // draws carry world coordinates (user 2026-11-02: "no world camera this frame" on a stage).
-  if (!pk.armed || !g_primaryRT || !(g_frameCam || pk.ray) || !g_curVS || !g_curInfo || g_drawNumVert == 0) return;
-  if (g_curInfo->flags & (SH_CAR | SH_SKY | SH_GLASS | SH_PARTICLE)) return;
+  if (!pk.armed || !g_primaryRT || !(g_frameCam || pk.ray) || g_drawNumVert == 0) return;
+  const bool ffDraw = !g_curVS;
+  if (ffDraw) {
+    if (!pk.probe || screen_space_input(dev)) return;
+  } else {
+    if (!g_curInfo) return;
+    if (g_curInfo->flags & (SH_SKY | SH_PARTICLE)) return;
+    if (!pk.probe && (g_curInfo->flags & (SH_CAR | SH_GLASS))) return;
+  }
   if (g_drawType != D3DPT_TRIANGLELIST && g_drawType != D3DPT_TRIANGLESTRIP && g_drawType != D3DPT_TRIANGLEFAN) return;
   if (g_frameCam && (!pk.ray || pk.lastCam)) {   // the screen-centre ray (P._31/_32: an off-centre projection)
     if (!pick_ray_from_camera(pk)) return;
@@ -4140,7 +4174,7 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   const double* dir = pk.dir;
   ++pk.draws;
   float sc[3], sr = 0.0f;
-  if (draw_world_sphere(dev, sc, &sr, true)) {         // cheap first: the bounding sphere must be on the ray
+  if (!ffDraw && draw_world_sphere(dev, sc, &sr, true)) {   // cheap first: the bounding sphere must be on the ray
     const double lx = sc[0] - org[0], ly = sc[1] - org[1], lz = sc[2] - org[2], reach = sr + 1.0;
     const double tca = lx * dir[0] + ly * dir[1] + lz * dir[2];
     if (lx * lx + ly * ly + lz * lz - tca * tca > reach * reach || tca + reach < 0 || (pk.hit && tca - reach > pk.t)) return;
@@ -4152,6 +4186,12 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   bt->lpVtbl->Release(bt);
   int posOff = -1, uvOff = -1, uvType = -1;
   stream0_layout(dev, &posOff, &uvOff, &uvType);
+  if (ffDraw && (posOff < 0 || uvOff < 0)) {           // an FVF draw: the layout comes from the FVF
+    DWORD fvf = g_curFVF;
+    if (g_vin != kVinFvf) dev->lpVtbl->GetFVF(dev, &fvf);
+    posOff = uvOff = uvType = -1;
+    fvf_layout(fvf, &posOff, &uvOff, &uvType);
+  }
   IDirect3DVertexBuffer9* vb = nullptr;
   UINT offset = 0, stride = 0;
   if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) { ++pk.unreadable; return; }
@@ -4165,8 +4205,8 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
     ++pk.unreadable;
     return;
   }
-  const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
-  const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+  const bool world = !ffDraw && (g_curInfo->flags & SH_WORLDSPACE) != 0;
+  const D3DMATRIX w = world ? D3DMATRIX{} : ffDraw ? (g_gameSet[0] ? g_game[0] : identity()) : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
   PickDraw d;
   d.pos.resize(nv);
   d.uv.resize(nv);
@@ -4239,11 +4279,12 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   pk.t = best;
   pk.tex = hx;
   pk.drawVerts = nv;
-  pk.shader = g_curInfo->name;
+  pk.shader = ffDraw ? L"(fixed-function)" : g_curInfo->name;
   double hp[3];
   for (int k = 0; k < 3; ++k) { hp[k] = org[k] + dir[k] * best; pk.point[k] = static_cast<float>(hp[k]); }
   if (pk.probe) {                                      // F3 texture picker: t1, flags, and the textures kept for thumbnails
-    pk.flags = g_curInfo->flags;
+    pk.flags = ffDraw ? 0 : g_curInfo->flags;
+    pk.kind = pick_kind(ffDraw, pk.flags);
     pk.tex1 = 0;
     for (int s = 0; s < 2; ++s) {
       if (pk.keep[s]) { pk.keep[s]->lpVtbl->Release(pk.keep[s]); pk.keep[s] = nullptr; }
@@ -5280,7 +5321,7 @@ struct TProbeResult {
   bool found = false;
   unsigned long long hash[2] = {};
   IDirect3DBaseTexture9* tex[2] = {};
-  std::string shader;
+  std::string shader, kind;
   float dist = 0.0f;
 } g_tpRes;
 unsigned g_tpWantUntil = 0;                            // the page asked for new results up to this frame
@@ -5318,6 +5359,7 @@ void f3_probe_frame() {
       g_tpRes.hash[0] = g_tprobe.tex;
       g_tpRes.hash[1] = g_tprobe.tex1;
       g_tpRes.shader = f3_narrow(g_tprobe.shader.c_str());
+      g_tpRes.kind = g_tprobe.kind;
       g_tpRes.dist = static_cast<float>(g_tprobe.t);
       for (int s = 0; s < 2; ++s) { g_tpRes.tex[s] = g_tprobe.keep[s]; g_tprobe.keep[s] = nullptr; }   // ownership moves
     }
@@ -5342,6 +5384,7 @@ int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
   out->hash[1] = g_tpRes.hash[1];
   for (int s = 0; s < 2; ++s) out->texture[s] = g_tpRes.tex[s];
   strncpy_s(out->shader, g_tpRes.shader.c_str(), _TRUNCATE);
+  strncpy_s(out->kind, g_tpRes.kind.c_str(), _TRUNCATE);
   out->distance = g_tpRes.dist;
   return 1;
 }

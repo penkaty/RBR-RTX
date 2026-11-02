@@ -315,9 +315,10 @@ void page_textures(void*) {
   }
   g_cb.probe_centre(&pick, g_tex_freeze ? 0 : 1);
   if (!pick.found) {
-    ImGui::TextDisabled("nothing found under the centre (needs a world draw with a vertex shader, not the car)");
+    ImGui::TextDisabled("nothing found under the centre (world draws incl. car, foliage and fixed-function scenery; not the sky, HUD or particles)");
     return;
   }
+  ImGui::Text("%s", pick.kind[0] ? pick.kind : "draw");
   ImGui::Text("shader %s, %.1f m away", pick.shader, pick.distance);
   pick_texture_row(pick, 0);
   pick_texture_row(pick, 1);
