@@ -1667,8 +1667,9 @@ void rbrrtx_headlights_emit() {
   float brake = 0.0f;
   const bool brakeRead = rbrrtx_player_car_brake(&brake);
   const bool braking = g_cfg.brakeLights && brakeRead && brake > (g_braking ? g_cfg.brakeOn * 0.5f : g_cfg.brakeOn);
-  if (braking != g_braking && ++g_brakeSwitches <= 3)
-    hlog(L"headlights: brake lights %s (brake input %.2f)", braking ? L"ON" : L"off", brake);
+  if (braking != g_braking && ++g_brakeSwitches <= 6)
+    hlog(L"headlights: brake lights %s (brake input %.2f; lamps from %s, body frames %u, held %u)", braking ? L"ON" : L"off", brake,
+         g_poseSrc, g_bodyFrames, g_bodyHeld);
   g_braking = braking;
   int gear = 1;                                        // reverse: two white lamps at Point_light_reverse_lb/rb
   const bool reversing = g_cfg.reverseLight && rbrrtx_player_car_gear(&gear) && gear == 0;
@@ -1945,6 +1946,20 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   ++g_frameNo;
   g_rootThisFrame = g_predThisFrame = false;            // windscreen drops: placed from the next frame's draws
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
+  // Remix Plus keeps a created light drawn every frame until it is destroyed: a frame that lit the lamps but sent none (no
+  // pose, no body, no object) left them hanging where the last frame put them (user 2026-11-02: the lamps "stay where braking
+  // started"). They go out instead, and the log says when and which pose source ran last.
+  if (g_lampsLit && g_emitted && !g_sentThisFrame && g_track >= 0) {
+    bool live = false;
+    for (const Lamp& l : g_lamps) live = live || l.h;
+    if (live) {
+      destroy_all();
+      static unsigned s_stale = 0;
+      if (++s_stale <= 10 || s_stale % 600 == 0)
+        hlog(L"headlights: a frame lit the lamps but sent none (last pose source %s, body frames %u, held %u, braking %d): lamps removed instead of left hanging (%u times)",
+             g_poseSrc, g_bodyFrames, g_bodyHeld, g_braking ? 1 : 0, s_stale);
+    }
+  }
   g_emitted = g_refined = g_sentThisFrame = false;       // lamp states at the next first BeginScene
   if (layerOn && g_track >= 0) measure_frame();          // with every car draw of the frame
   if (!g_groups.empty()) ++g_worldCarFrames;
