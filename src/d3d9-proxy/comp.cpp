@@ -4085,6 +4085,7 @@ struct LampPick {
   unsigned long long tex1 = 0;
   unsigned flags = 0;
   std::string kind;                                    // what kind of draw the nearest hit is (F3 picker)
+  bool skipFoliage = false, foliage = false;           // skipFoliage: swaying / alpha-tested cards are not hit (lamp marking); foliage: the nearest hit is one
   IDirect3DBaseTexture9* keep[2] = {};
 } g_pick;
 
@@ -4192,6 +4193,15 @@ const char* pick_kind(bool ff, unsigned flags) {
   return "world draw (vertex shader)";
 }
 
+// Foliage cards: swaying vertex shaders (RL*Sway) or any alpha-tested draw that is not the two-texture RLDouble scenery.
+bool is_foliage_draw(IDirect3DDevice9* dev) {
+  if (g_curInfo && (g_curInfo->flags & SH_SWAY)) return true;
+  if (g_curInfo && (g_curInfo->flags & SH_DOUBLE)) return false;
+  DWORD at = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
+  return at != 0;
+}
+
 // Per world draw while armed (comp_draw): the ray against this draw's triangles; keeps the nearest hit of the frame.
 // The F3 picker (pk.probe) also takes the car, glass and fixed-function world draws (not screen-space ones: HUD, flare).
 void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
@@ -4200,13 +4210,15 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   if (!pk.armed || !g_primaryRT || !(g_frameCam || pk.ray) || g_drawNumVert == 0) return;
   const bool ffDraw = !g_curVS;
   if (ffDraw) {
-    if (!pk.probe || screen_space_input(dev)) return;
+    if (screen_space_input(dev)) return;                 // HUD, flare: no world position
   } else {
     if (!g_curInfo) return;
     if (g_curInfo->flags & (SH_SKY | SH_PARTICLE)) return;
     if (!pk.probe && (g_curInfo->flags & (SH_CAR | SH_GLASS))) return;
   }
   if (g_drawType != D3DPT_TRIANGLELIST && g_drawType != D3DPT_TRIANGLESTRIP && g_drawType != D3DPT_TRIANGLEFAN) return;
+  const bool foliageDraw = is_foliage_draw(dev);
+  if (pk.skipFoliage && foliageDraw) return;             // the lamp behind a tree (user 2026-11-02: the marker hit a tree 46 m away)
   if (g_frameCam && (!pk.ray || pk.lastCam)) {   // the screen-centre ray (P._31/_32: an off-centre projection)
     if (!pick_ray_from_camera(pk)) return;
     pk.lastCam = false;
@@ -4323,9 +4335,10 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   pk.shader = ffDraw ? L"(fixed-function)" : g_curInfo->name;
   double hp[3];
   for (int k = 0; k < 3; ++k) { hp[k] = org[k] + dir[k] * best; pk.point[k] = static_cast<float>(hp[k]); }
+  pk.foliage = foliageDraw;
   if (pk.probe) {                                      // F3 texture picker: t1, flags, and the textures kept for thumbnails
     pk.flags = ffDraw ? 0 : g_curInfo->flags;
-    pk.kind = pick_kind(ffDraw, pk.flags);
+    pk.kind = std::string(pick_kind(ffDraw, pk.flags)) + (foliageDraw ? ", foliage card" : "");
     pk.tex1 = 0;
     for (int s = 0; s < 2; ++s) {
       if (pk.keep[s]) { pk.keep[s]->lpVtbl->Release(pk.keep[s]); pk.keep[s] = nullptr; }
@@ -4334,7 +4347,6 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
       if (s == 1) pk.tex1 = rbrrtx_texture_hash(b);
       if (b->lpVtbl->GetType(b) == D3DRTYPE_TEXTURE) pk.keep[s] = b; else b->lpVtbl->Release(b);
     }
-    return;
   }
   pk.island = lamp_island(d, bestTri, hp, pk.rect);
 }
@@ -4425,6 +4437,63 @@ void lamp_mark_beep(bool ok) {
   }, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(ok ? 1 : 0)), 0, nullptr);
 }
 
+// One lamp hit (the key marker's nearest hit, or the F3 picker's): what a mark needs.
+struct LampHit {
+  unsigned long long tex = 0;
+  float rect[4] = {}, point[3] = {};
+  double t = 0;
+  unsigned island = 0, drawVerts = 0;
+  std::wstring shader;
+  bool fixedFunction = false;
+};
+
+LampHit lamp_hit_of(const LampPick& pk) {
+  LampHit h;
+  h.tex = pk.tex;
+  std::memcpy(h.rect, pk.rect, sizeof(h.rect));
+  std::memcpy(h.point, pk.point, sizeof(h.point));
+  h.t = pk.t;
+  h.island = pk.island;
+  h.drawVerts = pk.drawVerts;
+  h.shader = pk.shader;
+  h.fixedFunction = pk.shader == L"(fixed-function)";
+  return h;
+}
+
+// Writes the mark for a hit into lights-marked.ini and re-reads the lamp kinds. msg gets the one-line result.
+bool lamp_mark_commit(const LampHit& h, std::string* msg) {
+  wchar_t path[MAX_PATH * 2];
+  rbrrtx_lights_marked_path(path, MAX_PATH * 2, true);
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  const RbrStageInfo& si = g_atmoStage;
+  std::string stage = "menu";
+  if (!g_inMenu) {
+    stage = "stage " + std::to_string(si.trackId) + " ";
+    for (const wchar_t* c = si.name; *c; ++c) stage += *c < 128 && *c >= 32 ? static_cast<char>(*c) : '?';
+  }
+  char note[320];
+  snprintf(note, sizeof(note), "%s, marked %04d-%02d-%02d %02d:%02d, hit at (%.2f %.2f %.2f) %.1f m away, %u island vertices", stage.c_str(),
+           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, h.point[0], h.point[1], h.point[2], h.t, h.island);
+  bool replaced = false;
+  const std::string sec = lamp_mark_write(path, h.tex, h.rect, note, rbrrtx_world_lights_mark_glow(), &replaced);
+  if (sec.empty()) {
+    clog(L"lamp mark: FAILED to write %s", path);
+    if (msg) *msg = "could not write lights-marked.ini";
+    return false;
+  }
+  clog(L"lamp mark: %S texture %016llX (shader %s, %u vertices in the draw) hit at (%.2f %.2f %.2f), %.1f m away; island %u vertices, "
+       L"uv %.4f, %.4f, %.4f, %.4f -> [%S] %s in %s%s",
+       stage.c_str(), h.tex, h.shader.c_str(), h.drawVerts, h.point[0], h.point[1], h.point[2],
+       h.t, h.island, h.rect[0], h.rect[1], h.rect[2], h.rect[3], sec.c_str(),
+       replaced ? L"replaced" : L"added", path,
+       h.fixedFunction ? L" (a fixed-function draw: lights are only placed from vertex-shader draws, this mark will not light)" : L"");
+  g_uvLampCache.clear();
+  rbrrtx_world_lights_reload();
+  if (msg) *msg = std::string(replaced ? "replaced " : "added ") + "[" + sec + "]";
+  return true;
+}
+
 // After the armed frame (Present): the nearest hit becomes a mark.
 void lamp_pick_finish() {
   if (!g_pick.draws && g_pick.retries < 5) { ++g_pick.retries; return; }   // a frame without a single world draw: the next one
@@ -4439,35 +4508,73 @@ void lamp_pick_finish() {
     if (g_pick.hit)
       clog(L"lamp mark: the nearest surface on the screen-centre ray is %.1f m away (limit 150 m; texture %016llX), nothing marked", g_pick.t, g_pick.tex);
     else
-      clog(L"lamp mark: nothing hit by the ray through the screen centre (%u world draws, %u tested, %u with unreadable buffers; strips/fans/lists with vertex shaders only, not the car)",
+      clog(L"lamp mark: nothing hit by the ray through the screen centre (%u world draws, %u tested, %u with unreadable buffers; swaying and alpha-tested foliage is skipped, not the car)",
            g_pick.draws, g_pick.tested, g_pick.unreadable);
     lamp_mark_beep(false);
     return;
   }
+  lamp_mark_beep(lamp_mark_commit(lamp_hit_of(g_pick), nullptr));
+}
+
+// Marked lamps of lights-marked.ini for the F3 page: section, texture, uv rectangle, note line above it.
+struct LampMark { std::string section, note; unsigned long long tex = 0; float rect[4] = {}; };
+
+std::vector<LampMark> lamp_marks_read(std::vector<std::string>* linesOut, std::vector<std::pair<size_t, size_t>>* spans) {
+  std::vector<LampMark> out;
   wchar_t path[MAX_PATH * 2];
-  rbrrtx_lights_marked_path(path, MAX_PATH * 2, true);
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-  const RbrStageInfo& si = g_atmoStage;
-  std::string stage = "menu";
-  if (!g_inMenu) {
-    stage = "stage " + std::to_string(si.trackId) + " ";
-    for (const wchar_t* c = si.name; *c; ++c) stage += *c < 128 && *c >= 32 ? static_cast<char>(*c) : '?';
+  rbrrtx_lights_marked_path(path, MAX_PATH * 2, false);
+  std::string text;
+  { std::ifstream in(path, std::ios::binary); if (in) text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()); }
+  std::vector<std::string> lines;
+  for (size_t a = 0; a < text.size();) {
+    size_t b = text.find('\n', a);
+    if (b == std::string::npos) b = text.size();
+    std::string l = text.substr(a, b - a);
+    if (!l.empty() && l.back() == '\r') l.pop_back();
+    lines.push_back(l);
+    a = b + 1;
   }
-  char note[320];
-  snprintf(note, sizeof(note), "%s, marked %04d-%02d-%02d %02d:%02d, hit at (%.2f %.2f %.2f) %.1f m away, %u island vertices", stage.c_str(),
-           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, g_pick.point[0], g_pick.point[1], g_pick.point[2], g_pick.t, g_pick.island);
-  bool replaced = false;
-  const std::string sec = lamp_mark_write(path, g_pick.tex, g_pick.rect, note, rbrrtx_world_lights_mark_glow(), &replaced);
-  if (sec.empty()) { clog(L"lamp mark: FAILED to write %s", path); lamp_mark_beep(false); return; }
-  clog(L"lamp mark: %S texture %016llX (shader %s, %u vertices in the draw) hit at (%.2f %.2f %.2f), %.1f m away; island %u vertices, "
-       L"uv %.4f, %.4f, %.4f, %.4f -> [%S] %s in %s",
-       stage.c_str(), g_pick.tex, g_pick.shader.c_str(), g_pick.drawVerts, g_pick.point[0], g_pick.point[1], g_pick.point[2],
-       g_pick.t, g_pick.island, g_pick.rect[0], g_pick.rect[1], g_pick.rect[2], g_pick.rect[3], sec.c_str(),
-       replaced ? L"replaced" : L"added", path);
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].compare(0, 11, "[lamp.mark_") != 0) continue;
+    LampMark m;
+    const size_t close = lines[i].find(']');
+    m.section = lines[i].substr(1, close == std::string::npos ? std::string::npos : close - 1);
+    size_t end = i + 1;
+    for (; end < lines.size() && !lines[end].empty() && lines[end][0] != '[' && lines[end][0] != ';'; ++end) {
+      const size_t eq = lines[end].find('=');
+      if (eq == std::string::npos) continue;
+      if (lines[end].compare(0, 7, "texture") == 0) m.tex = std::strtoull(lines[end].c_str() + eq + 1, nullptr, 16);
+      else if (lines[end].compare(0, 2, "uv") == 0) sscanf_s(lines[end].c_str() + eq + 1, "%f , %f , %f , %f", &m.rect[0], &m.rect[1], &m.rect[2], &m.rect[3]);
+    }
+    size_t start = i;
+    while (start > 0 && !lines[start - 1].empty() && lines[start - 1][0] == ';') --start;   // its comment lines
+    if (start < i) m.note = lines[i - 1].size() > 2 ? lines[i - 1].substr(2) : std::string();
+    out.push_back(m);
+    if (spans) spans->push_back({ start, end });
+  }
+  if (linesOut) *linesOut = std::move(lines);
+  return out;
+}
+
+bool lamp_mark_remove(int index) {
+  std::vector<std::string> lines;
+  std::vector<std::pair<size_t, size_t>> spans;
+  const std::vector<LampMark> marks = lamp_marks_read(&lines, &spans);
+  if (index < 0 || index >= static_cast<int>(marks.size())) return false;
+  const auto sp = spans[index];
+  lines.erase(lines.begin() + sp.first, lines.begin() + sp.second);
+  if (sp.first < lines.size() && lines[sp.first].empty() && sp.first > 0 && lines[sp.first - 1].empty()) lines.erase(lines.begin() + sp.first);   // the blank line it leaves
+  std::string out;
+  for (const std::string& l : lines) out += l + "\r\n";
+  wchar_t path[MAX_PATH * 2];
+  rbrrtx_lights_marked_path(path, MAX_PATH * 2, false);
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  f.write(out.data(), static_cast<std::streamsize>(out.size()));
+  if (!f) return false;
+  clog(L"lamp mark: [%S] removed from lights-marked.ini (menu)", marks[index].section.c_str());
   g_uvLampCache.clear();
   rbrrtx_world_lights_reload();
-  lamp_mark_beep(true);
+  return true;
 }
 
 // Per Present: finishes an armed pick, then the key arms the next frame's.
@@ -4476,6 +4583,7 @@ void lamp_mark_frame() {
   if (rbrrtx_key_pressed(RBRKEY_LAMP_MARK)) {
     g_pick = LampPick();
     g_pick.armed = true;
+    g_pick.skipFoliage = true;                         // a lamp is never a tree: the ray goes through swaying / alpha-tested cards
     if (g_haveCam && !g_inMenu && pick_ray_from_camera(g_pick)) g_pick.lastCam = true;   // the last valid stage camera, kept as the fallback
   }
 }
@@ -5364,7 +5472,10 @@ struct TProbeResult {
   IDirect3DBaseTexture9* tex[2] = {};
   std::string shader, kind;
   float dist = 0.0f;
+  LampHit lamp;                                        // the hit as a lamp mark would take it (island rectangle in the texture)
+  bool foliage = false;
 } g_tpRes;
+bool g_tpSkipFoliage = false;                          // the page's "skip foliage" box
 unsigned g_tpWantUntil = 0;                            // the page asked for new results up to this frame
 
 std::string f3_narrow(const wchar_t* w) {
@@ -5401,6 +5512,8 @@ void f3_probe_frame() {
       g_tpRes.hash[1] = g_tprobe.tex1;
       g_tpRes.shader = f3_narrow(g_tprobe.shader.c_str());
       g_tpRes.kind = g_tprobe.kind;
+      g_tpRes.lamp = lamp_hit_of(g_tprobe);
+      g_tpRes.foliage = g_tprobe.foliage;
       g_tpRes.dist = static_cast<float>(g_tprobe.t);
       for (int s = 0; s < 2; ++s) { g_tpRes.tex[s] = g_tprobe.keep[s]; g_tprobe.keep[s] = nullptr; }   // ownership moves
     }
@@ -5409,6 +5522,7 @@ void f3_probe_frame() {
   }
   if (want) {
     g_tprobe.armed = g_tprobe.probe = true;
+    g_tprobe.skipFoliage = g_tpSkipFoliage;
     if (g_haveCam && !g_inMenu && pick_ray_from_camera(g_tprobe)) g_tprobe.lastCam = true;   // the last valid stage camera as fallback
   } else if (!rbrrtx_menu_is_open() && (g_tpRes.tex[0] || g_tpRes.tex[1])) {
     f3_release_tex(g_tpRes.tex);                       // menu closed: no reference held on game textures
@@ -5418,6 +5532,7 @@ void f3_probe_frame() {
 int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
   g_tpWantUntil = wantNew ? g_frame + 3 : 0;
   if (!out) return 0;
+  g_tpSkipFoliage = out->skip_foliage != 0;
   *out = rbrrtx_menu_pick();
   if (!g_tpRes.found) return 0;
   out->found = 1;
@@ -5426,8 +5541,46 @@ int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
   for (int s = 0; s < 2; ++s) out->texture[s] = g_tpRes.tex[s];
   strncpy_s(out->shader, g_tpRes.shader.c_str(), _TRUNCATE);
   strncpy_s(out->kind, g_tpRes.kind.c_str(), _TRUNCATE);
+  out->foliage = g_tpRes.foliage ? 1 : 0;
+  out->has_island = g_tpRes.lamp.island > 0 && g_tpRes.lamp.rect[2] > g_tpRes.lamp.rect[0] && g_tpRes.lamp.rect[3] > g_tpRes.lamp.rect[1];
+  out->island_verts = g_tpRes.lamp.island;
+  std::memcpy(out->uv_rect, g_tpRes.lamp.rect, sizeof(out->uv_rect));
   out->distance = g_tpRes.dist;
   return 1;
+}
+
+// ---- lamp marking from the picker (Textures page)
+std::vector<LampMark> g_f3Lamps;
+bool g_f3LampsLoaded = false;
+
+void f3_lamps_reload() { g_f3Lamps = lamp_marks_read(nullptr, nullptr); g_f3LampsLoaded = true; }
+
+int f3_lamp_mark(char* msg, size_t n) {
+  std::string m;
+  if (!g_tpRes.found) { strncpy_s(msg, n, "no hit to mark", _TRUNCATE); return 0; }
+  if (g_tpRes.foliage) { strncpy_s(msg, n, "that hit is a foliage card, not a lamp", _TRUNCATE); lamp_mark_beep(false); return 0; }
+  if (g_tpRes.lamp.island == 0) { strncpy_s(msg, n, "no island found at the hit (the draw has no readable UVs)", _TRUNCATE); return 0; }
+  const bool ok = lamp_mark_commit(g_tpRes.lamp, &m);
+  f3_lamps_reload();
+  strncpy_s(msg, n, m.c_str(), _TRUNCATE);
+  return ok ? 1 : 0;
+}
+
+int f3_lamp_list(int i, char* label, size_t n) {
+  static unsigned loadedFrame = 0;
+  if (!g_f3LampsLoaded || (i == 0 && g_frame - loadedFrame >= 30)) { f3_lamps_reload(); loadedFrame = g_frame; }   // the key marker may have added one
+  if (i < 0 || i >= static_cast<int>(g_f3Lamps.size())) return 0;
+  const LampMark& m = g_f3Lamps[i];
+  char b[320];
+  snprintf(b, sizeof(b), "%016llX uv %.3f %.3f %.3f %.3f  %s", m.tex, m.rect[0], m.rect[1], m.rect[2], m.rect[3], m.note.c_str());
+  strncpy_s(label, n, b, _TRUNCATE);
+  return 1;
+}
+
+int f3_lamp_remove(int i) {
+  const bool ok = lamp_mark_remove(i);
+  f3_lamps_reload();
+  return ok ? 1 : 0;
 }
 
 // ---- Debug page: A/B switches (choice or checkbox), listed here, drawn by menu.cpp. Each change is logged.
@@ -5553,6 +5706,9 @@ void f3_install(IDirect3DDevice9* dev) {
   cb.texture_ini_dump = f3_ini_dump;
   cb.info_text = f3_info_text;
   cb.key_line = f3_key_line;
+  cb.lamp_mark = f3_lamp_mark;
+  cb.lamp_list = f3_lamp_list;
+  cb.lamp_remove = f3_lamp_remove;
   cb.switch_get = f3_switch_get;
   cb.switch_set = f3_switch_set;
   cb.config_dir = f3_config_dir;

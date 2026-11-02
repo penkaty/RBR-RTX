@@ -59,6 +59,8 @@ char g_status[160] = "";      // one line of feedback at the bottom of the windo
 
 // Texture picker state (the proxy probes while the page asks for new results and it is not frozen).
 bool g_tex_freeze = false;
+bool g_tex_skip_foliage = false;   // the ray goes through swaying / alpha-tested foliage cards (lamps are behind trees)
+char g_lamp_msg[200] = "";
 int g_tex_target = 0;         // which texture of the draw the tag buttons act on: 0 = t0, 1 = t1
 
 // ---- Wetness page: mirrors the rtx.wet.* options of the Remix runtime (rtx_fork_wetness.h) -------------------
@@ -282,6 +284,14 @@ void pick_texture_row(const rbrrtx_menu_pick& pick, int s) {
   const float side = ImGui::GetTextLineHeight() * 5.0f;
   if (pick.texture[s]) {
     ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<uintptr_t>(pick.texture[s])), ImVec2(side, side));
+    if (s == 0 && pick.has_island) {                 // the island around the hit point: the part of the texture a lamp mark would take
+      const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+      const ImVec2 p0(a.x + (b.x - a.x) * pick.uv_rect[0], a.y + (b.y - a.y) * pick.uv_rect[1]);
+      const ImVec2 p1(a.x + (b.x - a.x) * pick.uv_rect[2], a.y + (b.y - a.y) * pick.uv_rect[3]);
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      dl->AddRectFilled(p0, p1, IM_COL32(255, 220, 0, 70));
+      dl->AddRect(p0, p1, IM_COL32(255, 220, 0, 255), 0.0f, 0, 2.0f);
+    }
     ImGui::SameLine();
   }
   ImGui::BeginGroup();
@@ -298,6 +308,45 @@ void pick_texture_row(const rbrrtx_menu_pick& pick, int s) {
   ImGui::PopID();
 }
 
+// Lamps: mark the current hit (the highlighted island of the thumbnail) and the list of marked lamps with Remove.
+// A mark needs a vertex-shader draw that is not foliage; every lamp drawn with that part of the texture gets a light
+// (lights.ini [auto], lights show at dusk and night).
+void lamp_section(const rbrrtx_menu_pick* pick) {
+  ImGui::Separator();
+  ImGui::TextUnformatted("Lamps");
+  if (pick) {
+    const bool can = g_cb.lamp_mark && pick->has_island && !pick->foliage;
+    ImGui::BeginDisabled(!can);
+    if (ImGui::Button("Mark as lamp")) {
+      char msg[160] = "";
+      const int r = g_cb.lamp_mark(msg, sizeof(msg));
+      std::snprintf(g_lamp_msg, sizeof(g_lamp_msg), r ? "lamp marked: %s" : "lamp mark failed: %s", msg);
+      set_status(g_lamp_msg);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (pick->foliage) ImGui::TextDisabled("foliage card: tick \"Skip foliage\" and aim at the lamp");
+    else if (!pick->has_island) ImGui::TextDisabled("no UV island at the hit");
+    else ImGui::TextDisabled("island: %u vertices, uv %.3f %.3f - %.3f %.3f (yellow box)", pick->island_verts, pick->uv_rect[0], pick->uv_rect[1], pick->uv_rect[2], pick->uv_rect[3]);
+  }
+  if (!g_cb.lamp_list) return;
+  char label[320];
+  int n = 0;
+  for (int i = 0; i < 200 && g_cb.lamp_list(i, label, sizeof(label)); ++i, ++n) {
+    ImGui::PushID(1000 + i);
+    if (ImGui::SmallButton("Remove") && g_cb.lamp_remove) {
+      std::snprintf(g_lamp_msg, sizeof(g_lamp_msg), g_cb.lamp_remove(i) ? "lamp mark removed" : "could not remove the mark");
+      set_status(g_lamp_msg);
+      ImGui::PopID();
+      break;
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+    ImGui::PopID();
+  }
+  if (!n) ImGui::TextDisabled("no lamps marked (lights-marked.ini)");
+}
+
 // Texture picker v2: the proxy casts the screen-centre ray against the triangles of the world draws (the lamp
 // marker's machinery) and reports the draw under the crosshair. Freeze keeps the last hit so the mouse can reach the
 // buttons; a tag button toggles the hash in the proxy's list for that class, applies it live and saves menu.ini.
@@ -308,7 +357,10 @@ void page_textures(void*) {
                      "in menu.ini [textures]. Categories come from rtx.conf and the lists of this session; changes "
                      "made in Alt+X are not shown.");
   ImGui::Checkbox("Freeze (keep the last hit)", &g_tex_freeze);
+  ImGui::SameLine();
+  ImGui::Checkbox("Skip foliage (look through trees)", &g_tex_skip_foliage);
   rbrrtx_menu_pick pick = {};
+  pick.skip_foliage = g_tex_skip_foliage ? 1 : 0;
   if (!g_cb.probe_centre) {
     ImGui::TextDisabled("No probe_centre callback.");
     return;
@@ -316,6 +368,7 @@ void page_textures(void*) {
   g_cb.probe_centre(&pick, g_tex_freeze ? 0 : 1);
   if (!pick.found) {
     ImGui::TextDisabled("nothing found under the centre (world draws incl. car, foliage and fixed-function scenery; not the sky, HUD or particles)");
+    lamp_section(nullptr);
     return;
   }
   ImGui::Text("%s", pick.kind[0] ? pick.kind : "draw");
@@ -341,6 +394,7 @@ void page_textures(void*) {
     }
   }
   ImGui::EndDisabled();
+  lamp_section(&pick);
 }
 
 // Debug page: the proxy's A/B switches (ground layer mode, facade fix, flare and sun-outline hides). Each acts at once

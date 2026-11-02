@@ -21,6 +21,11 @@ typedef struct rbrrtx_menu_pick {
   char shader[64];                 // vertex shader name of the draw (or "(fixed-function)")
   char kind[48];                   // what the draw is: world / fixed-function scenery / swaying foliage / car / ...
   float distance;                  // metres from the camera
+  int skip_foliage;                // INPUT: set by the menu before probe_centre: swaying / alpha-tested cards are not hit
+  int foliage;                     // the hit draw is a foliage card
+  int has_island;                  // the hit has a UV island (the part of the texture around the hit point)
+  unsigned island_verts;
+  float uv_rect[4];                // that island's rectangle in the base texture (u0, v0, u1, v1, 0..1)
 } rbrrtx_menu_pick;
 
 // One A/B switch of the Debug page (the proxy lists them, the menu draws them). options "" = checkbox (value 0 / 1);
@@ -60,6 +65,12 @@ typedef struct rbrrtx_menu_callbacks {
   void (*info_text)(char* buf, size_t buf_len);
   // Info page key list: line i ("Alt+K  stage sweep"), returns 0 when i is past the end.
   int (*key_line)(int i, char* buf, size_t buf_len);
+
+  // Lamps (Textures page): mark the current hit as a lamp (writes lights-marked.ini; msg = one line of result, returns 1 = ok),
+  // list the marked lamps (label of marked lamp i; 0 past the end) and remove one.
+  int (*lamp_mark)(char* msg, size_t n);
+  int (*lamp_list)(int i, char* label, size_t n);
+  int (*lamp_remove)(int i);
 
   // Debug page: switch i (0-based) fills *sw and returns 1, 0 past the end; switch_set applies a new value at once.
   int (*switch_get)(int i, rbrrtx_menu_switch* sw);
