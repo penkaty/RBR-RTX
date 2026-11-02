@@ -25,7 +25,9 @@ typedef struct rbrrtx_menu_pick {
   int foliage;                     // the hit draw is a foliage card
   int has_island;                  // the hit has a UV island (the part of the texture around the hit point)
   unsigned island_verts;
-  float uv_rect[4];                // that island's rectangle in the base texture (u0, v0, u1, v1, 0..1)
+  float uv_rect[4];
+  float point[3];                  // the hit point in world space
+  float up_share;                  // share (0..1) of the hit draw's triangle area that faces up; -1 = unknown                // that island's rectangle in the base texture (u0, v0, u1, v1, 0..1)
 } rbrrtx_menu_pick;
 
 // One A/B switch of the Debug page (the proxy lists them, the menu draws them). options "" = checkbox (value 0 / 1);
@@ -79,6 +81,8 @@ typedef struct rbrrtx_menu_callbacks {
   int (*remix_opt_lookup)(const char* key, char* ours, char* user, size_t val_len);
   int (*remix_pin_send)(const char* key, const char* value);
   void (*log)(const char* line);
+  // Camera of the last stage frame: position and forward vector (world space). 0 = none yet.
+  int (*camera)(float pos[3], float fwd[3]);
 
   // Lamps (Textures page): mark the current hit as a lamp (writes lights-marked.ini; msg = one line of result, returns 1 = ok),
   // list the marked lamps (label of marked lamp i; 0 past the end) and remove one.
@@ -142,6 +146,12 @@ int  rbrrtx_menu_option_locked(const char* key, float* value);
 
 // Pinned Remix option (menu.ini [remix], F3 "Remix settings"): 1 and the pinned value when the user pinned the key. The
 // proxy's own remix_set drops its sets of a pinned key. value may be null.
+// For modules that add pages (menu_custom.cpp): the picker's hit (as the Textures page asks for it) and the proxy's camera / log.
+int  rbrrtx_menu_probe(rbrrtx_menu_pick* pick, int want_new);
+int  rbrrtx_menu_camera(float pos[3], float fwd[3]);
+void rbrrtx_menu_log(const char* line);
+void rbrrtx_menu_set_status(const char* text);
+void rbrrtx_menu_register_custom_pages(void);   // menu_custom.cpp: the Lights and Windows pages
 int  rbrrtx_menu_pinned(const char* key, char* value, size_t value_len);
 
 // Wires the proxy's behaviour in. Call before init (the pointer is copied).

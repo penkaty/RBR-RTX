@@ -506,6 +506,11 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
   ++g_frame;
 }
 
+// How lit the lamps are at a sun height (lights.ini on_below_sun / fade_degrees), 0 when the lamps are switched off there.
+float rbrrtx_world_lights_night_fraction(float sunElevation) {
+  return std::clamp((g_onBelow - sunElevation) / g_fade, 0.0f, 1.0f);
+}
+
 // A new stage or the menu: the lamps of the last scene go (positions are per scene).
 void rbrrtx_world_lights_reset() {
   for (Lamp& l : g_lamps) destroy(l);

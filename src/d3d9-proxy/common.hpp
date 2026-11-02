@@ -304,4 +304,13 @@ void rbrrtx_comp_shutdown();
 // dinput_block.cpp: neutral DirectInput state while the F3 menu is open (vtable patch of GetDeviceState / GetDeviceData;
 // RBRRTX_MENU_BLOCK_INPUT=0 leaves it out). Install after the menu exists; remove at exit.
 void rbrrtx_dinput_block_install();
+
+// custom.cpp (+ custom.hpp): lights and emissives made in the F3 menu (pages Lights, Windows); menu.ini [lights.<stage>], [emissive], [windows].
+void rbrrtx_custom_init(const remixapi_Interface* api);
+void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on);               // per Present: the stage's custom lights
+bool rbrrtx_emit_wanted();                                                         // any emissive texture set (else no per-draw work)
+void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture, float night);   // twin texture to draw instead, or null
+void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value);
+int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* user);
+float rbrrtx_world_lights_night_fraction(float sunElevation);                     // 0..1: how far the street lamps are lit at that sun height
 void rbrrtx_dinput_block_remove();

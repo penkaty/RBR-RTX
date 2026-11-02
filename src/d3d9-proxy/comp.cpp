@@ -3168,6 +3168,7 @@ void end_frame(IDirect3DDevice9* dev) {
       rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), cam, g_enabled && g_apiOk);
     }
   }
+  rbrrtx_custom_frame(g_inMenu ? -1 : g_atmoStage.trackId, rbrrtx_sun_shown_elevation(), g_enabled && g_apiOk);   // F3 custom lights
   numos_ground();                                      // NUMOS: ground level from the car (no-op without NUMOS)
   if (g_numos && g_apiOk) {
     // NUMOS's lamp glow in fog lives in a froxel grid whose history is reprojected with the camera only (aerial-
@@ -4099,6 +4100,7 @@ struct LampPick {
   unsigned long long tex1 = 0;
   unsigned flags = 0;
   std::string kind;                                    // what kind of draw the nearest hit is (F3 picker)
+  float upShare = -1.0f;                               // F3 picker: area share of the hit draw's triangles facing up (|normal.y| > 0.9), -1 = unknown
   bool skipFoliage = false, foliage = false;           // skipFoliage: swaying / alpha-tested cards are not hit (lamp marking); foliage: the nearest hit is one
   IDirect3DBaseTexture9* keep[2] = {};
 } g_pick;
@@ -4350,6 +4352,19 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   double hp[3];
   for (int k = 0; k < 3; ++k) { hp[k] = org[k] + dir[k] * best; pk.point[k] = static_cast<float>(hp[k]); }
   pk.foliage = foliageDraw;
+  if (pk.probe) {                                      // how much of this draw is flat ground (the Terrain tag needs up-facing geometry)
+    double area = 0, up = 0;
+    for (size_t t = 0; t < d.tri.size() / 3; ++t) {
+      const auto &A = d.pos[d.tri[t * 3]], &B = d.pos[d.tri[t * 3 + 1]], &C = d.pos[d.tri[t * 3 + 2]];
+      const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+      const double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+      const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+      if (len < 1e-9) continue;
+      area += len;
+      if (std::fabs(n[1]) / len > 0.9) up += len;
+    }
+    pk.upShare = area > 0 ? static_cast<float>(up / area) : -1.0f;
+  }
   if (pk.probe) {                                      // F3 texture picker: t1, flags, and the textures kept for thumbnails
     pk.flags = ffDraw ? 0 : g_curInfo->flags;
     pk.kind = std::string(pick_kind(ffDraw, pk.flags)) + (foliageDraw ? ", foliage card" : "");
@@ -5488,6 +5503,7 @@ struct TProbeResult {
   float dist = 0.0f;
   LampHit lamp;                                        // the hit as a lamp mark would take it (island rectangle in the texture)
   bool foliage = false;
+  float upShare = -1.0f;
 } g_tpRes;
 bool g_tpSkipFoliage = false;                          // the page's "skip foliage" box
 unsigned g_tpWantUntil = 0;                            // the page asked for new results up to this frame
@@ -5528,6 +5544,7 @@ void f3_probe_frame() {
       g_tpRes.kind = g_tprobe.kind;
       g_tpRes.lamp = lamp_hit_of(g_tprobe);
       g_tpRes.foliage = g_tprobe.foliage;
+      g_tpRes.upShare = g_tprobe.upShare;
       g_tpRes.dist = static_cast<float>(g_tprobe.t);
       for (int s = 0; s < 2; ++s) { g_tpRes.tex[s] = g_tprobe.keep[s]; g_tprobe.keep[s] = nullptr; }   // ownership moves
     }
@@ -5556,8 +5573,10 @@ int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
   strncpy_s(out->shader, g_tpRes.shader.c_str(), _TRUNCATE);
   strncpy_s(out->kind, g_tpRes.kind.c_str(), _TRUNCATE);
   out->foliage = g_tpRes.foliage ? 1 : 0;
+  out->up_share = g_tpRes.upShare;
   out->has_island = g_tpRes.lamp.island > 0 && g_tpRes.lamp.rect[2] > g_tpRes.lamp.rect[0] && g_tpRes.lamp.rect[3] > g_tpRes.lamp.rect[1];
   out->island_verts = g_tpRes.lamp.island;
+  std::memcpy(out->point, g_tpRes.lamp.point, sizeof(out->point));
   std::memcpy(out->uv_rect, g_tpRes.lamp.rect, sizeof(out->uv_rect));
   out->distance = g_tpRes.dist;
   return 1;
@@ -5629,6 +5648,14 @@ int f3_ini_extra_dump(void (*emit)(const char* line, void* user), void* user);
 
 int f3_rx_pin_send(const char* key, const char* value) { return remix_set_raw(key, value) ? 1 : 0; }   // a pin itself bypasses the pin filter
 void f3_log(const char* line) { clog(L"menu: %S", line); }
+
+// Camera of the last frame that had one: position and forward (the F3 Lights page places lights at the crosshair or in front of it).
+int f3_camera(float pos[3], float fwd[3]) {
+  D3DMATRIX vi;
+  if (!g_haveCam || !inverse(g_V, vi)) return 0;
+  for (int k = 0; k < 3; ++k) { pos[k] = vi.m[3][k]; fwd[k] = vi.m[2][k]; }
+  return 1;
+}
 
 // ---- lamp marking from the picker (Textures page)
 std::vector<LampMark> g_f3Lamps;
@@ -5797,6 +5824,7 @@ void f3_install(IDirect3DDevice9* dev) {
   cb.remix_opt_lookup = f3_rx_lookup;
   cb.remix_pin_send = f3_rx_pin_send;
   cb.log = f3_log;
+  cb.camera = f3_camera;
   cb.lamp_mark = f3_lamp_mark;
   cb.lamp_list = f3_lamp_list;
   cb.lamp_remove = f3_lamp_remove;
@@ -6210,6 +6238,13 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
   texture_probe_draw(dev);                                   // F3 texture picker: the same ray, every frame while the page asks
   void* lampGlow = world_light_draw(dev);                    // lamp textures (lights.ini): a light at the object
+  if (!lampGlow && g_primaryRT && g_enabled && g_apiOk && rbrrtx_emit_wanted()) {   // F3 emissives / windows: the twin texture of the saved material
+    IDirect3DBaseTexture9* et = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &et)) && et) {
+      lampGlow = rbrrtx_emit_twin(dev, rbrrtx_texture_hash(et), et, rbrrtx_world_lights_night_fraction(rbrrtx_sun_shown_elevation()));
+      et->lpVtbl->Release(et);
+    }
+  }
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
     IDirect3DBaseTexture9* t = nullptr;
@@ -6530,6 +6565,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   init_remix_api();
   rbrrtx_headlights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_world_lights_init(g_apiOk ? &g_api : nullptr);
+  rbrrtx_custom_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_apiworld_init(g_apiOk && g_remixPlus ? rbrrtx_api_ext() : nullptr);
   rbrrtx_hudglow_init(dev, g_apiOk && g_remixPlus && rbrrtx_api_ext() && rbrrtx_api_ext()->createRetained);
   load_skip_textures();
@@ -6541,8 +6577,8 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
 }
 
 // menu.ini sections of other features (custom lights per stage, windows): filled in with those features.
-void f3_ini_extra_set(const char*, const char*, const char*) {}
-int f3_ini_extra_dump(void (*)(const char*, void*), void*) { return 0; }
+void f3_ini_extra_set(const char* section, const char* key, const char* value) { rbrrtx_custom_ini_set(section, key, value); }
+int f3_ini_extra_dump(void (*emit)(const char*, void*), void* user) { return rbrrtx_custom_ini_dump(emit, user); }
 
 }  // namespace
 

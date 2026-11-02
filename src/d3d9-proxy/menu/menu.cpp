@@ -442,11 +442,27 @@ void page_textures(void*) {
   unsigned long long target = pick.hash[g_tex_target];
   if (!target) target = pick.hash[1 - g_tex_target];
   ImGui::Separator();
+  // What each flag is for (docs/research/flags-dive-2026-11-02.md), with a check of the picked draw against the Terrain rule.
+  ImGui::TextUnformatted("Flags");
+  const bool flat = pick.up_share >= 0.6f;
+  if (pick.up_share >= 0.0f) {
+    if (flat) ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "this draw: %.0f %% of its area faces up: ground, Terrain is fine", pick.up_share * 100.0f);
+    else ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "this draw: only %.0f %% of its area faces up (wall, roof, slope): NOT Terrain", pick.up_share * 100.0f);
+  }
+  ImGui::BulletText("Terrain: only flat, up-facing ground (road, grass, gravel). Baked top-down: walls and roofs turn black or white.");
+  ImGui::BulletText("Decal: thin overlays on a surface: road markings, kerbs, cracks, dirt. Needs an opaque surface under it.");
+  ImGui::BulletText("Water: full water surfaces only (animated water), not wet roads or puddles.");
+  ImGui::BulletText("Ignore: not drawn at all (flare strips, fake shadows, HUD sprites). Clear: back to the normal material.");
   ImGui::BeginDisabled(target == 0 || !g_cb.mark_texture);
   static const char* const kBtn[5] = { "Terrain", "Decal", "Water", "Ignore", "Clear" };
+  static const char* const kTip[5] = { "Flat up-facing ground only (baked from above).", "Markings, kerbs, cracks: a thin layer on a floor.",
+                                       "Full water surfaces only.", "Never drawn (flares, fake shadows).", "Remove the hash from all four lists." };
   for (int c = 0; c < 5; ++c) {
     if (c) ImGui::SameLine();
-    if (ImGui::Button(kBtn[c])) {
+    const bool pressed = ImGui::Button(kBtn[c]);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", kTip[c]);
+    if (pressed) {
+      if (c == 0 && pick.up_share >= 0.0f && !flat) set_status("warning: this draw is mostly not up-facing; Terrain may turn it black or white");
       const int r = g_cb.mark_texture(target, c);
       if (r) {
         std::snprintf(g_status, sizeof(g_status), c == 4 ? "0x%016llX cleared from all lists" : r == 1 ? "0x%016llX tagged %s" : "0x%016llX untagged %s",
@@ -629,6 +645,7 @@ void ensure_builtin_pages() {
   rbrrtx_menu_add_page("Info", page_info, nullptr);
   rbrrtx_menu_add_page("Wetness", page_wetness, nullptr);
   rbrrtx_menu_add_page("Textures", page_textures, nullptr);
+  rbrrtx_menu_register_custom_pages();
   rbrrtx_menu_add_page("Remix settings", page_remix, nullptr);
   rbrrtx_menu_add_page("Debug", page_debug, nullptr);
   rbrrtx_menu_add_page("Save", page_save, nullptr);
@@ -840,6 +857,14 @@ int rbrrtx_menu_pinned(const char* key, char* value, size_t value_len) {
   if (value && value_len) std::snprintf(value, value_len, "%s", it->second.c_str());
   return 1;
 }
+
+int rbrrtx_menu_probe(rbrrtx_menu_pick* pick, int want_new) {
+  return g_cb.probe_centre && pick ? g_cb.probe_centre(pick, want_new) : 0;
+}
+
+int rbrrtx_menu_camera(float pos[3], float fwd[3]) { return g_cb.camera ? g_cb.camera(pos, fwd) : 0; }
+void rbrrtx_menu_log(const char* line) { if (g_cb.log && line) g_cb.log(line); }
+void rbrrtx_menu_set_status(const char* text) { set_status(text); }
 
 void rbrrtx_menu_set_callbacks(const rbrrtx_menu_callbacks* cb) {
   g_cb = cb ? *cb : rbrrtx_menu_callbacks{};

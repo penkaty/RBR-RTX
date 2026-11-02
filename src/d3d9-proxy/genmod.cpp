@@ -33,7 +33,7 @@ bool g_dirty = false;
 unsigned g_writes = 0;
 std::chrono::steady_clock::time_point g_lastWrite;
 
-const char* const kSections[] = { "lit", "litparts", "foliage", "marked" };
+const char* const kSections[] = { "lit", "litparts", "foliage", "marked", "emissive" };
 
 std::wstring folder_of(const std::string& section) {
   if (section == "lit") return g_dir;
