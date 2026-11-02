@@ -5768,6 +5768,10 @@ HWND g_f3Wnd = nullptr;
 bool g_f3Unicode = true;
 
 LRESULT CALLBACK f3_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+  if (m == WM_CLOSE || m == WM_DESTROY || m == WM_QUERYENDSESSION) {   // exit: the menu lets go of the device now, so the game's own last
+    rbrrtx_menu_set_open(0);                           // Release (and the sun / API teardown behind it, hk_Release) never waits on it;
+    rbrrtx_menu_release_device();                      // it comes back by itself if the window stays (the next F3 frame)
+  }
   if (rbrrtx_menu_wndproc(w, m, wp, lp)) return 0;     // taken by the open menu (or the F3 key itself)
   return g_f3Unicode ? CallWindowProcW(g_f3NextProc, w, m, wp, lp) : CallWindowProcA(g_f3NextProc, w, m, wp, lp);
 }

@@ -173,7 +173,13 @@ struct Glow {
   std::wstring dds, mask;                              // files in <genmod dir>\marked
   ULONGLONG readyAt = 0;                               // twin drawn from this tick on
   IDirect3DTexture9* twin[kGlowLevels] = {};
+  int lvHeld = 0;                                      // level in use: up at once, down only after kGlowHold ms of asking for less
+  ULONGLONG lowerSince = 0;
 };
+constexpr ULONGLONG kGlowHold = 1000;
+// Counters for the 300-frame log line (user 2026-11-02: the marked glass flapped after the debug sun moved; no way to tell why).
+unsigned g_glowDraws = 0, g_glowLevelUp = 0, g_glowLevelDown = 0, g_createNew = 0, g_createMoved = 0, g_createLevel = 0, g_createFailed = 0,
+         g_destroyedUnseen = 0;
 std::unordered_map<uint64_t, Glow> g_glow;
 
 std::wstring glow_dir() {
@@ -376,7 +382,16 @@ void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* base
     if (g.ok) glow_publish();
   }
   if (!g.ok || GetTickCount64() < g.readyAt) return nullptr;
-  const int lv = std::clamp(static_cast<int>(std::ceil(g_litFraction * kGlowLevels - 0.001f)), 1, kGlowLevels);
+  const int want = std::clamp(static_cast<int>(std::ceil(g_litFraction * kGlowLevels - 0.001f)), 1, kGlowLevels);
+  const ULONGLONG nowTick = GetTickCount64();
+  if (g.lvHeld == 0 || want > g.lvHeld) { if (g.lvHeld) ++g_glowLevelUp; g.lvHeld = want; g.lowerSince = 0; }
+  else if (want < g.lvHeld) {                          // hysteresis: a sun sweeping through dusk must not change the material every frame
+    if (!g.lowerSince) g.lowerSince = nowTick;
+    else if (nowTick - g.lowerSince >= kGlowHold) { g.lvHeld = want; g.lowerSince = 0; ++g_glowLevelDown; }
+  } else {
+    g.lowerSince = 0;
+  }
+  const int lv = g.lvHeld;
   IDirect3DTexture9*& t = g.twin[lv - 1];
   if (!t) {
     IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
@@ -393,6 +408,7 @@ void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* base
       }
     }
   }
+  if (t) ++g_glowDraws;
   return t;
 }
 
@@ -426,7 +442,7 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
   std::vector<Lamp*> lit;
   for (Lamp& l : g_lamps)
     if (l.seen == g_frame && k > 0.0f && layerOn && g_on) lit.push_back(&l);
-    else if (l.h) destroy(l);
+    else if (l.h) { destroy(l); ++g_destroyedUnseen; }
   auto d2 = [&](const Lamp* l) {
     const float dx = l->pos[0] - cam[0], dy = l->pos[1] - cam[1], dz = l->pos[2] - cam[2];
     return dx * dx + dy * dy + dz * dz;
@@ -444,9 +460,12 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
   if (unitLux <= 0.0f) unitLux = 6400.0f;
   for (Lamp* l : lit) {
     const Kind& kd = *l->kind;
-    const bool moved = !l->h || l->sent[0] != l->pos[0] || l->sent[1] != l->pos[1] || l->sent[2] != l->pos[2] ||
-                       std::fabs(k - l->sentK) > 0.01f;
+    const bool isNew = !l->h;
+    const bool posMoved = l->sent[0] != l->pos[0] || l->sent[1] != l->pos[1] || l->sent[2] != l->pos[2];
+    const bool levelMoved = std::fabs(k - l->sentK) > 0.05f;   // 5 % steps: a sweeping sun is not a re-create per frame
+    const bool moved = isNew || posMoved || levelMoved;
     if (moved) {
+      if (isNew) ++g_createNew; else if (posMoved) ++g_createMoved; else ++g_createLevel;
       if (!rbrrtx_remix_plus()) destroy(*l);           // 1.5.2: a re-create needs the old handle gone (headlights.cpp)
       float rgb[3];
       kelvin_rgb(kd.kelvin, rgb);
@@ -466,6 +485,7 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
       if (g_api->CreateLight(&info, &l->h) != REMIXAPI_ERROR_CODE_SUCCESS) {
         l->h = old;
         destroy(*l);
+        ++g_createFailed;
         continue;
       }
       if (++g_created <= 8)
@@ -475,6 +495,13 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
       l->sentK = k;
     }
     g_api->DrawLightInstance(l->h);
+  }
+  if (g_frame % 300 == 299) {                          // why the lights / glass change: counted since the last line
+    rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights: %zu lamps known, %zu lit now (lit fraction %.2f, level steps up %u / down %u, glass twin draws %u); "
+                  L"CreateLight since last line: %u new, %u moved, %u level change, %u failed; %u destroyed (not seen / dark)",
+                  g_lamps.size(), lit.size(), g_litFraction, g_glowLevelUp, g_glowLevelDown, g_glowDraws, g_createNew, g_createMoved, g_createLevel,
+                  g_createFailed, g_destroyedUnseen);
+    g_glowLevelUp = g_glowLevelDown = g_glowDraws = g_createNew = g_createMoved = g_createLevel = g_createFailed = g_destroyedUnseen = 0;
   }
   ++g_frame;
 }
