@@ -61,10 +61,24 @@ typedef struct rbrrtx_menu_callbacks {
   // ... and at save the proxy writes its lines through `emit` (one "key=value" per call, no newline).
   void (*texture_ini_dump)(void (*emit)(const char* line, void* user), void* user);
 
+  // Other menu.ini sections (the proxy's lights per stage "lights.<stage id>", "windows"): every key=value line of such a section
+  // is handed over at load (ini_extra_set), and at save the proxy writes its sections through `emit` (full lines, including the
+  // "[section]" headers). Returns the number of items written (for the "saved N items" line).
+  void (*ini_extra_set)(const char* section, const char* key, const char* value);
+  int (*ini_extra_dump)(void (*emit)(const char* line, void* user), void* user);
+
   // Info page: several lines of text (stage, weather, time, ground mode, baker...). Fills buf (NUL-terminated).
   void (*info_text)(char* buf, size_t buf_len);
   // Info page key list: line i ("Alt+K  stage sweep"), returns 0 when i is past the end.
   int (*key_line)(int i, char* buf, size_t buf_len);
+
+  // Remix settings page: option i of the options rtx.conf / user.conf set (key, rtx.conf value, user.conf value; "" = absent),
+  // returns 0 past the end; lookup of one typed-in key (1 = found). pin_send sends a pinned value to Remix, bypassing the
+  // pin filter (returns 1 on success, 0 = Remix not reachable yet: tried again later). log writes one line to the proxy log.
+  int (*remix_opt)(int i, char* key, size_t key_len, char* ours, char* user, size_t val_len);
+  int (*remix_opt_lookup)(const char* key, char* ours, char* user, size_t val_len);
+  int (*remix_pin_send)(const char* key, const char* value);
+  void (*log)(const char* line);
 
   // Lamps (Textures page): mark the current hit as a lamp (writes lights-marked.ini; msg = one line of result, returns 1 = ok),
   // list the marked lamps (label of marked lamp i; 0 past the end) and remove one.
@@ -125,6 +139,10 @@ int  rbrrtx_menu_is_drawing(void);
 // the option, e.g. "rtx.wet.globalWetness". wetness.cpp must check this before sending its computed value,
 // otherwise its per-frame rain driver overwrites the slider. Returns 0 when the proxy should keep control.
 int  rbrrtx_menu_option_locked(const char* key, float* value);
+
+// Pinned Remix option (menu.ini [remix], F3 "Remix settings"): 1 and the pinned value when the user pinned the key. The
+// proxy's own remix_set drops its sets of a pinned key. value may be null.
+int  rbrrtx_menu_pinned(const char* key, char* value, size_t value_len);
 
 // Wires the proxy's behaviour in. Call before init (the pointer is copied).
 void rbrrtx_menu_set_callbacks(const rbrrtx_menu_callbacks* cb);

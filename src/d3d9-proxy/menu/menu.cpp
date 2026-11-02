@@ -54,6 +54,9 @@ std::map<std::string, float> g_touched;
 // What menu.ini holds for [wetness] (loaded, or written by the Save button). A texture tag saves the file at once and
 // must not persist slider values the user never saved.
 std::map<std::string, float> g_saved;
+// Remix options the user pinned (menu.ini [remix]): applied at the start after rtx.conf, win over the proxy's own sets.
+std::map<std::string, std::string> g_pins;
+bool g_pins_pending = false;   // some pin still to send to Remix
 
 char g_status[160] = "";      // one line of feedback at the bottom of the window
 
@@ -121,6 +124,23 @@ const WetOpt kWet[] = {
   { "rtx.wet.rippleWavelength",          "Ripple Wavelength (cm)",         0, 12.0f, 1.0f, 200.0f, "%.1f", 1 },
 };
 
+// Remix defaults of the simple options (gen_remix_defaults.py from the runtime's RtxOptions.md), sorted by key.
+struct RxDefault { const char* key; const char* value; };
+const RxDefault kRxDefaults[] = {
+#include "remix_defaults.inc"
+};
+
+const char* remix_default(const char* key) {
+  size_t lo = 0, hi = sizeof(kRxDefaults) / sizeof(kRxDefaults[0]);
+  while (lo < hi) {
+    const size_t mid = (lo + hi) / 2;
+    const int c = std::strcmp(kRxDefaults[mid].key, key);
+    if (c == 0) return kRxDefaults[mid].value;
+    if (c < 0) lo = mid + 1; else hi = mid;
+  }
+  return nullptr;
+}
+
 // ---- helpers -------------------------------------------------------------------------------------------------
 
 void set_status(const char* text) {
@@ -160,6 +180,12 @@ std::wstring config_file_path() {
   return path;
 }
 
+std::string narrow_path(const std::wstring& w) {
+  std::string s;
+  for (wchar_t c : w) s += c < 128 ? static_cast<char>(c) : '?';
+  return s;
+}
+
 std::string trim(const std::string& v) {
   size_t a = 0, b = v.size();
   while (a < b && (v[a] == ' ' || v[a] == '\t' || v[a] == '\r')) ++a;
@@ -184,7 +210,11 @@ void load_ini() {
     const size_t eq = line.find('=');
     if (eq == std::string::npos) continue;
     const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
-    if (section == "textures") {
+    if (section != "wetness" && section != "textures" && section != "remix") {
+      if (g_cb.ini_extra_set) g_cb.ini_extra_set(section.c_str(), key.c_str(), val.c_str());
+    } else if (section == "remix") {
+      if (!key.empty()) g_pins[key] = val;
+    } else if (section == "textures") {
       if (g_cb.texture_ini) g_cb.texture_ini(key.c_str(), val.c_str());
     } else if (const WetOpt* o = find_wet(key.c_str())) {
       if (o->type == 1) g_touched[key] = (val == "True" || val == "1") ? 1.0f : 0.0f;
@@ -193,10 +223,16 @@ void load_ini() {
   }
   g_saved = g_touched;
   g_pending_apply = !g_touched.empty();
+  g_pins_pending = !g_pins.empty();
 }
 
+int g_emitted = 0;   // lines the proxy wrote in the current save (texture tags, ...)
+int g_saved_items = 0;
 void emit_line(const char* line, void* user) {
-  if (line && line[0]) *static_cast<std::ofstream*>(user) << line << '\n';
+  if (line && line[0]) { *static_cast<std::ofstream*>(user) << line << '\n'; ++g_emitted; }
+}
+void emit_raw(const char* line, void* user) {
+  if (line) *static_cast<std::ofstream*>(user) << line << '\n';
 }
 
 // Writes menu.ini: [wetness] = g_saved, [textures] = the proxy's lines.
@@ -205,12 +241,40 @@ bool save_ini() {
   if (!out) return false;
   out << "; RBR-RTX menu settings (written by the F3 menu; the game's user.conf is never touched)\n[wetness]\n";
   for (const auto& kv : g_saved) out << kv.first << '=' << kv.second << '\n';
+  out << "\n[remix]\n";
+  for (const auto& kv : g_pins) out << kv.first << '=' << kv.second << '\n';
   out << "\n[textures]\n";
+  g_emitted = 0;
   if (g_cb.texture_ini_dump) g_cb.texture_ini_dump(emit_line, &out);
+  int extra = 0;
+  out << "\n";
+  if (g_cb.ini_extra_dump) extra = g_cb.ini_extra_dump(emit_raw, &out);
+  g_saved_items = static_cast<int>(g_saved.size() + g_pins.size()) + g_emitted + extra;
   return static_cast<bool>(out);
 }
 
+// Pins go to Remix once it can take them (the proxy's remix_pin_send says so), logged one line per pin.
+void apply_pins() {
+  if (!g_pins_pending || !g_cb.remix_pin_send) return;
+  unsigned n = 0, failed = 0;
+  for (const auto& kv : g_pins) {
+    if (g_cb.remix_pin_send(kv.first.c_str(), kv.second.c_str())) {
+      ++n;
+      if (g_cb.log) { char b[300]; std::snprintf(b, sizeof(b), "pin applied: %s = %s", kv.first.c_str(), kv.second.c_str()); g_cb.log(b); }
+    } else {
+      ++failed;
+    }
+  }
+  if (failed) return;                                    // Remix not reachable yet: all again on a later tick
+  g_pins_pending = false;
+  char b[120];
+  std::snprintf(b, sizeof(b), "%u pinned Remix option(s) applied", n);
+  if (g_cb.log) g_cb.log(b);
+  set_status(b);
+}
+
 void apply_pending() {
+  apply_pins();
   if (!g_pending_apply || !g_cb.remix_set) return;
   for (const auto& kv : g_touched) {
     if (const WetOpt* o = find_wet(kv.first.c_str())) send_option(o->key, o->type, kv.second);
@@ -439,12 +503,121 @@ void page_debug(void*) {
   }
 }
 
+// Remix settings: every option the shipped rtx.conf (and the user's user.conf) sets, with Remix's own default. A pin keeps
+// a value: it goes to Remix at the start after rtx.conf and wins over everything, the proxy's own sets included. (Alt+X
+// Save leaves out values equal to Remix's defaults, so a value set back to the default is lost to rtx.conf: pin it here.)
+void page_remix(void*) {
+  if (!g_cb.remix_opt) {
+    ImGui::TextDisabled("No option list callback.");
+    return;
+  }
+  ImGui::TextWrapped("Options rtx.conf sets. Type a value and press Pin to keep it: it is sent to Remix now, saved in menu.ini "
+                     "[remix], applied at every start after rtx.conf, and the proxy stops setting that option itself. Unpin removes it "
+                     "(Remix keeps the value until restart). Green = pinned.");
+  static char filter[64] = "";
+  static char new_key[128] = "", new_val[128] = "";
+  static std::map<std::string, std::string> edit;
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::InputText("filter", filter, sizeof(filter));
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu pinned", g_pins.size());
+
+  auto pin = [&](const std::string& key, const std::string& value) {
+    if (value.empty()) { set_status("empty value: nothing pinned"); return; }
+    g_pins[key] = value;
+    g_pins_pending = true;
+    apply_pins();
+    set_status(save_ini() ? "pinned and saved in menu.ini [remix]" : "pinned, but menu.ini could not be written");
+  };
+
+  ImGui::SeparatorText("Pin any option");
+  ImGui::SetNextItemWidth(300.0f);
+  ImGui::InputText("option", new_key, sizeof(new_key));
+  ImGui::SetNextItemWidth(160.0f);
+  ImGui::InputText("value", new_val, sizeof(new_val));
+  ImGui::SameLine();
+  if (ImGui::Button("Fill current")) {                   // user.conf over rtx.conf over Remix's default
+    char ours[160] = "", user[160] = "";
+    if (g_cb.remix_opt_lookup) g_cb.remix_opt_lookup(new_key, ours, user, sizeof(ours));
+    const char* d = remix_default(new_key);
+    std::snprintf(new_val, sizeof(new_val), "%s", user[0] ? user : ours[0] ? ours : d ? d : "");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Pin")) { if (new_key[0]) pin(new_key, new_val); }
+  if (new_key[0]) {
+    const char* d = remix_default(new_key);
+    ImGui::TextDisabled("Remix default: %s", d ? d : "(unknown option or a list)");
+  }
+
+  ImGui::SeparatorText("Options in rtx.conf / user.conf");
+  const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
+  if (ImGui::BeginTable("rx", 5, tf, ImVec2(0.0f, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 2.5f))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("option", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+    ImGui::TableSetupColumn("ours", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Remix default", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("user.conf", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("value / pin", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableHeadersRow();
+    char key[160], ours[160], user[160];
+    for (int i = 0; i < 2000 && g_cb.remix_opt(i, key, sizeof(key), ours, user, sizeof(ours)); ++i) {
+      if (filter[0] && !std::strstr(key, filter)) continue;
+      const auto pit = g_pins.find(key);
+      const bool pinned = pit != g_pins.end();
+      const char* d = remix_default(key);
+      ImGui::TableNextRow();
+      ImGui::PushID(i);
+      ImGui::TableSetColumnIndex(0);
+      if (pinned) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
+      ImGui::TextUnformatted(key);
+      if (pinned) ImGui::PopStyleColor();
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextUnformatted(ours[0] ? ours : "-");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::TextUnformatted(d ? d : "?");
+      ImGui::TableSetColumnIndex(3);
+      ImGui::TextUnformatted(user[0] ? user : "-");
+      ImGui::TableSetColumnIndex(4);
+      std::string& ev = edit[key];
+      if (ev.empty()) ev = pinned ? pit->second : (user[0] ? user : ours);
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "%s", ev.c_str());
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Unpin").x - 30.0f);
+      if (ImGui::InputText("##v", buf, sizeof(buf))) ev = buf;
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Pin")) pin(key, ev);
+      if (pinned) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Unpin")) {
+          g_pins.erase(key);
+          set_status(save_ini() ? "unpinned (Remix keeps the value until restart)" : "unpinned, menu.ini could not be written");
+        }
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  // Pins of options that are in neither file (typed in): listed so they can be removed.
+  for (auto it = g_pins.begin(); it != g_pins.end();) {
+    char ours[160] = "", user[160] = "";
+    if (g_cb.remix_opt_lookup && g_cb.remix_opt_lookup(it->first.c_str(), ours, user, sizeof(ours))) { ++it; continue; }
+    ImGui::PushID(it->first.c_str());
+    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s = %s (typed in)", it->first.c_str(), it->second.c_str());
+    ImGui::SameLine();
+    const bool rm = ImGui::SmallButton("Unpin");
+    ImGui::PopID();
+    if (rm) { it = g_pins.erase(it); save_ini(); } else ++it;
+  }
+}
+
 void page_save(void*) {
   ImGui::TextWrapped("Writes the Wetness values to menu.ini in the RBR-RTX config folder (the texture tags are saved "
                      "the moment you tag). user.conf is never touched.");
   if (ImGui::Button("Save menu.ini")) {
     g_saved = g_touched;
-    set_status(save_ini() ? "saved" : "could not write menu.ini");
+    if (save_ini()) std::snprintf(g_status, sizeof(g_status), "saved %d items to %s", g_saved_items, narrow_path(config_file_path()).c_str());
+    else set_status("could not write menu.ini");
+    if (g_cb.log) g_cb.log(g_status);
   }
   ImGui::SameLine();
   ImGui::TextDisabled("%zu wetness value(s) locked", g_touched.size());
@@ -456,6 +629,7 @@ void ensure_builtin_pages() {
   rbrrtx_menu_add_page("Info", page_info, nullptr);
   rbrrtx_menu_add_page("Wetness", page_wetness, nullptr);
   rbrrtx_menu_add_page("Textures", page_textures, nullptr);
+  rbrrtx_menu_add_page("Remix settings", page_remix, nullptr);
   rbrrtx_menu_add_page("Debug", page_debug, nullptr);
   rbrrtx_menu_add_page("Save", page_save, nullptr);
 }
@@ -475,6 +649,18 @@ void draw_window() {
       ImGui::EndTabBar();
     }
     ImGui::Separator();
+    if (ImGui::Button("Save")) {
+      g_saved = g_touched;
+      if (save_ini()) {
+        const std::string p = narrow_path(config_file_path());
+        std::snprintf(g_status, sizeof(g_status), "saved %d items to %s", g_saved_items, p.c_str());
+        if (g_cb.log) g_cb.log(g_status);
+      } else {
+        set_status("could not write menu.ini");
+        if (g_cb.log) g_cb.log("save FAILED: menu.ini could not be written");
+      }
+    }
+    ImGui::SameLine();
     ImGui::TextUnformatted(g_status);
   }
   ImGui::End();
@@ -644,6 +830,14 @@ int rbrrtx_menu_option_locked(const char* key, float* value) {
   const auto it = g_touched.find(key);
   if (it == g_touched.end()) return 0;
   if (value) *value = it->second;
+  return 1;
+}
+
+int rbrrtx_menu_pinned(const char* key, char* value, size_t value_len) {
+  if (g_pins.empty() || !key) return 0;
+  const auto it = g_pins.find(key);
+  if (it == g_pins.end()) return 0;
+  if (value && value_len) std::snprintf(value, value_len, "%s", it->second.c_str());
   return 1;
 }
 

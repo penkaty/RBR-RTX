@@ -996,10 +996,24 @@ void destroy_sun(const wchar_t* why);
 // (rtx_remix_api.cpp remixapi_SetConfigVariable -> getUserLayer(); no other layer, no way to clear), so a "Save" in
 // Alt+X would keep these test values. Each one is logged to rbrrtx_api_options.log; after the run rbr-remix.ps1 removes
 // from the saved user.conf every option whose value is still the proxy's (user 2026-10-17: tweak Alt+X with confidence).
-void remix_set(const char* key, const char* value) {
-  if (!g_apiOk || !g_api.SetConfigVariable) return;
+bool remix_set_raw(const char* key, const char* value) {
+  if (!g_apiOk || !g_api.SetConfigVariable) return false;
   const remixapi_ErrorCode err = g_api.SetConfigVariable(key, value);
   rbrrtx_log_to(L"rbrrtx_api_options.log", L"set %S = %S%s", key, value, err == REMIXAPI_ERROR_CODE_SUCCESS ? L"" : L"  (refused)");
+  return err == REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+// A value pinned in the F3 "Remix settings" page (menu.ini [remix]) is the user's: the proxy's own sets of that option
+// (stage weather, atmosphere, wetness driver, experiments...) are dropped and logged once (user 2026-11-02: Alt+X Save
+// leaves out values equal to Remix's defaults, so our rtx.conf won over what the user had set back).
+void remix_set(const char* key, const char* value) {
+  if (key && rbrrtx_menu_pinned(key, nullptr, 0)) {
+    static std::unordered_set<std::string> told;
+    if (told.insert(key).second)
+      rbrrtx_log_to(L"rbrrtx_api_options.log", L"set %S = %S dropped: the option is pinned in the F3 menu (and every later proxy set of it)", key, value ? value : "");
+    return;
+  }
+  remix_set_raw(key, value);
 }
 
 // Night with the debug sun: Remix lights the scene from the sky too, so the sky light dims with the sun (1 at the
@@ -5549,6 +5563,73 @@ int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
   return 1;
 }
 
+// ---- Remix settings page: every option rtx.conf (and the user's user.conf) sets, for the pin list. Read again every 60 frames
+// while the page asks. Texture lists (0x hashes) and very long values are left out.
+struct RxOpt { std::string key, ours, user; };
+std::vector<RxOpt> g_rxOpts;
+unsigned g_rxLoadFrame = 0;
+bool g_rxLoaded = false;
+
+std::string rx_trim(const std::string& v) {
+  size_t a = 0, b = v.size();
+  while (a < b && (v[a] == ' ' || v[a] == '\t' || v[a] == '\r')) ++a;
+  while (b > a && (v[b - 1] == ' ' || v[b - 1] == '\t' || v[b - 1] == '\r')) --b;
+  return v.substr(a, b - a);
+}
+
+void rx_read(const wchar_t* path, bool user) {
+  std::ifstream in(path);
+  for (std::string l; std::getline(in, l);) {
+    const std::string t = rx_trim(l);
+    if (t.empty() || t[0] == '#' || t[0] == ';') continue;
+    const size_t eq = t.find('=');
+    if (eq == std::string::npos) continue;
+    const std::string k = rx_trim(t.substr(0, eq)), v = rx_trim(t.substr(eq + 1));
+    if (k.compare(0, 4, "rtx.") != 0 || v.find("0x") != std::string::npos || v.size() > 120) continue;
+    RxOpt* ro = nullptr;
+    for (RxOpt& e : g_rxOpts) if (e.key == k) { ro = &e; break; }
+    if (!ro) { g_rxOpts.push_back({ k, "", "" }); ro = &g_rxOpts.back(); }
+    (user ? ro->user : ro->ours) = v;
+  }
+}
+
+void rx_load() {
+  g_rxOpts.clear();
+  wchar_t path[MAX_PATH];
+  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
+  rx_read(path, false);
+  rx_read(L"user.conf", true);                           // the Alt+X Save layer, in the game folder (the process folder)
+  g_rxLoaded = true;
+}
+
+int f3_rx_opt(int i, char* key, size_t kn, char* ours, char* user, size_t vn) {
+  if (!g_rxLoaded || (i == 0 && g_frame - g_rxLoadFrame >= 60)) { rx_load(); g_rxLoadFrame = g_frame; }
+  if (i < 0 || i >= static_cast<int>(g_rxOpts.size())) return 0;
+  strncpy_s(key, kn, g_rxOpts[i].key.c_str(), _TRUNCATE);
+  strncpy_s(ours, vn, g_rxOpts[i].ours.c_str(), _TRUNCATE);
+  strncpy_s(user, vn, g_rxOpts[i].user.c_str(), _TRUNCATE);
+  return 1;
+}
+
+int f3_rx_lookup(const char* key, char* ours, char* user, size_t vn) {
+  if (!g_rxLoaded) rx_load();
+  for (const RxOpt& e : g_rxOpts)
+    if (e.key == key) {
+      strncpy_s(ours, vn, e.ours.c_str(), _TRUNCATE);
+      strncpy_s(user, vn, e.user.c_str(), _TRUNCATE);
+      return 1;
+    }
+  ours[0] = user[0] = 0;
+  return 0;
+}
+
+// Hooks for menu.ini sections of other features (custom lights, windows): see f3_ini_extra_* below the lights code.
+void f3_ini_extra_set(const char* section, const char* key, const char* value);
+int f3_ini_extra_dump(void (*emit)(const char* line, void* user), void* user);
+
+int f3_rx_pin_send(const char* key, const char* value) { return remix_set_raw(key, value) ? 1 : 0; }   // a pin itself bypasses the pin filter
+void f3_log(const char* line) { clog(L"menu: %S", line); }
+
 // ---- lamp marking from the picker (Textures page)
 std::vector<LampMark> g_f3Lamps;
 bool g_f3LampsLoaded = false;
@@ -5706,6 +5787,12 @@ void f3_install(IDirect3DDevice9* dev) {
   cb.texture_ini_dump = f3_ini_dump;
   cb.info_text = f3_info_text;
   cb.key_line = f3_key_line;
+  cb.ini_extra_set = f3_ini_extra_set;
+  cb.ini_extra_dump = f3_ini_extra_dump;
+  cb.remix_opt = f3_rx_opt;
+  cb.remix_opt_lookup = f3_rx_lookup;
+  cb.remix_pin_send = f3_rx_pin_send;
+  cb.log = f3_log;
   cb.lamp_mark = f3_lamp_mark;
   cb.lamp_list = f3_lamp_list;
   cb.lamp_remove = f3_lamp_remove;
@@ -6448,6 +6535,10 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");
   return hr;
 }
+
+// menu.ini sections of other features (custom lights per stage, windows): filled in with those features.
+void f3_ini_extra_set(const char*, const char*, const char*) {}
+int f3_ini_extra_dump(void (*)(const char*, void*), void*) { return 0; }
 
 }  // namespace
 
