@@ -311,6 +311,8 @@ void ground_layer_request(int want, bool quiet);       // Alt+Y and the F3 Debug
 bool g_stage0Fix = true;                               // RLDouble draws whose stage 0 is DISABLE get stage 0 = texture x diffuse (comp_draw)
 bool g_flareSkip = true;                               // the game's lens flare: screen-space additive draws after the sun query are not drawn
 bool g_dbgHideOutlineSprite = false, g_dbgHideClouds = false, g_dbgHideSunBillboard = false;   // sun-outline candidates, live A/B (F3)
+unsigned g_oqEndFrame = ~0u;                           // frame of the last occlusion query END (the game's sun visibility test)
+unsigned g_flareSkipped = 0, g_hideSkipped = 0;
 void f3_present(IDirect3DDevice9* dev);                // F3 menu glue (below, after ground_frame)
 void f3_before_reset();
 void f3_after_reset(IDirect3DDevice9* dev, HRESULT hr);
@@ -3910,7 +3912,46 @@ void load_skip_textures() {
   GetPrivateProfileStringW(L"skip_draws", L"textures", L"", v, 2048, path);
   for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
     if (const unsigned long long h = _wcstoui64(t, nullptr, 16)) g_skipTex.insert(h);
-  clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws])", g_skipTex.size());
+  g_flareSkip = GetPrivateProfileIntW(L"skip_draws", L"lens_flare", 1, path) != 0;
+  clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws]); lens flare (screen-space additive draws after the sun query) %s",
+       g_skipTex.size(), g_flareSkip ? L"skipped" : L"left alone");
+}
+
+// The game's lens flare, structurally (user 2026-11-02: not one hash, the whole family): fixed-function screen-space
+// (XYZRHW) draws with a texture, additive (destination ONE), depth test off, in the 3D part of the frame - after the sun's
+// occlusion query ended this frame, or before the first HUD draw. Zlin dump 01:53:21: #300 untextured quad, then #301-309
+// 40AA313D3EE0E9B6 (128x128), 2B06468C18F57C43 / D72822A228C6CD91 / 57E264023A357AE2 (32x32), all blend 5/2, z off. The HUD's
+// own additive draws come after the trigger and keep drawing. The F3 Debug page also hides the sun-outline candidates live:
+// 544BB1AB506B2F73 (a 1024x128 world sprite), 40AA313D3EE0E9B6 and the cloud layer (CloudsSingleTexture).
+bool lens_flare_or_hidden(IDirect3DDevice9* dev) {
+  if (!g_primaryRT || !g_enabled) return false;
+  if (g_dbgHideClouds && g_curVS && g_curInfo && g_curInfo->name.find(L"CloudsSingleTexture") != std::wstring::npos) { ++g_hideSkipped; return true; }
+  if (g_curVS || !(g_flareSkip || g_dbgHideOutlineSprite || g_dbgHideSunBillboard)) return false;
+  IDirect3DBaseTexture9* t = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t);
+  if (!t) return false;
+  const unsigned long long hx = rbrrtx_texture_hash(t);
+  t->lpVtbl->Release(t);
+  if ((g_dbgHideOutlineSprite && hx == 0x544BB1AB506B2F73ull) || (g_dbgHideSunBillboard && hx == 0x40AA313D3EE0E9B6ull)) { ++g_hideSkipped; return true; }
+  if (!g_flareSkip || g_st.xformed == 0 || !screen_space_input(dev)) return false;
+  DWORD blend = 0, dest = 0, z = 1;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_DESTBLEND, &dest);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ZENABLE, &z);
+  if (!blend || dest != D3DBLEND_ONE || z) return false;
+  const bool afterQuery = g_oqEndFrame == g_frame;
+  static std::unordered_set<unsigned long long> seen;
+  if (afterQuery || !g_uiTriggered) {
+    ++g_flareSkipped;
+    if (seen.insert(hx).second && seen.size() <= 24)
+      clog(L"lens flare: screen-space additive draw skipped, texture %016llX (%s, frame %u, %u skipped so far)", hx,
+           afterQuery ? L"after the sun occlusion query" : L"before the first HUD draw", g_frame, g_flareSkipped);
+    return true;
+  }
+  static std::unordered_set<unsigned long long> kept;
+  if (kept.insert(hx).second && kept.size() <= 12)
+    clog(L"lens flare: additive screen-space draw KEPT (HUD part of the frame), texture %016llX", hx);
+  return false;
 }
 
 // A lamp inside an atlas (lights.ini uv = ...): the points of the groups of this draw's vertices whose TEXCOORD0 lies in
@@ -5404,6 +5445,15 @@ void sw_ground_set(int v) { ground_layer_request(v == 0 ? kLayerBake : v == 1 ? 
 int sw_stage0_get() { return g_stage0Fix ? 1 : 0; }
 void sw_stage0_set(int v) { g_stage0Fix = v != 0; clog(L"menu: stage-0 fix for RLDouble facades %s", g_stage0Fix ? L"ON" : L"OFF"); }
 
+int sw_flare_get() { return g_flareSkip ? 1 : 0; }
+void sw_flare_set(int v) { g_flareSkip = v != 0; clog(L"menu: lens flare skip %s", g_flareSkip ? L"ON" : L"OFF (the game's flare draws)"); }
+int sw_outline_get() { return g_dbgHideOutlineSprite ? 1 : 0; }
+void sw_outline_set(int v) { g_dbgHideOutlineSprite = v != 0; clog(L"menu: sun-outline candidate A: 544BB1AB506B2F73 (1024x128 world sprite) %s", g_dbgHideOutlineSprite ? L"HIDDEN" : L"drawn"); }
+int sw_clouds_get() { return g_dbgHideClouds ? 1 : 0; }
+void sw_clouds_set(int v) { g_dbgHideClouds = v != 0; clog(L"menu: sun-outline candidate B: CloudsSingleTexture (cloud layer, alpha edge) %s", g_dbgHideClouds ? L"HIDDEN" : L"drawn"); }
+int sw_billboard_get() { return g_dbgHideSunBillboard ? 1 : 0; }
+void sw_billboard_set(int v) { g_dbgHideSunBillboard = v != 0; clog(L"menu: sun-outline candidate C: 40AA313D3EE0E9B6 (128x128 sun glow) %s", g_dbgHideSunBillboard ? L"HIDDEN" : L"drawn"); }
+
 const F3Switch kF3Switches[] = {
   { "Ground", "Second layer (applies at the next stage load)", "bake|decal|off",
     "bake = t1 baked into the terrain (experiment); decal = twin-texture decal over the baked base (default); off = game shader only. In a menu it applies at once.",
@@ -5411,6 +5461,15 @@ const F3Switch kF3Switches[] = {
   { "Ground", "Facade stage-0 fix (RLDoubleTextureSpecular)", "",
     "ON: scenery drawn without its vertex shader gets texture x diffuse on stage 0 when the game leaves it DISABLE. OFF = the flat-colour facades of the 01:46 run (A/B). Live.",
     sw_stage0_get, sw_stage0_set },
+  { "Sun", "Skip the game's lens flare (screen-space additive draws after the sun query)", "",
+    "ON (default; materials.ini [skip_draws] lens_flare): no flare rings or sprites. The log lists every texture skipped and any additive HUD draw kept.",
+    sw_flare_get, sw_flare_set },
+  { "Sun", "Hide 544BB1AB506B2F73 (sun-outline candidate A: 1024x128 world sprite)", "",
+    "Debug A/B: look at the sun with it hidden; if the black outline goes, it was this sprite.", sw_outline_get, sw_outline_set },
+  { "Sun", "Hide the cloud layer (candidate B: CloudsSingleTexture alpha edge)", "",
+    "Debug A/B: if the outline stays with the sprite hidden but goes with the clouds hidden, it is the cloud texture's alpha edge.", sw_clouds_get, sw_clouds_set },
+  { "Sun", "Hide 40AA313D3EE0E9B6 (candidate C: 128x128 sun glow)", "",
+    "Debug A/B: the sun glow sprite (also covered by the flare skip).", sw_billboard_get, sw_billboard_set },
 };
 
 int f3_switch_get(int i, rbrrtx_menu_switch* sw) {
@@ -5880,6 +5939,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (midQuad) { ++g_midQuadSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"mid-scene quad"); return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"experiment (key K)"); return D3D_OK; }   // performance experiment (key K)
   if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
+  if (lens_flare_or_hidden(dev)) { if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"lens flare / debug hide"); return D3D_OK; }
   if (g_primaryRT && !g_skipTex.empty()) {                  // materials.ini [skip_draws]: never drawn (the game's sun flare)
     IDirect3DBaseTexture9* t = nullptr;
     if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &t)) && t) {
@@ -6130,6 +6190,7 @@ HRESULT STDMETHODCALLTYPE hk_QueryIssue(IDirect3DQuery9* q, DWORD flags) {
     bool& begun = g_oqBegun[q];
     if ((flags & D3DISSUE_BEGIN) && !begun) { begun = true; ++g_oqActive; }
     else if ((flags & D3DISSUE_END) && begun) { begun = false; --g_oqActive; }
+    if (flags & D3DISSUE_END) g_oqEndFrame = g_frame;
   }
   return o.QueryIssue(q, flags);
 }
