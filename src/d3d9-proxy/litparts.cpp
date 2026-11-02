@@ -84,6 +84,7 @@ struct Part {
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
   unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
+  float rel[9] = {}; bool hasRel = false;               // axes minus the body's axes, last frame
   // Turned against the body (a lens never is) = moves with a wheel. A brake disc is a small wheel part: the 220-triangle
   // parts (one per wheel) of the Whaanga run; a 2316-triangle part that turns with a wheel is the whole brake assembly or
   // hub, not a disc (user 2026-11-02: "discs glowed from the very start, bluish"), and a few-triangle part is a lens.
@@ -638,11 +639,18 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
       // Turned against the body = spins or steers with a wheel: a disc. Only the axes count (run 20261101-111428, Fiat
       // 126p: its brake lens is a node of its own, offset from the body's origin but never turned, and the old
       // position test made it a disc: no glow for the first 1.5 s of braking, "taillights go off when braking").
-      float turn = 0.0f;
-      for (int k = 0; k < 3; ++k)
-        turn = (std::max)(turn, std::fabs(d.m[k] - body[k]) + std::fabs(d.m[4 + k] - body[4 + k]) +
-                                std::fabs(d.m[8 + k] - body[8 + k]));
+      // A lens can sit tilted on its own node (Lancia Delta, run 20261102-234217: its brake lens was taken for a disc and
+      // stayed dark until "hot"), so a fixed offset is no wheel: only a CHANGE of the turn against the body between
+      // frames (spinning or steering) counts. A standing car's disc is not hot, so nothing is lost while still.
       Part& p = it->second;
+      float turn = 0.0f, rel[9];
+      for (int r = 0; r < 3; ++r)
+        for (int k = 0; k < 3; ++k) {
+          rel[r * 3 + k] = d.m[r * 4 + k] - body[r * 4 + k];
+          if (p.hasRel) turn = (std::max)(turn, std::fabs(rel[r * 3 + k] - p.rel[r * 3 + k]));
+        }
+      memcpy(p.rel, rel, sizeof rel);
+      p.hasRel = true;
       const bool wasDisc = p.disc();
       if (turn < 1e-3f) ++p.onBody; else ++p.offBody;
       if (p.disc() != wasDisc && (p.mask & (1u << kBrake)))
