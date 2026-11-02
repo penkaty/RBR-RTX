@@ -31,7 +31,7 @@ Change any key in `rbr-rtx\config\keys.ini` (restart the game); write `none` to 
 | Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |
 | Alt+9 | Experimental: foliage cards cut to the leaf outline |
 | Alt+P | Performance test: keep the view still about a minute; frame time per setting goes to `rbr-rtx\logs\rbrrtx_comp.log` |
-| Alt+Y | Ground second layer (sea, cliffs, road edges): **off** (default) -> old **decal** layer -> **bake** (experiment: switches the Remix terrain baker on and blends the second texture into the baked ground; was grey / colourless in the 2026-11-02 test). A beep tells the mode (low / mid / high), the log says it too. The decal mode must be set before loading a stage. |
+| Alt+Y | Ground second layer (sea, cliffs, road edges): **decal** (default; twin-texture layer over the terrain-baked base) -> **bake** (experiment: the second texture is composited into the terrain bake; grey / colourless in the 2026-11-02 test) -> **off**. A beep tells the mode (mid / high / low; a long beep = applies at the next stage load, in the menu it is immediate), the log says it too. |
 
 Two more actions exist without a key by default (`opaque_alpha`, `foliage_normals`); give them one in `keys.ini` to
 compare.
