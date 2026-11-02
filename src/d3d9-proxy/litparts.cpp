@@ -44,6 +44,8 @@ namespace {
 #define llog(...) rbrrtx_log_to(L"rbrrtx_comp.log", __VA_ARGS__)
 
 constexpr unsigned kMaxPrims = 4000, kSettle = 12, kSwitchWindow = 60;
+constexpr const char* kCacheTag = "# litparts v2: heat steps with their own colour files; older entries are not read";
+constexpr unsigned kDiscMinPrims = 60, kDiscMaxPrims = 800, kLensMaxPrims = 600, kJudgeFrames = 4;
 // Signals, and the glow kinds: tail = the unlit brake lens while the lamps are on; lamps by day = a lit head lamp lens
 // with the sun up (user 2026-10-30: "too dim to be noticed in the daytime, good at night").
 // brake disc = a brake part that moves with a wheel, its own glow since 2026-11-01 (user: lamp emissives separate from the
@@ -82,7 +84,12 @@ struct Part {
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
   unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
-  bool disc() const { return offBody >= 3; }             // turned against the body (a lens never is): a brake disc
+  // Turned against the body (a lens never is) = moves with a wheel. A brake disc is a small wheel part: the 220-triangle
+  // parts (one per wheel) of the Whaanga run; a 2316-triangle part that turns with a wheel is the whole brake assembly or
+  // hub, not a disc (user 2026-11-02: "discs glowed from the very start, bluish"), and a few-triangle part is a lens.
+  bool wheelPart() const { return offBody >= 3; }
+  bool disc() const { return wheelPart() && prims >= kDiscMinPrims && prims <= kDiscMaxPrims; }
+  bool settled() const { return onBody + offBody >= kJudgeFrames; }   // seen long enough to tell lens from disc
   bool discQueued = false;                               // its heat steps are on their way to the generated mod
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
@@ -204,24 +211,68 @@ bool dds_hash(const std::wstring& path, uint64_t* hash, UINT* w, UINT* h) {
   return true;
 }
 
+// A hot brake disc's colour per heat step (sRGB, as the file holds it): dull red at the first step, orange at the last.
+void heat_rgb(int signal, float rgb[3]) {
+  const float t = static_cast<float>(signal - kDisc) / (kDiscLevels - 1);
+  rgb[0] = 1.0f;
+  rgb[1] = 0.22f + 0.30f * t;
+  rgb[2] = 0.05f * t;
+}
+
+// The emission mask of a heat step: a 4x4 solid-colour DDS of that colour, so the glow is never the atlas's own colour (the
+// grey-blue metal of the disc texture: "bluish", user 2026-11-02). Written once per run (it is tiny).
+std::wstring heat_dds(int signal) {
+  const wchar_t* dir = rbrrtx_genmod_dir();
+  if (!dir || !dir[0]) return std::wstring();
+  const std::wstring path = std::wstring(dir) + L"\\litparts_heat_" + std::to_wstring(signal - kDisc) + L".dds";
+  static bool done[kKinds] = {};
+  if (done[signal]) return path;
+  float c[3];
+  heat_rgb(signal, c);
+  const uint32_t argb = 0xFF000000u | (static_cast<uint32_t>(std::lround(c[0] * 255.0f)) << 16) |
+                        (static_cast<uint32_t>(std::lround(c[1] * 255.0f)) << 8) | static_cast<uint32_t>(std::lround(c[2] * 255.0f));
+  uint32_t h[32] = {};                                   // "DDS " + 124-byte header
+  std::memcpy(h, "DDS ", 4);
+  h[1] = 124;
+  h[2] = 0x100F;                                         // CAPS | HEIGHT | WIDTH | PITCH | PIXELFORMAT
+  h[3] = 4; h[4] = 4; h[5] = 16;                         // height, width, pitch
+  h[7] = 1;                                              // mip levels
+  h[19] = 32; h[20] = 0x41; h[22] = 32;                  // pixel format: size, RGB | ALPHAPIXELS, 32 bits
+  h[23] = 0x00FF0000u; h[24] = 0x0000FF00u; h[25] = 0x000000FFu; h[26] = 0xFF000000u;
+  h[27] = 0x1000;                                        // TEXTURE
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  f.write(reinterpret_cast<const char*>(h), 128);
+  for (int i = 0; i < 16; ++i) f.write(reinterpret_cast<const char*>(&argb), 4);
+  if (!f) return std::wstring();
+  done[signal] = true;
+  return path;
+}
+
 std::string material_for(const Entry& e) {
   const std::string a = rbrrtx_genmod_asset(e.file);
   char glow[64];
   sprintf_s(glow, "%.3f", g_cfg.glow[e.signal]);
+  // A heat step's emission mask is its own colour file, not the atlas (lens and lamp glow keep the atlas as the mask).
+  std::string mask = a;
+  if (e.signal >= kDisc) {
+    const std::wstring hd = heat_dds(e.signal);
+    if (!hd.empty()) mask = rbrrtx_genmod_asset(hd);
+  }
   const std::string in =
       "                asset inputs:diffuse_texture = @" + a + "@ (\n"
       "                    colorSpace = \"auto\"\n"
       "                )\n"
       "                bool inputs:enable_emission = 1\n"
-      "                asset inputs:emissive_mask_texture = @" + a + "@ (\n"
+      "                asset inputs:emissive_mask_texture = @" + mask + "@ (\n"
       "                    colorSpace = \"auto\"\n"
       "                )\n"
       "                float inputs:emissive_intensity = " + glow + "\n";
   std::string in2 = in;
-  if (e.signal >= kDisc) {                               // heat colour over the atlas's own: dull red at the first step, orange at the last
-    const float t = static_cast<float>(e.signal - kDisc) / (kDiscLevels - 1);
+  if (e.signal >= kDisc) {                               // the same colour as the constant, whichever of the two the material takes
+    float c[3];
+    heat_rgb(e.signal, c);
     char col[120];
-    sprintf_s(col, "                color3f inputs:emissive_color_constant = (1, %.3f, %.3f)\n", 0.10f + 0.32f * t, 0.02f + 0.07f * t);
+    sprintf_s(col, "                color3f inputs:emissive_color_constant = (%.3f, %.3f, %.3f)\n", c[0], c[1], c[2]);
     in2 += col;
   }
   char c[96];
@@ -232,7 +283,7 @@ std::string material_for(const Entry& e) {
 // Section "litparts" from every entry, and the cache file. Caller holds g_mx.
 void publish_locked() {
   std::string body;
-  std::string cache;
+  std::string cache = std::string(kCacheTag) + "\n";
   for (const auto& kv : g_entries) {
     const Entry& e = kv.second;
     if (g_cfg.glow[e.signal] <= 0.0f) continue;
@@ -528,7 +579,11 @@ void rbrrtx_litparts_startup() {
   g_cacheFile = std::wstring(dir) + L"\\litparts.txt";
   std::ifstream in(g_cacheFile);
   std::lock_guard<std::mutex> g(g_mx);
-  for (std::string line; std::getline(in, line);) {
+  std::string first;
+  std::getline(in, first);
+  while (!first.empty() && (first.back() == '\r' || first.back() == ' ')) first.pop_back();
+  const bool current = first == kCacheTag;               // an older cache (other signal numbers, old disc materials) is dropped
+  for (std::string line; current && std::getline(in, line);) {
     unsigned long long tw = 0, src = 0;
     int sig = -1, used = 0;
     if (sscanf_s(line.c_str(), "%llx %llx %d %n", &tw, &src, &sig, &used) < 3 || sig < 0 || sig >= kKinds || !used) continue;
@@ -594,6 +649,8 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
         llog(L"lit parts: a %u-triangle brake part is %s", p.prims, p.disc()
              ? L"drawn off the body (moves with a wheel): a brake disc, it glows by its heat"
              : L"drawn with the body: a brake lamp lens, it lights at once");
+      else if (p.wheelPart() && !p.disc() && p.offBody == 3 && (p.mask & (1u << kBrake)))
+        llog(L"lit parts: a %u-triangle brake part turns with a wheel but is no disc (60..800 triangles): no glow", p.prims);
     }
   g_drawnAt.clear();
   ++g_frame;
@@ -631,12 +688,16 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
   p.prims = prims;
   g_drawn.push_back(key);
-  if (world && (p.mask & (1u << kBrake)) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
+  if (world && ((p.mask & (1u << kBrake)) || p.tail) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
     g_drawnAt.push_back({ key, { world[0], world[1], world[2], world[3], world[4], world[5], world[6], world[7],
                                  world[8], world[9], world[10], world[11] } });
   // Which glow: the signal that shows it now (the brake over the lamps on a shared tail lens), else the unlit brake
   // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states. A brake disc glows by its heat
   // (update_heat; until it is hot it is drawn as the game textures it).
+  // Nothing glows from a brake part before it is judged (4 frames of body matrix: a lens, a wheel: a disc), and nothing from
+  // a part that turns with a wheel but is no disc (a big assembly), or from an unlit "lens" of that kind or too big for a lens:
+  // its glow would be the atlas colour (grey-blue metal) over the whole part.
+  if ((p.mask & (1u << kBrake)) && (!p.settled() || (p.wheelPart() && !p.disc()) || (!p.wheelPart() && p.prims > kLensMaxPrims))) return nullptr;
   const bool isDisc = (p.mask & (1u << kBrake)) && p.disc();
   if (isDisc) {
     if (g_cfg.discGlow <= 0.0f) return nullptr;
@@ -646,7 +707,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   int kind = -1;
   for (int i : { kBrake, kReverse, kLamps }) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] > 0) kind = i;
   if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
-  if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0) kind = kTail;
+  if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims) kind = kTail;
   if (kind == kLamps && g_sunEl >= g_cfg.dayAbove) kind = kLampsDay;
   if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
