@@ -300,3 +300,8 @@ extern "C" int rbrrtx_menu_is_drawing(void);
 extern "C" int rbrrtx_menu_option_locked(const char* key, float* value);
 // comp.cpp: DLL_PROCESS_DETACH through FreeLibrary: the menu and its window subclass go.
 void rbrrtx_comp_shutdown();
+
+// dinput_block.cpp: neutral DirectInput state while the F3 menu is open (vtable patch of GetDeviceState / GetDeviceData;
+// RBRRTX_MENU_BLOCK_INPUT=0 leaves it out). Install after the menu exists; remove at exit.
+void rbrrtx_dinput_block_install();
+void rbrrtx_dinput_block_remove();

@@ -5512,6 +5512,7 @@ void f3_install(IDirect3DDevice9* dev) {
          reinterpret_cast<void*>(now), reinterpret_cast<void*>(f3_wndproc));
   }
   clog(L"menu: toggle key vk 0x%02X", rbrrtx_key_vk(RBRKEY_MENU, false));
+  rbrrtx_dinput_block_install();                       // the game gets neutral keyboard / mouse / wheel state while the menu is open
 }
 
 // hk_Reset: the DX9 backend's default-pool objects and our texture references must be gone before Reset.
@@ -6319,5 +6320,6 @@ void rbrrtx_comp_shutdown() {
     g_f3Wnd = nullptr;
   }
   f3_probe_free();
+  rbrrtx_dinput_block_remove();
   rbrrtx_menu_shutdown();
 }
