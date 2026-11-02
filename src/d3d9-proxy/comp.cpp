@@ -3997,13 +3997,13 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
 // cell wrapped as uv_lamp_points does) is written to lights-marked.ini and the lamp kinds are re-read at once. Every
 // lamp drawn with that rectangle of the texture, on every stage that shares it, then gets a light.
 struct LampPick {
-  bool armed = false, ray = false, hit = false;
+  bool armed = false, ray = false, hit = false, lastCam = false;   // lastCam: the ray comes from the camera of the frame before
   double org[3] = {}, dir[3] = {};
   double t = 1e30;                                     // distance of the nearest hit
   float point[3] = {}, rect[4] = {};
   unsigned long long tex = 0;
   unsigned island = 0, drawVerts = 0;                  // island vertices; vertices of the hit draw
-  unsigned draws = 0, tested = 0, unreadable = 0;
+  unsigned draws = 0, tested = 0, unreadable = 0, retries = 0;
   std::wstring shader;
 } g_pick;
 
@@ -4069,24 +4069,33 @@ unsigned lamp_island(const PickDraw& d, size_t hitTri, const double hp[3], float
   return count;
 }
 
+// The screen-centre ray through g_V / g_P into g_pick.
+bool pick_ray_from_camera() {
+  D3DMATRIX vi;
+  if (!inverse(g_V, vi) || std::fabs(g_P._11) < 1e-6f || std::fabs(g_P._22) < 1e-6f) return false;
+  const double vx = -g_P._31 / g_P._11, vy = -g_P._32 / g_P._22;
+  double len = 0;
+  for (int k = 0; k < 3; ++k) {
+    g_pick.org[k] = vi.m[3][k];
+    g_pick.dir[k] = vx * vi.m[0][k] + vy * vi.m[1][k] + vi.m[2][k];
+    len += g_pick.dir[k] * g_pick.dir[k];
+  }
+  len = std::sqrt(len);
+  for (double& x : g_pick.dir) x /= len;
+  g_pick.ray = true;
+  return true;
+}
+
 // Per world draw while armed (comp_draw): the ray against this draw's triangles; keeps the nearest hit of the frame.
 void lamp_pick_draw(IDirect3DDevice9* dev) {
-  if (!g_pick.armed || !g_primaryRT || !g_frameCam || !g_curVS || !g_curInfo || g_drawNumVert == 0) return;
+  // Without this frame's camera the ray armed from the last stage camera (lamp_mark_frame) still stands: world-space
+  // draws carry world coordinates (user 2026-11-02: "no world camera this frame" on a stage).
+  if (!g_pick.armed || !g_primaryRT || !(g_frameCam || g_pick.ray) || !g_curVS || !g_curInfo || g_drawNumVert == 0) return;
   if (g_curInfo->flags & (SH_CAR | SH_SKY | SH_GLASS | SH_PARTICLE)) return;
   if (g_drawType != D3DPT_TRIANGLELIST && g_drawType != D3DPT_TRIANGLESTRIP && g_drawType != D3DPT_TRIANGLEFAN) return;
-  if (!g_pick.ray) {                                   // the screen-centre ray (P._31/_32: an off-centre projection)
-    D3DMATRIX vi;
-    if (!inverse(g_V, vi) || std::fabs(g_P._11) < 1e-6f || std::fabs(g_P._22) < 1e-6f) return;
-    const double vx = -g_P._31 / g_P._11, vy = -g_P._32 / g_P._22;
-    double len = 0;
-    for (int k = 0; k < 3; ++k) {
-      g_pick.org[k] = vi.m[3][k];
-      g_pick.dir[k] = vx * vi.m[0][k] + vy * vi.m[1][k] + vi.m[2][k];
-      len += g_pick.dir[k] * g_pick.dir[k];
-    }
-    len = std::sqrt(len);
-    for (double& x : g_pick.dir) x /= len;
-    g_pick.ray = true;
+  if (g_frameCam && (!g_pick.ray || g_pick.lastCam)) {   // the screen-centre ray (P._31/_32: an off-centre projection)
+    if (!pick_ray_from_camera()) return;
+    g_pick.lastCam = false;
   }
   const double* org = g_pick.org;
   const double* dir = g_pick.dir;
@@ -4281,8 +4290,14 @@ void lamp_mark_beep(bool ok) {
 
 // After the armed frame (Present): the nearest hit becomes a mark.
 void lamp_pick_finish() {
+  if (!g_pick.draws && g_pick.retries < 5) { ++g_pick.retries; return; }   // a frame without a single world draw: the next one
   g_pick.armed = false;
-  if (!g_pick.ray) { clog(L"lamp mark: no world camera this frame (menu or loading?), nothing marked"); lamp_mark_beep(false); return; }
+  if (!g_pick.ray) {
+    clog(L"lamp mark: no world camera this frame and no earlier stage camera (menu or loading, %s), nothing marked", g_inMenu ? L"in a menu" : L"on a stage");
+    lamp_mark_beep(false);
+    return;
+  }
+  if (g_pick.lastCam) clog(L"lamp mark: no world camera in the armed frame, ray from the last stage camera (%.1f %.1f %.1f)", g_pick.org[0], g_pick.org[1], g_pick.org[2]);
   if (!g_pick.hit || g_pick.t > 150.0) {
     if (g_pick.hit)
       clog(L"lamp mark: the nearest surface on the screen-centre ray is %.1f m away (limit 150 m; texture %016llX), nothing marked", g_pick.t, g_pick.tex);
@@ -4324,6 +4339,7 @@ void lamp_mark_frame() {
   if (rbrrtx_key_pressed(RBRKEY_LAMP_MARK)) {
     g_pick = LampPick();
     g_pick.armed = true;
+    if (g_haveCam && !g_inMenu && pick_ray_from_camera()) g_pick.lastCam = true;   // the last valid stage camera, kept as the fallback
   }
 }
 
