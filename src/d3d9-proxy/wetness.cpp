@@ -123,18 +123,19 @@ void rbrrtx_wetness_frame(bool hold) {
     rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness: %.2f (%s %.0f %%)", g_w, snow ? L"snow" : L"rain", rain * 100.0f);
   }
   if (hold || ++g_frames % 15) return;                  // a few times a second is plenty for a slow value
-  if (std::fabs(g_w - g_sent) > 0.004f) {
+  float menuValue = 0.0f;                               // an option the user moved in the F3 menu is theirs (the menu sent it)
+  if (std::fabs(g_w - g_sent) > 0.004f && !rbrrtx_menu_option_locked(g_option.c_str(), &menuValue)) {
     char v[32];
     sprintf_s(v, "%.3f", g_w);
     if (rbrrtx_remix_set(g_option.c_str(), v)) g_sent = g_w;
   }
   const float drops = snow ? 0.0f : rain;              // raindrop rings on puddles and wet ground while it rains
-  if (!g_rainOption.empty() && std::fabs(drops - g_rainSent) > 0.01f) {
+  if (!g_rainOption.empty() && std::fabs(drops - g_rainSent) > 0.01f && !rbrrtx_menu_option_locked(g_rainOption.c_str(), &menuValue)) {
     char v[32];
     sprintf_s(v, "%.2f", drops);
     if (rbrrtx_remix_set(g_rainOption.c_str(), v)) g_rainSent = drops;
   }
-  if (!g_dropsOption.empty() && (drops > 0.01f ? 1 : 0) != g_dropsSent) {
+  if (!g_dropsOption.empty() && (drops > 0.01f ? 1 : 0) != g_dropsSent && !rbrrtx_menu_option_locked(g_dropsOption.c_str(), &menuValue)) {
     if (rbrrtx_remix_set(g_dropsOption.c_str(), drops > 0.01f ? "True" : "False")) g_dropsSent = drops > 0.01f ? 1 : 0;
   }
 }

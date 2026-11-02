@@ -353,7 +353,7 @@ int WINAPI Proxy_remixapi_RegisterCallbacks(void* begin_scene, void* end_scene, 
 
 }  // extern "C"
 
-BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
+BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
     g_self = inst;
     DisableThreadLibraryCalls(inst);
@@ -362,6 +362,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     log(L"proxy attached to %s", exe);
     rbrrtx_exception_trace_install();
+  } else if (reason == DLL_PROCESS_DETACH && !reserved) {
+    rbrrtx_comp_shutdown();                             // FreeLibrary only: the F3 menu's window subclass must not outlive the DLL
   }
   return TRUE;
 }

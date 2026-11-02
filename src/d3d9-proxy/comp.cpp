@@ -20,6 +20,7 @@
 #include <initguid.h>
 #include <d3d9.h>
 #include "third_party/remix_c.h"
+#include "menu/menu.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -303,7 +304,13 @@ void ground_tag_layer(unsigned long long hx);
 void ground_note_draw(IDirect3DDevice9* dev, bool vsDriven);
 void ground_frame();
 void ground_tags_flush(bool force);
+void ground_tags_load();
 void ground_mode_set(int mode);
+void f3_present(IDirect3DDevice9* dev);                // F3 menu glue (below, after ground_frame)
+void f3_before_reset();
+void f3_after_reset(IDirect3DDevice9* dev, HRESULT hr);
+void texture_probe_draw(IDirect3DDevice9* dev);
+void f3_install(IDirect3DDevice9* dev);
 const wchar_t* ground_tag_name(unsigned long long hx);
 bool g_haveCam = false, g_frameCam = false;
 D3DMATRIX g_V = {}, g_P = {};
@@ -3238,6 +3245,7 @@ void end_frame(IDirect3DDevice9* dev) {
 // ---------------------------------------------------------------- device hooks
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UINT start, const float* data, UINT count) {
+  if (rbrrtx_menu_is_drawing()) return o.SetVertexShaderConstantF(dev, start, data, count);   // the F3 menu's own draws are not tracked
   if (data && start < 256 && !g_recording) {
     const UINT n = (std::min)(count, 256u - start);
     std::memcpy(g_c[start], data, n * 4 * sizeof(float));
@@ -3247,6 +3255,7 @@ HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UIN
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetPixelShaderConstantF(IDirect3DDevice9* dev, UINT start, const float* data, UINT count) {
+  if (rbrrtx_menu_is_drawing()) return o.SetPixelShaderConstantF(dev, start, data, count);
   if (data && start < 8 && !g_recording)               // ps_1_1 has c0-c7; c3 = car dirt colour (dirt_draw)
     std::memcpy(g_psc[start], data, (std::min)(count, 8u - start) * 4 * sizeof(float));
   return o.SetPixelShaderConstantF(dev, start, data, count);
@@ -3345,6 +3354,7 @@ void hook_block(IDirect3DStateBlock9* sb, const BlockState& b) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_CreateStateBlock(IDirect3DDevice9* dev, D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
+  if (rbrrtx_menu_is_drawing()) return o.CreateStateBlock(dev, type, out);   // the menu's per-frame block: nothing tracked, its Apply restores the device
   const HRESULT hr = o.CreateStateBlock(dev, type, out);
   if (SUCCEEDED(hr) && out && *out) {                 // holds the current state of its type from the start
     BlockState b;
@@ -3370,6 +3380,7 @@ HRESULT STDMETHODCALLTYPE hk_EndStateBlock(IDirect3DDevice9* dev, IDirect3DState
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexShader(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
+  if (rbrrtx_menu_is_drawing()) return o.SetVertexShader(dev, vs);
   if (g_recording) { g_rec.hasVS = true; g_rec.vs = vs; g_rec.vsUnbound = false; }
   else track_vs(vs);
   return o.SetVertexShader(dev, vs);
@@ -3388,12 +3399,14 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexDeclaration(IDirect3DDevice9* dev, cons
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexDeclaration(IDirect3DDevice9* dev, IDirect3DVertexDeclaration9* decl) {
+  if (rbrrtx_menu_is_drawing()) return o.SetVertexDeclaration(dev, decl);
   if (g_recording) { g_rec.hasVin = true; g_rec.vin = kVinDecl; g_rec.decl = decl; g_rec.fvf = 0; }
   else { g_curDecl = decl; g_vin = kVinDecl; }
   return o.SetVertexDeclaration(dev, decl);
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetFVF(IDirect3DDevice9* dev, DWORD fvf) {
+  if (rbrrtx_menu_is_drawing()) return o.SetFVF(dev, fvf);
   if (g_recording) { g_rec.hasVin = true; g_rec.vin = kVinFvf; g_rec.decl = nullptr; g_rec.fvf = fvf; }
   else { g_curDecl = nullptr; g_curFVF = fvf; g_vin = kVinFvf; }
   return o.SetFVF(dev, fvf);
@@ -3408,6 +3421,7 @@ bool screen_space_input(IDirect3DDevice9* dev) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetTextureStageState(IDirect3DDevice9* dev, DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD v) {
+  if (rbrrtx_menu_is_drawing()) return o.SetTextureStageState(dev, stage, type, v);
   if (g_recording) return o.SetTextureStageState(dev, stage, type, v);
   if (stage == 0)
     for (int i = 0; i < 6; ++i)
@@ -3416,11 +3430,13 @@ HRESULT STDMETHODCALLTYPE hk_SetTextureStageState(IDirect3DDevice9* dev, DWORD s
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetRenderState(IDirect3DDevice9* dev, D3DRENDERSTATETYPE state, DWORD v) {
+  if (rbrrtx_menu_is_drawing()) return o.SetRenderState(dev, state, v);
   if (state == D3DRS_LIGHTING && !g_recording) g_lighting = v;
   return o.SetRenderState(dev, state, v);
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetTransform(IDirect3DDevice9* dev, D3DTRANSFORMSTATETYPE state, const D3DMATRIX* m) {
+  if (rbrrtx_menu_is_drawing()) return o.SetTransform(dev, state, m);
   static unsigned logged[3] = {};
   for (int i = 0; i < 3; ++i)                          // diagnostics: does the game (or a plugin) set these itself?
     if (state == kXf[i] && m && logged[i] < 5) {
@@ -3494,10 +3510,14 @@ void destroy_sun(const wchar_t* why) {
 // The final Release destroys the device; drop our Remix API light first. A light still alive when the bridge
 // shuts down made exits take ~30 s with Remix's Reflex mode on (found 2026-10-15).
 ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
-  if (g_apiOk) {
+  const ULONG menuRefs = static_cast<ULONG>(rbrrtx_menu_device_refs());   // the F3 menu's DX9 backend holds one reference
+  if (g_apiOk || menuRefs) {
     const ULONG refs = o.AddRef(dev);
     o.Release(dev);
-    if (refs == 2) { destroy_sun(L"device released"); rbrrtx_apiworld_reset(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); }
+    if (refs == 2 + menuRefs) {                        // the game's last reference (plus the menu's)
+      if (menuRefs) rbrrtx_menu_release_device();
+      if (g_apiOk) { destroy_sun(L"device released"); rbrrtx_apiworld_reset(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); }
+    }
   }
   return o.Release(dev);
 }
@@ -3505,6 +3525,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
 HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* src, const RECT* dst, HWND wnd, const RGNDATA* dirty) {
   if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_frame();
   end_frame(dev);
+  f3_present(dev);                                     // F3 menu: list updates, texture probe, the menu's own scene
   const HRESULT hr = o.Present(dev, src, dst, wnd, dirty);
   if (g_remixPlus) rbrrtx_remixplus_frame();           // light destroys before this Present no longer block their hash
   return hr;
@@ -3524,7 +3545,9 @@ void remember_backbuffer(IDirect3DDevice9* dev) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
+  f3_before_reset();                                   // default-pool menu objects and held texture references go first
   const HRESULT hr = o.Reset(dev, pp);
+  f3_after_reset(dev, hr);
   if (SUCCEEDED(hr)) {                                 // Reset restores default device state
     std::memset(g_cset, 0, sizeof(g_cset));
     for (int i = 0; i < 3; ++i) g_devValid[i] = g_gameSet[i] = false;
@@ -4011,6 +4034,12 @@ struct LampPick {
   unsigned island = 0, drawVerts = 0;                  // island vertices; vertices of the hit draw
   unsigned draws = 0, tested = 0, unreadable = 0, retries = 0;
   std::wstring shader;
+  // The F3 texture picker (g_tprobe) shares this machinery: no island, and it also keeps t1's hash and both textures
+  // (AddRef'd, for the menu thumbnails) of the nearest hit.
+  bool probe = false;
+  unsigned long long tex1 = 0;
+  unsigned flags = 0;
+  IDirect3DBaseTexture9* keep[2] = {};
 } g_pick;
 
 struct PickDraw {                                      // one draw's vertices in world space
@@ -4075,44 +4104,44 @@ unsigned lamp_island(const PickDraw& d, size_t hitTri, const double hp[3], float
   return count;
 }
 
-// The screen-centre ray through g_V / g_P into g_pick.
-bool pick_ray_from_camera() {
+// The screen-centre ray through g_V / g_P into a LampPick.
+bool pick_ray_from_camera(LampPick& pk) {
   D3DMATRIX vi;
   if (!inverse(g_V, vi) || std::fabs(g_P._11) < 1e-6f || std::fabs(g_P._22) < 1e-6f) return false;
   const double vx = -g_P._31 / g_P._11, vy = -g_P._32 / g_P._22;
   double len = 0;
   for (int k = 0; k < 3; ++k) {
-    g_pick.org[k] = vi.m[3][k];
-    g_pick.dir[k] = vx * vi.m[0][k] + vy * vi.m[1][k] + vi.m[2][k];
-    len += g_pick.dir[k] * g_pick.dir[k];
+    pk.org[k] = vi.m[3][k];
+    pk.dir[k] = vx * vi.m[0][k] + vy * vi.m[1][k] + vi.m[2][k];
+    len += pk.dir[k] * pk.dir[k];
   }
   len = std::sqrt(len);
-  for (double& x : g_pick.dir) x /= len;
-  g_pick.ray = true;
+  for (double& x : pk.dir) x /= len;
+  pk.ray = true;
   return true;
 }
 
 // Per world draw while armed (comp_draw): the ray against this draw's triangles; keeps the nearest hit of the frame.
-void lamp_pick_draw(IDirect3DDevice9* dev) {
+void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   // Without this frame's camera the ray armed from the last stage camera (lamp_mark_frame) still stands: world-space
   // draws carry world coordinates (user 2026-11-02: "no world camera this frame" on a stage).
-  if (!g_pick.armed || !g_primaryRT || !(g_frameCam || g_pick.ray) || !g_curVS || !g_curInfo || g_drawNumVert == 0) return;
+  if (!pk.armed || !g_primaryRT || !(g_frameCam || pk.ray) || !g_curVS || !g_curInfo || g_drawNumVert == 0) return;
   if (g_curInfo->flags & (SH_CAR | SH_SKY | SH_GLASS | SH_PARTICLE)) return;
   if (g_drawType != D3DPT_TRIANGLELIST && g_drawType != D3DPT_TRIANGLESTRIP && g_drawType != D3DPT_TRIANGLEFAN) return;
-  if (g_frameCam && (!g_pick.ray || g_pick.lastCam)) {   // the screen-centre ray (P._31/_32: an off-centre projection)
-    if (!pick_ray_from_camera()) return;
-    g_pick.lastCam = false;
+  if (g_frameCam && (!pk.ray || pk.lastCam)) {   // the screen-centre ray (P._31/_32: an off-centre projection)
+    if (!pick_ray_from_camera(pk)) return;
+    pk.lastCam = false;
   }
-  const double* org = g_pick.org;
-  const double* dir = g_pick.dir;
-  ++g_pick.draws;
+  const double* org = pk.org;
+  const double* dir = pk.dir;
+  ++pk.draws;
   float sc[3], sr = 0.0f;
   if (draw_world_sphere(dev, sc, &sr, true)) {         // cheap first: the bounding sphere must be on the ray
     const double lx = sc[0] - org[0], ly = sc[1] - org[1], lz = sc[2] - org[2], reach = sr + 1.0;
     const double tca = lx * dir[0] + ly * dir[1] + lz * dir[2];
-    if (lx * lx + ly * ly + lz * lz - tca * tca > reach * reach || tca + reach < 0 || (g_pick.hit && tca - reach > g_pick.t)) return;
+    if (lx * lx + ly * ly + lz * lz - tca * tca > reach * reach || tca + reach < 0 || (pk.hit && tca - reach > pk.t)) return;
   }
-  ++g_pick.tested;
+  ++pk.tested;
   IDirect3DBaseTexture9* bt = nullptr;
   if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return;
   const unsigned long long hx = rbrrtx_texture_hash(bt);
@@ -4121,7 +4150,7 @@ void lamp_pick_draw(IDirect3DDevice9* dev) {
   stream0_layout(dev, &posOff, &uvOff, &uvType);
   IDirect3DVertexBuffer9* vb = nullptr;
   UINT offset = 0, stride = 0;
-  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) { ++g_pick.unreadable; return; }
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) { ++pk.unreadable; return; }
   D3DVERTEXBUFFER_DESC desc = {};
   void* data = nullptr;
   const UINT nv = g_drawNumVert, start = offset + g_drawFirstVert * stride, bytes = nv * stride;
@@ -4129,7 +4158,7 @@ void lamp_pick_draw(IDirect3DDevice9* dev) {
       FAILED(vb->lpVtbl->GetDesc(vb, &desc)) || start + bytes > desc.Size ||
       FAILED(vb->lpVtbl->Lock(vb, start, bytes, &data, D3DLOCK_READONLY)) || !data) {
     vb->lpVtbl->Release(vb);
-    ++g_pick.unreadable;
+    ++pk.unreadable;
     return;
   }
   const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
@@ -4158,12 +4187,12 @@ void lamp_pick_draw(IDirect3DDevice9* dev) {
     IDirect3DIndexBuffer9* ib = nullptr;
     D3DINDEXBUFFER_DESC id = {};
     void* ip = nullptr;
-    if (FAILED(dev->lpVtbl->GetIndices(dev, &ib)) || !ib) { ++g_pick.unreadable; return; }
+    if (FAILED(dev->lpVtbl->GetIndices(dev, &ib)) || !ib) { ++pk.unreadable; return; }
     const UINT isz = (ib->lpVtbl->GetDesc(ib, &id), id.Format == D3DFMT_INDEX32) ? 4 : 2;
     const UINT nIdx = g_drawType == D3DPT_TRIANGLELIST ? g_dip.count * 3 : g_dip.count + 2;
     if (g_dip.startIdx * isz + nIdx * isz > id.Size || FAILED(ib->lpVtbl->Lock(ib, g_dip.startIdx * isz, nIdx * isz, &ip, D3DLOCK_READONLY)) || !ip) {
       ib->lpVtbl->Release(ib);
-      ++g_pick.unreadable;
+      ++pk.unreadable;
       return;
     }
     seq.resize(nIdx);
@@ -4182,7 +4211,7 @@ void lamp_pick_draw(IDirect3DDevice9* dev) {
   else if (g_drawType == D3DPT_TRIANGLESTRIP) for (size_t i = 0; i + 2 < seq.size(); ++i) add(seq[i], seq[i + 1], seq[i + 2]);
   else for (size_t i = 1; i + 1 < seq.size(); ++i) add(seq[0], seq[i], seq[i + 1]);
   // Moller-Trumbore, both sides (the glass of a lamp faces down, the winding does not matter).
-  double best = g_pick.t;
+  double best = pk.t;
   size_t bestTri = SIZE_MAX;
   for (size_t t = 0; t < d.tri.size() / 3; ++t) {
     const auto& A = d.pos[d.tri[t * 3]];
@@ -4202,14 +4231,30 @@ void lamp_pick_draw(IDirect3DDevice9* dev) {
     if (tt > 0.05 && tt < best) { best = tt; bestTri = t; }
   }
   if (bestTri == SIZE_MAX) return;
-  g_pick.hit = true;
-  g_pick.t = best;
-  g_pick.tex = hx;
-  g_pick.drawVerts = nv;
-  g_pick.shader = g_curInfo->name;
+  pk.hit = true;
+  pk.t = best;
+  pk.tex = hx;
+  pk.drawVerts = nv;
+  pk.shader = g_curInfo->name;
   double hp[3];
-  for (int k = 0; k < 3; ++k) { hp[k] = org[k] + dir[k] * best; g_pick.point[k] = static_cast<float>(hp[k]); }
-  g_pick.island = lamp_island(d, bestTri, hp, g_pick.rect);
+  for (int k = 0; k < 3; ++k) { hp[k] = org[k] + dir[k] * best; pk.point[k] = static_cast<float>(hp[k]); }
+  if (pk.probe) {                                      // F3 texture picker: t1, flags, and the textures kept for thumbnails
+    pk.flags = g_curInfo->flags;
+    pk.tex1 = 0;
+    for (int s = 0; s < 2; ++s) {
+      if (pk.keep[s]) { pk.keep[s]->lpVtbl->Release(pk.keep[s]); pk.keep[s] = nullptr; }
+      IDirect3DBaseTexture9* b = nullptr;
+      if (FAILED(dev->lpVtbl->GetTexture(dev, s, &b)) || !b) continue;
+      if (s == 1) pk.tex1 = rbrrtx_texture_hash(b);
+      if (b->lpVtbl->GetType(b) == D3DRTYPE_TEXTURE) pk.keep[s] = b; else b->lpVtbl->Release(b);
+    }
+    return;
+  }
+  pk.island = lamp_island(d, bestTri, hp, pk.rect);
+}
+
+void lamp_pick_draw(IDirect3DDevice9* dev) {
+  if (g_pick.armed) pick_draw(dev, g_pick);
 }
 
 // Writes the mark into lights-marked.ini (plain text, CRLF): a new [lamp.mark_<hash>_<n>], or, when the rectangle
@@ -4345,7 +4390,7 @@ void lamp_mark_frame() {
   if (rbrrtx_key_pressed(RBRKEY_LAMP_MARK)) {
     g_pick = LampPick();
     g_pick.armed = true;
-    if (g_haveCam && !g_inMenu && pick_ray_from_camera()) g_pick.lastCam = true;   // the last valid stage camera, kept as the fallback
+    if (g_haveCam && !g_inMenu && pick_ray_from_camera(g_pick)) g_pick.lastCam = true;   // the last valid stage camera, kept as the fallback
   }
 }
 
@@ -4692,6 +4737,10 @@ HRESULT alphacut_draw(IDirect3DDevice9* dev, const RbrAlphaCut& ac) {
 // RBRRTX_CAR_DIRT=0 = off. Raster (key 0) turns the layer off, and the game's own shader shows the dirt there.
 std::string g_decalBase;                               // rtx.decalTextures from rtx.conf ("" = none)
 std::set<unsigned long long> g_dirtHashes;
+// F3 menu texture tags (glue below): class 0 terrain, 1 decal, 2 animated water, 3 ignore. g_f3Tag = added in the menu,
+// g_f3Off = taken out of a list that rtx.conf or the run-time tags put the hash in.
+std::set<unsigned long long> g_f3Tag[4], g_f3Off[4];
+void send_decal_list();
 
 std::string conf_string(const char* name) {
   wchar_t path[MAX_PATH];
@@ -4711,15 +4760,7 @@ std::string conf_string(const char* name) {
 
 void decal_tag(unsigned long long hx, const wchar_t* what) {
   if (!g_dirtHashes.insert(hx).second) return;
-  static bool baseRead = false;
-  if (!baseRead) { baseRead = true; g_decalBase = conf_string("rtx.decalTextures"); }
-  std::string list = g_decalBase;
-  char b[24];
-  for (unsigned long long h : g_dirtHashes) {
-    sprintf_s(b, "0x%016llX", h);
-    list += (list.empty() ? "" : ", ") + std::string(b);
-  }
-  remix_set("rtx.decalTextures", list.c_str());
+  send_decal_list();                                   // rtx.conf's list + the car dirt maps + the menu's tags
   clog(L"%s: %016llX tagged as decal (%zu decal textures added)", what, hx, g_dirtHashes.size());
 }
 
@@ -4773,25 +4814,31 @@ void ground_tags_load() {
        g_layerMode == kLayerBake ? L"bake" : g_layerMode == kLayerDecal ? L"decal" : L"off");
 }
 
-bool ground_is_decal(unsigned long long hx) { return g_decalConfSet.count(hx) || g_dirtHashes.count(hx); }
+bool ground_is_decal(unsigned long long hx) {
+  if (g_f3Off[1].count(hx)) return false;               // taken out of the decal list in the F3 menu
+  return g_decalConfSet.count(hx) || g_dirtHashes.count(hx) || g_f3Tag[1].count(hx);
+}
 
 void ground_tags_flush(bool force) {
   if (!g_groundLoaded || !g_groundDirty || (!force && g_frame - g_groundFlushFrame < 90)) return;
   g_groundDirty = false;
   g_groundFlushFrame = g_frame;
-  if (!g_bakerOn) return;                                   // baker off in the conf: terrain decals from the conf list, no tags
+  if (!g_bakerOn && g_f3Tag[0].empty() && g_f3Off[0].empty()) return;   // baker off in the conf: terrain decals from the conf list, no tags
   std::unordered_set<unsigned long long> seen;
   std::string list;
   char b[24];
   auto add = [&](unsigned long long h) {
-    if (ground_is_decal(h) || !seen.insert(h).second) return;
+    if (ground_is_decal(h) || g_f3Off[0].count(h) || !seen.insert(h).second) return;
     sprintf_s(b, "0x%016llX", h);
     if (!list.empty()) list += ", ";
     list += b;
   };
   for (unsigned long long h : g_terrainConf) add(h);
-  for (unsigned long long h : g_groundBase) add(h);
-  if (g_layerMode == kLayerBake) for (unsigned long long h : g_groundLayer) add(h);
+  if (g_bakerOn) {                                          // (the run-time ground tags are for the baker)
+    for (unsigned long long h : g_groundBase) add(h);
+    if (g_layerMode == kLayerBake) for (unsigned long long h : g_groundLayer) add(h);
+  }
+  for (unsigned long long h : g_f3Tag[0]) add(h);           // tagged in the F3 menu
   remix_set("rtx.terrainTextures", list.c_str());
   g_groundSent = seen.size();
   ++g_groundFlushes;
@@ -4995,6 +5042,371 @@ void ground_frame() {
   if (!g_gs.draws) return;
   if (!g_groundNoted && now - g_groundStart > 20000) { g_groundNoted = true; ground_stage_line(L"so far"); }
   else if (g_groundNoted && now - g_groundPrinted > 120000 && g_gs.baseNew + g_gs.layerNew != g_groundPrintedTags) ground_stage_line(L"so far");
+}
+
+// ---------------------------------------------------------------- F3 menu glue (menu/menu.cpp, docs/research/f3-menu-plan.md)
+// The menu is Dear ImGui drawn through the game's own device in front of Present (f3_present), fed by a subclass of the
+// game window (f3_wndproc). Everything here is the proxy's side: what the menu's pages call back into.
+
+// Texture tags: class 0 terrain, 1 decal, 2 animated water, 3 ignore. The menu toggles a hash in its own set (g_f3Tag), or
+// takes one out of a list that rtx.conf or the run-time ground tags put it in (g_f3Off). The lists go to Remix through
+// remix_set when something changed (>= 20 frames apart): terrain through ground_tags_flush (its list also holds the
+// run-time ground tags), decal through send_decal_list, water and ignore through f3_send_list. menu.ini [textures] keeps
+// the sets (<class>= and <class>_off=) and is applied on top of rtx.conf at the start. user.conf is never written.
+const char* const kF3Class[4] = { "terrain", "decal", "water", "ignore" };
+const char* const kF3Key[4] = { "rtx.terrainTextures", "rtx.decalTextures", "rtx.animatedWaterTextures", "rtx.ignoreTextures" };
+std::vector<unsigned long long> g_f3ConfVec[4];            // rtx.conf's own list per class, in order (raw)
+std::set<unsigned long long> g_f3Conf[4];
+bool g_f3ConfLoaded = false, g_f3Dirty[4] = {};
+unsigned g_f3SendFrame = 0;
+
+void f3_conf_load() {
+  if (g_f3ConfLoaded) return;
+  g_f3ConfLoaded = true;
+  for (int c = 0; c < 4; ++c) {
+    g_f3ConfVec[c] = parse_hashes(conf_string(kF3Key[c]));
+    g_f3Conf[c].insert(g_f3ConfVec[c].begin(), g_f3ConfVec[c].end());
+  }
+}
+
+// In rtx.conf or in this session's run-time tags (not the menu's own set).
+bool f3_base_has(unsigned long long h, int c) {
+  if (g_f3Conf[c].count(h)) return true;
+  if (c == 0) return g_groundBase.count(h) || (g_layerMode == kLayerBake && g_groundLayer.count(h));
+  if (c == 1) return g_dirtHashes.count(h) != 0;
+  return false;
+}
+
+bool f3_tagged(unsigned long long h, int c) {
+  f3_conf_load();
+  if (g_f3Off[c].count(h)) return false;
+  return g_f3Tag[c].count(h) || f3_base_has(h, c);
+}
+
+void f3_untag(unsigned long long h, int c) {
+  g_f3Tag[c].erase(h);
+  if (f3_base_has(h, c)) g_f3Off[c].insert(h);
+  g_f3Dirty[c] = true;
+}
+
+// Menu action: toggle the hash in class cls (0..3), or 4 = clear from all four. 0 failed, 1 tagged, 2 removed.
+int f3_mark(unsigned long long h, int cls) {
+  if (!h || cls < 0 || cls > 4) return 0;
+  f3_conf_load();
+  if (cls == 4) {
+    for (int c = 0; c < 4; ++c) if (f3_tagged(h, c)) f3_untag(h, c);
+    clog(L"menu: %016llX cleared from every list", h);
+    return 2;
+  }
+  int result = 2;
+  if (f3_tagged(h, cls)) {
+    f3_untag(h, cls);
+  } else {
+    for (int c = 0; c < 4; ++c) if (c != cls && f3_tagged(h, c)) f3_untag(h, c);   // one class per texture
+    g_f3Off[cls].erase(h);
+    g_f3Tag[cls].insert(h);
+    g_f3Dirty[cls] = true;
+    result = 1;
+  }
+  clog(L"menu: %016llX %s %S (menu tags %zu, taken out %zu)", h, result == 1 ? L"tagged" : L"untagged", kF3Class[cls],
+       g_f3Tag[cls].size(), g_f3Off[cls].size());
+  return result;
+}
+
+// The list as Remix gets it: rtx.conf's entries (minus the ones the menu took out), then the menu's.
+void f3_send_list(int c) {
+  std::set<unsigned long long> seen;
+  std::string list;
+  char b[24];
+  auto add = [&](unsigned long long h) {
+    if (g_f3Off[c].count(h) || !seen.insert(h).second) return;
+    sprintf_s(b, "0x%016llX", h);
+    if (!list.empty()) list += ", ";
+    list += b;
+  };
+  for (unsigned long long h : g_f3ConfVec[c]) add(h);
+  for (unsigned long long h : g_f3Tag[c]) add(h);
+  remix_set(kF3Key[c], list.c_str());
+  clog(L"menu: %S sent: %zu hashes", kF3Key[c], seen.size());
+}
+
+void send_decal_list() {
+  static bool baseRead = false;
+  if (!baseRead) { baseRead = true; g_decalBase = conf_string("rtx.decalTextures"); }
+  std::set<unsigned long long> seen;
+  std::string list;
+  char b[24];
+  auto add = [&](unsigned long long h) {
+    if (g_f3Off[1].count(h) || !seen.insert(h).second) return;
+    sprintf_s(b, "0x%016llX", h);
+    if (!list.empty()) list += ", ";
+    list += b;
+  };
+  for (unsigned long long h : parse_hashes(g_decalBase)) add(h);
+  for (unsigned long long h : g_dirtHashes) add(h);
+  for (unsigned long long h : g_f3Tag[1]) add(h);
+  remix_set("rtx.decalTextures", list.c_str());
+}
+
+// Per Present: batched list updates (nothing is sent unless the menu changed a tag).
+void f3_tags_frame() {
+  if (!g_apiOk || g_frame - g_f3SendFrame < 20) return;
+  bool any = false;
+  for (int c = 0; c < 4; ++c) any |= g_f3Dirty[c];
+  if (!any) return;
+  g_f3SendFrame = g_frame;
+  f3_conf_load();
+  for (int c = 0; c < 4; ++c) {
+    if (!g_f3Dirty[c]) continue;
+    g_f3Dirty[c] = false;
+    if (c == 0) {
+      if (!g_groundLoaded) ground_tags_load();
+      g_groundDirty = true;
+      ground_tags_flush(true);
+    } else if (c == 1) {
+      send_decal_list();
+    } else {
+      f3_send_list(c);
+    }
+  }
+}
+
+// menu.ini [textures]: terrain= decal= water= ignore= (hashes added by the menu), <class>_off= (taken out of the lists).
+void f3_ini_set(const char* key, const char* value) {
+  const std::string k = key ? key : "";
+  for (int c = 0; c < 4; ++c) {
+    const bool off = k == std::string(kF3Class[c]) + "_off";
+    if (!off && k != kF3Class[c]) continue;
+    for (unsigned long long h : parse_hashes(value ? value : "")) (off ? g_f3Off[c] : g_f3Tag[c]).insert(h);
+    g_f3Dirty[c] = true;
+    return;
+  }
+}
+
+void f3_ini_dump(void (*emit)(const char*, void*), void* user) {
+  for (int c = 0; c < 4; ++c)
+    for (int off = 0; off < 2; ++off) {
+      const std::set<unsigned long long>& s = off ? g_f3Off[c] : g_f3Tag[c];
+      if (s.empty()) continue;
+      std::string line = std::string(kF3Class[c]) + (off ? "_off=" : "=");
+      char b[24];
+      bool first = true;
+      for (unsigned long long h : s) {
+        sprintf_s(b, "0x%016llX", h);
+        line += (first ? "" : ", ") + std::string(b);
+        first = false;
+      }
+      emit(line.c_str(), user);
+    }
+}
+
+// "terrain (rtx.conf, menu), decal (removed in menu)" for the Textures page.
+void f3_classes_text(unsigned long long h, char* buf, size_t n) {
+  f3_conf_load();
+  std::string s;
+  for (int c = 0; c < 4; ++c) {
+    std::string src;
+    auto add = [&](const char* w) { src += (src.empty() ? "" : ", ") + std::string(w); };
+    if (g_f3Off[c].count(h)) {
+      if (f3_base_has(h, c)) add("removed in menu");
+    } else {
+      if (g_f3Conf[c].count(h)) add("rtx.conf");
+      if (c == 0 && g_groundBase.count(h)) add("ground base, run time");
+      if (c == 0 && g_layerMode == kLayerBake && g_groundLayer.count(h)) add("ground layer, run time");
+      if (c == 1 && g_dirtHashes.count(h)) add("car dirt");
+      if (g_f3Tag[c].count(h)) add("menu");
+    }
+    if (!src.empty()) s += (s.empty() ? "" : "; ") + std::string(kF3Class[c]) + " (" + src + ")";
+  }
+  strncpy_s(buf, n, s.c_str(), _TRUNCATE);
+}
+
+// ---- texture picker (Textures page): the lamp marker's screen-centre ray against the world draws, every frame while the
+// page asks for new results (pick_draw with probe set: no island, keeps t1's hash and both textures AddRef'd for thumbnails).
+LampPick g_tprobe;
+struct TProbeResult {
+  bool found = false;
+  unsigned long long hash[2] = {};
+  IDirect3DBaseTexture9* tex[2] = {};
+  std::string shader;
+  float dist = 0.0f;
+} g_tpRes;
+unsigned g_tpWantUntil = 0;                            // the page asked for new results up to this frame
+
+std::string f3_narrow(const wchar_t* w) {
+  std::string s;
+  for (; w && *w; ++w) s += *w < 128 && *w >= 32 ? static_cast<char>(*w) : '?';
+  return s;
+}
+
+void f3_release_tex(IDirect3DBaseTexture9* (&t)[2]) {
+  for (IDirect3DBaseTexture9*& x : t)
+    if (x) { x->lpVtbl->Release(x); x = nullptr; }
+}
+
+void f3_probe_free() {
+  f3_release_tex(g_tprobe.keep);
+  g_tprobe = LampPick();
+  f3_release_tex(g_tpRes.tex);
+  g_tpRes = TProbeResult();
+}
+
+void texture_probe_draw(IDirect3DDevice9* dev) {
+  if (g_tprobe.armed) pick_draw(dev, g_tprobe);
+}
+
+// Per Present, before the menu draws: publishes the armed frame's nearest hit and arms the next frame while the page keeps asking.
+void f3_probe_frame() {
+  const bool want = rbrrtx_menu_is_open() && g_frame < g_tpWantUntil;
+  if (g_tprobe.armed) {
+    if (!g_tprobe.draws && g_tprobe.retries < 5 && want) { ++g_tprobe.retries; return; }   // a frame without world draws: the next one
+    if (want) {
+      f3_release_tex(g_tpRes.tex);
+      g_tpRes.found = g_tprobe.ray && g_tprobe.hit && g_tprobe.t < 1000.0;
+      g_tpRes.hash[0] = g_tprobe.tex;
+      g_tpRes.hash[1] = g_tprobe.tex1;
+      g_tpRes.shader = f3_narrow(g_tprobe.shader.c_str());
+      g_tpRes.dist = static_cast<float>(g_tprobe.t);
+      for (int s = 0; s < 2; ++s) { g_tpRes.tex[s] = g_tprobe.keep[s]; g_tprobe.keep[s] = nullptr; }   // ownership moves
+    }
+    f3_release_tex(g_tprobe.keep);
+    g_tprobe = LampPick();
+  }
+  if (want) {
+    g_tprobe.armed = g_tprobe.probe = true;
+    if (g_haveCam && !g_inMenu && pick_ray_from_camera(g_tprobe)) g_tprobe.lastCam = true;   // the last valid stage camera as fallback
+  } else if (!rbrrtx_menu_is_open() && (g_tpRes.tex[0] || g_tpRes.tex[1])) {
+    f3_release_tex(g_tpRes.tex);                       // menu closed: no reference held on game textures
+  }
+}
+
+int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
+  g_tpWantUntil = wantNew ? g_frame + 3 : 0;
+  if (!out) return 0;
+  *out = rbrrtx_menu_pick();
+  if (!g_tpRes.found) return 0;
+  out->found = 1;
+  out->hash[0] = g_tpRes.hash[0];
+  out->hash[1] = g_tpRes.hash[1];
+  for (int s = 0; s < 2; ++s) out->texture[s] = g_tpRes.tex[s];
+  strncpy_s(out->shader, g_tpRes.shader.c_str(), _TRUNCATE);
+  out->distance = g_tpRes.dist;
+  return 1;
+}
+
+// ---- Info page
+void f3_info_text(char* buf, size_t n) {
+  RbrStageInfo si = {};
+  wchar_t w[1024];
+  int len = 0;
+  if (rbrrtx_stage_info(&si) && !g_inMenu)
+    len = swprintf_s(w, L"Stage %d %s\nWeather: %s, %s, %s, track %s\n", si.trackId, si.name, rbrrtx_time_name(si.timeOfDay),
+                     rbrrtx_cloud_name(si.clouds), rbrrtx_sky_name(si.skyType), rbrrtx_wetness_name(si.wetness));
+  else
+    len = swprintf_s(w, L"In a menu (no stage loaded)\n");
+  len += swprintf_s(w + len, _countof(w) - len, L"Ground second layer: %s%s\nTerrain baker (rtx.conf): %s\n",
+                    g_layerMode == kLayerBake ? L"BAKE" : g_layerMode == kLayerDecal ? L"DECAL" : L"off",
+                    g_layerWant != g_layerMode ? (g_layerWant == kLayerBake ? L" (BAKE at the next stage load)" : g_layerWant == kLayerDecal ? L" (DECAL at the next stage load)" : L" (off at the next stage load)") : L"",
+                    g_bakerOn ? L"ON" : L"off");
+  len += swprintf_s(w + len, _countof(w) - len, L"Remix Plus API: %s, compat layer: %s, wetness %.2f\n", g_apiOk ? L"on" : L"off",
+                    g_enabled ? L"on" : L"off", rbrrtx_wetness_now());
+  strncpy_s(buf, n, f3_narrow(w).c_str(), _TRUNCATE);
+}
+
+int f3_key_line(int i, char* buf, size_t n) {
+  int seen = 0;
+  for (int a = 0; a < RBRKEY_COUNT; ++a) {
+    if (a == RBRKEY_MENU || !rbrrtx_key_vk(a, true)) continue;
+    if (seen++ != i) continue;
+    strncpy_s(buf, n, (f3_narrow(rbrrtx_key_name(a)) + ":  " + f3_narrow(rbrrtx_key_label(a))).c_str(), _TRUNCATE);
+    return 1;
+  }
+  return 0;
+}
+
+void f3_config_dir(wchar_t* buf, size_t n) {
+  rbrrtx_config_path(L"RBRRTX_MENU_DIR_UNSET", L"menu.ini", buf, n);   // the config folder; the menu adds menu.ini
+  if (wchar_t* slash = wcsrchr(buf, L'\\')) *slash = 0;
+}
+
+int f3_remix_set(const char* key, const char* value) {
+  if (!g_apiOk || !g_api.SetConfigVariable) return 0;
+  remix_set(key, value);
+  return 1;
+}
+
+// ---- window subclass and device hooks
+WNDPROC g_f3NextProc = nullptr;
+HWND g_f3Wnd = nullptr;
+bool g_f3Unicode = true;
+
+LRESULT CALLBACK f3_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+  if (rbrrtx_menu_wndproc(w, m, wp, lp)) return 0;     // taken by the open menu (or the F3 key itself)
+  return g_f3Unicode ? CallWindowProcW(g_f3NextProc, w, m, wp, lp) : CallWindowProcA(g_f3NextProc, w, m, wp, lp);
+}
+
+// At CreateDevice: callbacks, toggle key, ImGui context and the window subclass. RBRRTX_MENU=0 leaves the menu out.
+// The Remix bridge detours SetWindowLong(GWLP_WNDPROC): once it has installed its own proc (RemixWndProc) our subclass
+// is stored behind it (it forwards to "the game's proc" = ours), so Remix sees a key first and the Remix panel (Alt+X,
+// which swallows input while it is up) is not disturbed. The log line shows which case it was.
+void f3_install(IDirect3DDevice9* dev) {
+  if (!rbrrtx_env_flag(L"RBRRTX_MENU", true) || !g_wnd) return;
+  static rbrrtx_menu_callbacks cb = {};
+  cb.remix_set = f3_remix_set;
+  cb.probe_centre = f3_probe_centre;
+  cb.mark_texture = f3_mark;
+  cb.texture_classes = f3_classes_text;
+  cb.texture_ini = f3_ini_set;
+  cb.texture_ini_dump = f3_ini_dump;
+  cb.info_text = f3_info_text;
+  cb.key_line = f3_key_line;
+  cb.config_dir = f3_config_dir;
+  rbrrtx_menu_set_callbacks(&cb);
+  rbrrtx_menu_set_toggle_vk(rbrrtx_key_vk(RBRKEY_MENU, false));
+  if (!rbrrtx_menu_init(g_wnd, dev)) { clog(L"menu: init failed, no F3 menu"); return; }
+  if (g_f3Wnd != g_wnd) {
+    g_f3Unicode = IsWindowUnicode(g_wnd) != FALSE;
+    const LONG_PTR before = g_f3Unicode ? GetWindowLongPtrW(g_wnd, GWLP_WNDPROC) : GetWindowLongPtrA(g_wnd, GWLP_WNDPROC);
+    const LONG_PTR prev = g_f3Unicode ? SetWindowLongPtrW(g_wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(f3_wndproc))
+                                      : SetWindowLongPtrA(g_wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(f3_wndproc));
+    const LONG_PTR now = g_f3Unicode ? GetWindowLongPtrW(g_wnd, GWLP_WNDPROC) : GetWindowLongPtrA(g_wnd, GWLP_WNDPROC);
+    if (prev) { g_f3NextProc = reinterpret_cast<WNDPROC>(prev); g_f3Wnd = g_wnd; }
+    clog(L"menu: F3 menu %s; window procedure before %p, previous %p, now %p, ours %p (now != ours: something else, probably the Remix bridge, sits in front)",
+         prev ? L"installed" : L"NOT installed (SetWindowLong failed)", reinterpret_cast<void*>(before), reinterpret_cast<void*>(prev),
+         reinterpret_cast<void*>(now), reinterpret_cast<void*>(f3_wndproc));
+  }
+  clog(L"menu: toggle key vk 0x%02X", rbrrtx_key_vk(RBRKEY_MENU, false));
+}
+
+// hk_Reset: the DX9 backend's default-pool objects and our texture references must be gone before Reset.
+void f3_before_reset() {
+  rbrrtx_menu_device_lost();
+  f3_probe_free();
+}
+
+void f3_after_reset(IDirect3DDevice9* dev, HRESULT hr) {
+  if (SUCCEEDED(hr)) rbrrtx_menu_device_reset(dev);
+}
+
+// Per Present, after the proxy's own end-of-frame work and before the original Present: pending list updates, the
+// texture probe, then the menu in its own scene (BeginScene/EndScene around it, through the original methods so the hooks'
+// per-scene bookkeeping does not see it). Only on the primary target; closed = a few loads and compares.
+void f3_present(IDirect3DDevice9* dev) {
+  rbrrtx_menu_tick();
+  f3_tags_frame();
+  f3_probe_frame();
+  if (!rbrrtx_menu_is_open() || !g_primaryRT) return;
+  const bool began = SUCCEEDED(o.BeginScene(dev));
+  rbrrtx_menu_frame(dev);
+  if (began) dev->lpVtbl->EndScene(dev);
+  static bool atlasLogged = false;
+  if (!atlasLogged) {
+    if (void* atlas = rbrrtx_menu_font_texture()) {    // tag it in rtx.uiTextures only if it ever shows up in the scene
+      atlasLogged = true;
+      clog(L"menu: ImGui font atlas texture %p, Remix hash %016llX (not tagged; add it to rtx.uiTextures if menu text appears in the path-traced scene)",
+           atlas, rbrrtx_texture_hash(atlas));
+    }
+  }
 }
 
 // Stage of the dirt map for this car shader, -1 = no dirt.
@@ -5317,6 +5729,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     return D3D_OK;
   }
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
+  texture_probe_draw(dev);                                   // F3 texture picker: the same ray, every frame while the page asks
   void* lampGlow = world_light_draw(dev);                    // lamp textures (lights.ini): a light at the object
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
@@ -5492,6 +5905,7 @@ UINT verts_for(D3DPRIMITIVETYPE t, UINT prims) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT start, UINT count) {
+  if (rbrrtx_menu_is_drawing()) return o.DrawPrimitive(dev, t, start, count);
   g_pendingPrims = count;
   g_drawType = t;
   g_drawFirstVert = start;
@@ -5502,6 +5916,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETY
 
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minIdx,
                                                   UINT numV, UINT startIdx, UINT count) {
+  if (rbrrtx_menu_is_drawing()) return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, count);
   g_pendingPrims = count;
   g_drawType = t;
   g_drawFirstVert = base >= 0 ? static_cast<UINT>(base) + minIdx : 0;
@@ -5516,6 +5931,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIM
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT count, const void* data, UINT stride) {
+  if (rbrrtx_menu_is_drawing()) return o.DrawPrimitiveUP(dev, t, count, data, stride);
   g_pendingPrims = count;
   g_drawNumVert = 0;                                   // no vertex buffer: not culled
   g_dip.valid = false;
@@ -5524,6 +5940,7 @@ HRESULT STDMETHODCALLTYPE hk_DrawPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVE
 
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT minIdx, UINT numV,
                                                     UINT count, const void* idx, D3DFORMAT fmt, const void* data, UINT stride) {
+  if (rbrrtx_menu_is_drawing()) return o.DrawIndexedPrimitiveUP(dev, t, minIdx, numV, count, idx, fmt, data, stride);
   g_pendingPrims = count;
   g_drawNumVert = 0;
   g_dip.valid = false;
@@ -5634,6 +6051,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   load_skip_textures();
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);
+  f3_install(dev);                                     // F3 menu (RBRRTX_MENU=0 leaves it out)
   clog(L"device hooks installed (comp %s, sun %s)", g_enabled ? L"on" : L"off", g_apiOk ? L"on" : L"off");
   return hr;
 }
@@ -5713,3 +6131,17 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
 }
 
 bool rbrrtx_remix_plus() { return g_remixPlus; }
+
+// DLL_PROCESS_DETACH by FreeLibrary (not at process exit): the menu goes and the window gets its procedure back.
+void rbrrtx_comp_shutdown() {
+  if (g_f3Wnd && g_f3NextProc) {
+    const LONG_PTR cur = g_f3Unicode ? GetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC) : GetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC);
+    if (cur == reinterpret_cast<LONG_PTR>(f3_wndproc)) {
+      if (g_f3Unicode) SetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_f3NextProc));
+      else SetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_f3NextProc));
+    }
+    g_f3Wnd = nullptr;
+  }
+  f3_probe_free();
+  rbrrtx_menu_shutdown();
+}

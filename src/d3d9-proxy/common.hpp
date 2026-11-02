@@ -278,7 +278,7 @@ void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed);
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_API_WORLD, RBRKEY_LAMP_MARK, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_API_WORLD, RBRKEY_LAMP_MARK, RBRKEY_MENU, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);
@@ -290,3 +290,13 @@ bool rbrrtx_key_pressed(int action);
 // True while held (same conditions).
 bool rbrrtx_key_held(int action);
 const wchar_t* rbrrtx_key_name(int action);
+const wchar_t* rbrrtx_key_label(int action);                   // what the action does (Info page of the F3 menu)
+// Windows key code of the action (0 = none). withAlt false: 0 as well for an Alt+ key (the F3 menu reads plain key messages).
+int rbrrtx_key_vk(int action, bool withAlt);
+
+// menu/menu.cpp (the F3 menu): hooks pass their calls through while it draws; the wetness driver leaves options alone
+// that the user moved in the menu (key such as "rtx.wet.globalWetness"; value = the menu's).
+extern "C" int rbrrtx_menu_is_drawing(void);
+extern "C" int rbrrtx_menu_option_locked(const char* key, float* value);
+// comp.cpp: DLL_PROCESS_DETACH through FreeLibrary: the menu and its window subclass go.
+void rbrrtx_comp_shutdown();

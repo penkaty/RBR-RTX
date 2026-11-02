@@ -5,6 +5,14 @@ RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing wit
 
 ## Unreleased (branch remixplus-2): Remix Plus 2.0.0, not tested in game yet
 
+### F3 in-game menu
+- **A menu inside the game window** (key `F3`, `menu` in `keys.ini`; Dear ImGui drawn by the add-on, Alt+X Remix is unchanged).
+  **Wetness:** every `rtx.wet.*` slider (they left Remix's own Alt+X panel, which stays as close to Remix Plus as it was
+  built); a value you move wins over the automatic rain driver. **Textures:** aim the middle of the screen, the draw under
+  it shows its two texture hashes, shader and current Remix categories; Terrain / Decal / Water / Ignore tag it (toggle) and
+  apply live through the Remix API, saved in `config\menu.ini` (applied on top of `rtx.conf` at the next start, never
+  written to Remix's `user.conf`). **Info:** stage, weather, ground mode and baker, every key. It draws only while open.
+
 ### Remix Plus support
 - **The Remix API works on Remix Plus.** Remix Plus refused the API version RBR-RTX was built with, so the sun,
   headlights, dust, rain, snow and windscreen drops were all off there. RBR-RTX now talks to it in its own API version

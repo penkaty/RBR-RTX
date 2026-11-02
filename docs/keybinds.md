@@ -26,6 +26,7 @@ Change any key in `rbr-rtx\config\keys.ini` (restart the game); write `none` to 
 | `;` / `'` | Lower / raise the debug sun (hold). Below the horizon it becomes twilight and night. |
 | `\` | Keep the sun now shown for this stage and time of day (beep), saved to `rbr-rtx\config\sun-saved.ini` |
 | Alt+7 | Rain and snow: Remix particles or the game's own, to compare |
+| **F3** | **In-game menu** (drawn by the add-on, `menu` in `keys.ini`): **Wetness** sliders (all `rtx.wet.*` options, kept over the automatic rain driver), **Textures** (aim the middle of the screen at a surface: its texture hashes, shader and current Remix categories are shown live; tag it Terrain / Decal / Water / Ignore or clear it, applied at once and saved in `config\menu.ini`), **Info** (stage, weather, ground mode, this key list), **Save**. While it is open the game window gets no keyboard or mouse (the driving controls read through DirectInput still reach the game: stop the car first). Alt+X (Remix) is unchanged; both can be open. `RBRRTX_MENU=0` leaves the menu out. |
 | Alt+PageUp | Lamp marker: aim the middle of the screen at a street lamp's head, press; every lamp of that type gets a light at night (saved in `config\lights-marked.ini`, result in the log; two rising beeps = marked, one low beep = failed) |
 | Alt+L | Remix sun on/off |
 | Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |

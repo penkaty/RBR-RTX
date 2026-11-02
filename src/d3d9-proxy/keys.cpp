@@ -53,6 +53,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"bounces", kAlt | '0', L"ray interactions: rtx.conf -> large (dense-forest test) -> secondary 1"},   // Alt+P = experiment
   {L"api_world", kAlt | 'W', L"world through the Remix API: all -> foliage only -> off"},
   {L"lamp_mark", kAlt | VK_PRIOR, L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-02: Alt+PageUp (Alt+Insert before; user 2026-11-01 Alt+B quit the game)
+  {L"menu", VK_F3, L"in-game menu: wetness, texture tags, info (a plain key; read from the window messages)"},   // user 2026-11-02: F3
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
@@ -206,4 +207,14 @@ bool rbrrtx_key_held(int action) {
 
 const wchar_t* rbrrtx_key_name(int action) {
   return (action >= 0 && action < RBRKEY_COUNT) ? g_names[action] : L"?";
+}
+
+const wchar_t* rbrrtx_key_label(int action) {
+  return (action >= 0 && action < RBRKEY_COUNT) ? g_actions[action].label : L"";
+}
+
+int rbrrtx_key_vk(int action, bool withAlt) {
+  if (action < 0 || action >= RBRKEY_COUNT) return 0;
+  const int vk = g_actions[action].vk;
+  return (vk & kAlt) && !withAlt ? 0 : (vk & 0xFF);
 }

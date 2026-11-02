@@ -233,6 +233,7 @@ void gl(const wchar_t* fmt, ...) {
 
 // ---- hooks
 HRESULT STDMETHODCALLTYPE hk_SetTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex) {
+  if (rbrrtx_menu_is_drawing()) return g_setTexture(dev, stage, tex);   // the F3 menu's own draws
   if (stage == 0) g_s0 = tex;
   else if (stage == 15) g_s15 = tex;
   return g_setTexture(dev, stage, tex);

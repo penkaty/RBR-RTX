@@ -87,6 +87,7 @@ the full list is in [Keybinds](docs/keybinds.md).
 | `\` | Keep the sun now shown for this stage and time of day (beep) |
 | Alt+7 | Rain and snow: Remix or the game's own |
 | Alt+Y | Ground second layer (sea, cliffs, road edges): decal layer (default) / terrain bake (experiment) / off, one beep tone each; a change on a stage applies at the next stage load |
+| **F3** | **In-game menu:** wetness sliders, texture tagger (aim the middle of the screen, tag Terrain / Decal / Water / Ignore; saved in `config\menu.ini`), info and key list. Stop the car first: the controls keep working behind it. |
 | Alt+PageUp | Lamp marker: aim the middle of the screen at a street lamp's head and press; every lamp of that type gets a light at night (`config\lights-marked.ini`; a beep: two rising tones = marked, one low = failed) |
 | Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |
 | Alt+P | Performance test: hold still about a minute, results go to the log |
@@ -147,6 +148,8 @@ rarely driven stages and Bob's Track Builder stages can look wrong.
 - [mika-n / NGPCarMenu](https://github.com/mika-n/NGPCarMenu): RBR memory layout (stage, car, weather).
 - [Detegr / openRBRVR](https://github.com/Detegr/openRBRVR) and [dxvk-openRBRVR](https://github.com/Detegr/dxvk-openRBRVR): how RBR renders.
 - [xxHash](https://github.com/Cyan4973/xxHash) (Yann Collet): texture hashes matching Remix's.
+- [Dear ImGui](https://github.com/ocornut/imgui) (Omar Cornut, MIT, `src/d3d9-proxy/third_party/imgui/LICENSE.txt`): the F3 menu. Its hook
+  into the game window and device follows the way xoxor4d's [remix-comp-base](https://github.com/xoxor4d/remix-comp-base) (MIT) does it.
 - Other Remix mods studied: [Echelon Renderer](https://github.com/onnoj/DeusExEchelonRenderer) (onnoj),
   [D3D9DrvRTX](https://github.com/mmdanggg2/D3D9DrvRTX) (mmdanggg2), [Garry's Mod RTX Remixed](https://github.com/Xenthio/garrys-mod-rtx-remixed) (Xenthio),
   [Saints Row 3 RTX](https://github.com/PurrsianMilkman/Saints-Row-The-Third-RTX-REMIX-compatibility-mod) (PurrsianMilkman),
