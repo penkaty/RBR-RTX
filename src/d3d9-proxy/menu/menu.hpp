@@ -18,9 +18,20 @@ typedef struct rbrrtx_menu_pick {
   int found;                       // 1 = a world draw lies under the centre
   unsigned long long hash[2];      // Remix texture hash of stage 0 and stage 1 of that draw (0 = none / unknown)
   void* texture[2];                // IDirect3DTexture9* for thumbnails; owned by the proxy, valid only during this frame
-  char shader[64];                 // vertex shader name of the draw
+  char shader[64];                 // vertex shader name of the draw (or "(fixed-function)")
+  char kind[48];                   // what the draw is: world / fixed-function scenery / swaying foliage / car / ...
   float distance;                  // metres from the camera
 } rbrrtx_menu_pick;
+
+// One A/B switch of the Debug page (the proxy lists them, the menu draws them). options "" = checkbox (value 0 / 1);
+// "a|b|c" = a choice (value = index of the chosen option).
+typedef struct rbrrtx_menu_switch {
+  char group[32];
+  char label[96];
+  char options[96];
+  char note[256];
+  int value;
+} rbrrtx_menu_switch;
 
 // Behaviour the proxy supplies. Every member may be null; the menu then shows the page as unavailable.
 typedef struct rbrrtx_menu_callbacks {
@@ -49,6 +60,10 @@ typedef struct rbrrtx_menu_callbacks {
   void (*info_text)(char* buf, size_t buf_len);
   // Info page key list: line i ("Alt+K  stage sweep"), returns 0 when i is past the end.
   int (*key_line)(int i, char* buf, size_t buf_len);
+
+  // Debug page: switch i (0-based) fills *sw and returns 1, 0 past the end; switch_set applies a new value at once.
+  int (*switch_get)(int i, rbrrtx_menu_switch* sw);
+  void (*switch_set)(int i, int value);
 
   // Directory for the menu's own ini (for example <game>\rbr-rtx\config). Fills buf with a wide path.
   // If null, the menu uses the folder of the loaded d3d9.dll.

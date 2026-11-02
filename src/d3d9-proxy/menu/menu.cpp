@@ -342,6 +342,48 @@ void page_textures(void*) {
   ImGui::EndDisabled();
 }
 
+// Debug page: the proxy's A/B switches (ground layer mode, facade fix, flare and sun-outline hides). Each acts at once
+// (the ground layer mode at the next stage load, which the label says) and is logged by the proxy.
+void page_debug(void*) {
+  if (!g_cb.switch_get || !g_cb.switch_set) {
+    ImGui::TextDisabled("No switch callbacks.");
+    return;
+  }
+  char group[32] = "";
+  rbrrtx_menu_switch sw = {};
+  for (int i = 0; i < 64 && g_cb.switch_get(i, &sw); ++i) {
+    if (std::strcmp(group, sw.group) != 0) {
+      std::snprintf(group, sizeof(group), "%s", sw.group);
+      ImGui::SeparatorText(group);
+    }
+    ImGui::PushID(i);
+    if (sw.options[0]) {
+      ImGui::TextUnformatted(sw.label);
+      const std::string opts = sw.options;
+      int idx = 0;
+      for (size_t a = 0; a <= opts.size();) {
+        size_t b = opts.find('|', a);
+        if (b == std::string::npos) b = opts.size();
+        const std::string name = opts.substr(a, b - a);
+        if (idx) ImGui::SameLine();
+        if (ImGui::RadioButton(name.c_str(), sw.value == idx)) g_cb.switch_set(i, idx);
+        ++idx;
+        a = b + 1;
+      }
+    } else {
+      bool on = sw.value != 0;
+      if (ImGui::Checkbox(sw.label, &on)) g_cb.switch_set(i, on ? 1 : 0);
+    }
+    if (sw.note[0]) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+      ImGui::TextWrapped("%s", sw.note);
+      ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
+    ImGui::Spacing();
+  }
+}
+
 void page_save(void*) {
   ImGui::TextWrapped("Writes the Wetness values to menu.ini in the RBR-RTX config folder (the texture tags are saved "
                      "the moment you tag). user.conf is never touched.");
@@ -359,6 +401,7 @@ void ensure_builtin_pages() {
   rbrrtx_menu_add_page("Info", page_info, nullptr);
   rbrrtx_menu_add_page("Wetness", page_wetness, nullptr);
   rbrrtx_menu_add_page("Textures", page_textures, nullptr);
+  rbrrtx_menu_add_page("Debug", page_debug, nullptr);
   rbrrtx_menu_add_page("Save", page_save, nullptr);
 }
 

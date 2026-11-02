@@ -306,6 +306,11 @@ void ground_frame();
 void ground_tags_flush(bool force);
 void ground_tags_load();
 void ground_mode_set(int mode);
+void ground_layer_request(int want, bool quiet);       // Alt+Y and the F3 Debug page: the second-layer mode for the next stage load
+// A/B switches (F3 Debug page; materials.ini [ground] / [skip_draws] give the starting values).
+bool g_stage0Fix = true;                               // RLDouble draws whose stage 0 is DISABLE get stage 0 = texture x diffuse (comp_draw)
+bool g_flareSkip = true;                               // the game's lens flare: screen-space additive draws after the sun query are not drawn
+bool g_dbgHideOutlineSprite = false, g_dbgHideClouds = false, g_dbgHideSunBillboard = false;   // sun-outline candidates, live A/B (F3)
 void f3_present(IDirect3DDevice9* dev);                // F3 menu glue (below, after ground_frame)
 void f3_before_reset();
 void f3_after_reset(IDirect3DDevice9* dev, HRESULT hr);
@@ -3205,8 +3210,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (rbrrtx_key_pressed(RBRKEY_GROUND_LAYER)) {       // bake -> old decal layer -> off
     const int want = g_layerWant == kLayerDecal ? kLayerBake : g_layerWant == kLayerBake ? kLayerOff : kLayerDecal;   // decal -> bake -> off
     const bool now = g_inMenu;                         // in the menu a switch is clean; on a stage it waits for the next load
-    if (want == kLayerDecal) rbrrtx_layer_enable(true);   // sources are held from now on: the next stage load gets its twins
-    if (now) ground_mode_set(want); else g_layerWant = want;
+    ground_layer_request(want, true);
     wchar_t msg[200];
     swprintf_s(msg, L"%s: ground second layer %s%s", rbrrtx_key_name(RBRKEY_GROUND_LAYER),
                want == kLayerBake ? L"BAKE (EXPERIMENT: second texture composited into the terrain bake)"
@@ -4773,10 +4777,11 @@ void decal_tag(unsigned long long hx, const wchar_t* what) {
 // stage.
 struct GroundStats {
   unsigned draws = 0, vsDriven = 0, frames = 0, baseNew = 0, baseRuntime = 0, lowAlpha = 0, layerNew = 0, layerRuntime = 0,
-           layerDraws = 0, decalSkipped = 0;
+           layerDraws = 0, decalSkipped = 0, ffDraws = 0, stage0Fixed = 0, layerGated = 0, catalogRejected = 0, layerDrawn = 0;
 };
 GroundStats g_gs;
 std::unordered_set<unsigned long long> g_groundBase, g_groundLayer, g_groundDecalSkipped;
+std::unordered_set<unsigned long long> g_groundReject;     // rtx.conf catalog hashes this stage drew as non-ground: left out of the sent list
 std::vector<unsigned long long> g_terrainConf;              // rtx.conf's own terrain list, in order, decal textures taken out
 std::unordered_set<unsigned long long> g_terrainConfSet, g_decalConfSet;
 bool g_groundLoaded = false, g_groundDirty = false;
@@ -4833,7 +4838,7 @@ void ground_tags_flush(bool force) {
     if (!list.empty()) list += ", ";
     list += b;
   };
-  for (unsigned long long h : g_terrainConf) add(h);
+  for (unsigned long long h : g_terrainConf) if (!g_groundReject.count(h)) add(h);   // catalog hashes drawn as walls/roofs/slopes this stage stay out
   if (g_bakerOn) {                                          // (the run-time ground tags are for the baker)
     for (unsigned long long h : g_groundBase) add(h);
     if (g_layerMode == kLayerBake) for (unsigned long long h : g_groundLayer) add(h);
@@ -4842,8 +4847,8 @@ void ground_tags_flush(bool force) {
   remix_set("rtx.terrainTextures", list.c_str());
   g_groundSent = seen.size();
   ++g_groundFlushes;
-  clog(L"ground blend: rtx.terrainTextures sent: %zu hashes (%zu conf, %zu RLDouble base, %zu second-layer); update %u",
-       seen.size(), g_terrainConf.size(), g_groundBase.size(), g_layerMode == kLayerBake ? g_groundLayer.size() : size_t(0),
+  clog(L"ground blend: rtx.terrainTextures sent: %zu hashes (%zu conf, %zu of them left out as not ground, %zu RLDouble base, %zu second-layer); update %u",
+       seen.size(), g_terrainConf.size(), g_groundReject.size(), g_groundBase.size(), g_layerMode == kLayerBake ? g_groundLayer.size() : size_t(0),
        g_groundFlushes);
 }
 
@@ -4918,45 +4923,72 @@ bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area) {
   return true;
 }
 
-// true = the texture counts as ground (run-time tag allowed). At most 4 geometry reads per frame; an open verdict waits.
-bool ground_geometry_ok(IDirect3DDevice9* dev, unsigned long long hx) {
+// 1 = the texture counts as ground, 0 = not (walls, roofs, signs, steep slopes), -1 = still open. At most 4 geometry reads
+// per frame; an open verdict waits.
+int ground_verdict(IDirect3DDevice9* dev, unsigned long long hx) {
   GroundGeom& g = g_groundGeom[hx];
-  if (g.verdict >= 0) return g.verdict == 1;
+  if (g.verdict >= 0) return g.verdict;
   if (g_groundGeomFrame != g_frame) { g_groundGeomFrame = g_frame; g_groundGeomThisFrame = 0; }
-  if (g_groundGeomThisFrame >= 4) return false;
+  if (g_groundGeomThisFrame >= 4) return -1;
   ++g_groundGeomThisFrame;
   double up = 0, area = 0;
   if (draw_up_area(dev, &up, &area)) { g.up += up; g.area += area; ++g.samples; }
   else if (++g.unreadable >= 3 && !g.samples) g.verdict = 1;                      // never readable: as before
   if (g.samples >= 3 || (g.samples && g.unreadable >= 3)) {
     g.verdict = g.up >= 0.6 * g.area ? 1 : 0;
-    if (!g.verdict) { ++g_groundNotGround; clog(L"ground blend: %016llX is not ground (%.0f %% of its triangle area faces up, %u draws sampled): no terrain tag", hx, 100.0 * g.up / g.area, g.samples); }
+    if (!g.verdict) {
+      ++g_groundNotGround;
+      clog(L"ground blend: %016llX is not ground (%.0f %% of its triangle area faces up, %u draws sampled): no terrain tag%s", hx,
+           100.0 * g.up / g.area, g.samples, g_terrainConfSet.count(hx) ? L", taken out of the rtx.conf terrain catalog list" : L"");
+    }
   }
-  return g.verdict == 1;
+  return g.verdict;
 }
 
-// An RLDouble* draw (fixed-function or not): its base texture t0 becomes terrain.
+// An RLDouble* draw (fixed-function or not): its base texture t0 becomes terrain when it is ground. The verdict is read for
+// every RLDouble base (also with the baker off: the second layer is drawn only over ground), catalog hashes included
+// (user 2026-11-02: the same geometry gate for every terrain hash that is sent).
 void ground_note_draw(IDirect3DDevice9* dev, bool vsDriven) {
   if (!g_groundLoaded) ground_tags_load();
   ++g_gs.draws;
-  if (vsDriven) ++g_gs.vsDriven;
-  if (!g_bakerOn) return;                                   // baker off in the conf: no tags
+  if (vsDriven) ++g_gs.vsDriven; else ++g_gs.ffDraws;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
   if (!t0) return;
   const unsigned long long hx = rbrrtx_texture_hash(t0);
-  const int minAlpha = rbrrtx_texture_min_alpha(t0);
-  t0->lpVtbl->Release(t0);
-  if (!hx || g_groundBase.count(hx)) return;
+  if (!hx || g_groundBase.count(hx)) { t0->lpVtbl->Release(t0); return; }
   if (ground_is_decal(hx)) {
-    if (g_groundDecalSkipped.insert(hx).second) ++g_gs.decalSkipped;
+    t0->lpVtbl->Release(t0);
+    if (g_bakerOn && g_groundDecalSkipped.insert(hx).second) ++g_gs.decalSkipped;
     return;
   }
-  if (!g_terrainConfSet.count(hx) && !ground_geometry_ok(dev, hx)) return;   // walls, roofs, signs: not a bake candidate
+  const int verdict = ground_verdict(dev, hx);
+  if (verdict == 0 && g_terrainConfSet.count(hx) && g_groundReject.insert(hx).second) {
+    ++g_gs.catalogRejected;
+    g_groundDirty = true;                                   // the list is sent again without it
+  }
+  if (verdict != 1 || !g_bakerOn) { t0->lpVtbl->Release(t0); return; }   // walls, roofs, signs: not a bake candidate
+  const int minAlpha = rbrrtx_texture_min_alpha(t0);
+  t0->lpVtbl->Release(t0);
   g_groundBase.insert(hx);
   ++g_gs.baseNew;
   if (minAlpha >= 0 && minAlpha < 255) ++g_gs.lowAlpha;
   if (!g_terrainConfSet.count(hx)) { ++g_gs.baseRuntime; g_groundDirty = true; }
+}
+
+// The second layer (decal twin / bake layer) is only drawn over ground: its base t0 must have the "ground" verdict
+// (up-facing triangles). A base the verdict has not reached yet waits; a base not in the table (a decal-listed texture)
+// keeps the old behaviour. Facades and roofs got the same twin decal before (user 2026-11-02).
+bool ground_layer_allowed(IDirect3DDevice9* dev) {
+  IDirect3DBaseTexture9* t0 = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t0);
+  if (!t0) return true;
+  const unsigned long long hx = rbrrtx_texture_hash(t0);
+  t0->lpVtbl->Release(t0);
+  const auto it = g_groundGeom.find(hx);
+  if (it == g_groundGeom.end() || it->second.verdict == 1) return true;
+  if (it->second.verdict == 0) ++g_gs.layerGated;
+  return false;
 }
 
 // A second-layer draw in bake mode: its texture t1 becomes terrain too (drawn after the base, so the bake blends it in).
@@ -4983,6 +5015,17 @@ void ground_mode_set(int mode) {
   ground_tags_flush(true);
 }
 
+// Alt+Y and the F3 Debug page: in a menu the mode switches at once, on a stage it waits for the next load (twins need the
+// texture sources held at upload, and switching the tags under a loaded stage faded the ground to grey).
+void ground_layer_request(int want, bool quiet) {
+  if (want < kLayerOff || want > kLayerDecal) return;
+  if (want == kLayerDecal) rbrrtx_layer_enable(true);  // sources are held from now on: the next stage load gets its twins
+  if (g_inMenu) ground_mode_set(want); else g_layerWant = want;
+  if (!quiet)
+    clog(L"ground blend: second layer mode %s requested (%s)", want == kLayerBake ? L"BAKE" : want == kLayerDecal ? L"DECAL" : L"off",
+         g_inMenu ? L"applied in the menu" : L"applies at the next stage load");
+}
+
 const wchar_t* ground_tag_name(unsigned long long hx) {
   if (!hx) return L"";
   if (ground_is_decal(hx)) return L" [DECAL-TAGGED]";
@@ -5002,6 +5045,14 @@ void ground_stage_line(const wchar_t* when) {
        double(g_gs.draws) / fr, double(g_gs.vsDriven) / fr, g_gs.baseNew, g_gs.baseRuntime, g_gs.lowAlpha,
        double(g_groundFFBases) / fr, g_gs.layerNew, g_gs.layerRuntime, double(g_gs.layerDraws) / fr, g_gs.decalSkipped,
        g_groundNotGround, g_groundSent, g_groundFlushes);
+  clog(L"ground blend paths [%s], per frame: %.1f RLDouble draws = %.1f fixed-function (vertex shader unbound: Remix reads the fixed-function stage state; %.1f of them had stage 0 on DISABLE, "
+       L"the RLDoubleTextureSpecular facades and roads, and got texture x diffuse%s; %.1f ground bases drawn without pixel shader in BAKE mode) + %.1f vertex-shader driven (Remix takes the first textures); "
+       L"second layer %s: %.1f drawn per frame, %u skipped as not ground; terrain: %u rtx.conf catalog hashes judged not ground and left out of the list, %u run-time bases tagged; "
+       L"facades/roofs/signs take the plain normal-material path (first texture only)",
+       when, double(g_gs.draws) / fr, double(g_gs.ffDraws) / fr, double(g_gs.stage0Fixed) / fr, g_stage0Fix ? L"" : L" (switched OFF in the menu: flat colour expected)",
+       double(g_groundFFBases) / fr, double(g_gs.vsDriven) / fr,
+       g_layerMode == kLayerBake ? L"BAKE" : g_layerMode == kLayerDecal ? L"DECAL" : L"off", double(g_gs.layerDrawn) / fr, g_gs.layerGated,
+       g_gs.catalogRejected, g_gs.baseRuntime);
   g_groundPrinted = GetTickCount64();
   g_groundPrintedTags = g_gs.baseNew + g_gs.layerNew;
 }
@@ -5027,6 +5078,7 @@ void ground_frame() {
       g_groundLayer.clear();
       g_groundDecalSkipped.clear();
       g_groundGeom.clear();
+      g_groundReject.clear();
       g_groundNotGround = 0;
       g_gs = GroundStats();
       g_groundFFBases = 0;
@@ -5294,6 +5346,45 @@ int f3_probe_centre(rbrrtx_menu_pick* out, int wantNew) {
   return 1;
 }
 
+// ---- Debug page: A/B switches (choice or checkbox), listed here, drawn by menu.cpp. Each change is logged.
+struct F3Switch {
+  const char* group;
+  const char* label;
+  const char* options;                                 // "a|b|c" = choice (value = index), "" = checkbox
+  const char* note;
+  int (*get)();
+  void (*set)(int);
+};
+
+int sw_ground_get() { return g_layerWant == kLayerBake ? 0 : g_layerWant == kLayerDecal ? 1 : 2; }   // bake | decal | off
+void sw_ground_set(int v) { ground_layer_request(v == 0 ? kLayerBake : v == 1 ? kLayerDecal : kLayerOff, false); }
+int sw_stage0_get() { return g_stage0Fix ? 1 : 0; }
+void sw_stage0_set(int v) { g_stage0Fix = v != 0; clog(L"menu: stage-0 fix for RLDouble facades %s", g_stage0Fix ? L"ON" : L"OFF"); }
+
+const F3Switch kF3Switches[] = {
+  { "Ground", "Second layer (applies at the next stage load)", "bake|decal|off",
+    "bake = t1 baked into the terrain (experiment); decal = twin-texture decal over the baked base (default); off = game shader only. In a menu it applies at once.",
+    sw_ground_get, sw_ground_set },
+  { "Ground", "Facade stage-0 fix (RLDoubleTextureSpecular)", "",
+    "ON: scenery drawn without its vertex shader gets texture x diffuse on stage 0 when the game leaves it DISABLE. OFF = the flat-colour facades of the 01:46 run (A/B). Live.",
+    sw_stage0_get, sw_stage0_set },
+};
+
+int f3_switch_get(int i, rbrrtx_menu_switch* sw) {
+  if (i < 0 || i >= static_cast<int>(_countof(kF3Switches)) || !sw) return 0;
+  const F3Switch& d = kF3Switches[i];
+  strncpy_s(sw->group, d.group, _TRUNCATE);
+  strncpy_s(sw->label, d.label, _TRUNCATE);
+  strncpy_s(sw->options, d.options, _TRUNCATE);
+  strncpy_s(sw->note, d.note, _TRUNCATE);
+  sw->value = d.get();
+  return 1;
+}
+
+void f3_switch_set(int i, int v) {
+  if (i >= 0 && i < static_cast<int>(_countof(kF3Switches))) kF3Switches[i].set(v);
+}
+
 // ---- Info page
 void f3_info_text(char* buf, size_t n) {
   RbrStageInfo si = {};
@@ -5360,6 +5451,8 @@ void f3_install(IDirect3DDevice9* dev) {
   cb.texture_ini_dump = f3_ini_dump;
   cb.info_text = f3_info_text;
   cb.key_line = f3_key_line;
+  cb.switch_get = f3_switch_get;
+  cb.switch_set = f3_switch_set;
   cb.config_dir = f3_config_dir;
   rbrrtx_menu_set_callbacks(&cb);
   rbrrtx_menu_set_toggle_vk(rbrrtx_key_vk(RBRKEY_MENU, false));
@@ -5546,6 +5639,7 @@ template <class Draw>
 void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   if (!g_layerOn || !g_enabled || !g_primaryRT || !g_vsUnbound || !g_curInfo || g_vin != kVinDecl ||
       !(g_curInfo->flags & SH_DOUBLE)) return;
+  if (!ground_layer_allowed(dev)) return;                // facades, roofs, signs, slopes: no second layer
   IDirect3DBaseTexture9* t1 = nullptr;
   dev->lpVtbl->GetTexture(dev, 1, &t1);
   if (!t1) return;
@@ -5609,6 +5703,7 @@ void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   o.SetVertexDeclaration(dev, swapped);
   draw();
   ++g_layerDraws;
+  ++g_gs.layerDrawn;
   o.SetVertexDeclaration(dev, decl);
   dev->lpVtbl->SetPixelShader(dev, ps);
   dev->lpVtbl->SetTexture(dev, 0, t0);
@@ -5622,6 +5717,39 @@ void layer_draw(IDirect3DDevice9* dev, Draw draw) {
   if (t0) t0->lpVtbl->Release(t0);
   decl->lpVtbl->Release(decl);
   t1->lpVtbl->Release(t1);
+}
+
+// RLDouble* draws without their vertex shader (fixed-function path): the game's stage-0 colour state is only meaningful
+// with its ps_1_x pixel shader. RLDoubleTextureSpecular (130-307 draws per frame on Zlin: facades, roads) leaves stage 0
+// on COLOROP DISABLE (log "state: RLDoubleTextureSpecular.vso : game stage0 colorop 1"), and Remix' fixed-function texture
+// search stops at a DISABLE stage (d3d9_rtx.cpp processTextures): no texture, flat vertex colour (user 2026-11-02: facades
+// and roads without texture; they went through the API world before the baker made all RLDouble* D3D9 draws, commit 50c5aad).
+// The stage becomes texture x diffuse for the draw (and its second-layer draw) and is put back after.
+struct Stage0Fix {
+  DWORD op = 0, a1 = 0, a2 = 0;
+  bool on = false;
+};
+
+bool stage0_fix_begin(IDirect3DDevice9* dev, Stage0Fix& f) {
+  DWORD op = 0;
+  dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_COLOROP, &op);
+  if (op != D3DTOP_DISABLE) return false;
+  f.op = op;
+  dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_COLORARG1, &f.a1);
+  dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_COLORARG2, &f.a2);
+  o.SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+  o.SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+  o.SetTextureStageState(dev, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+  f.on = true;
+  return true;
+}
+
+void stage0_fix_end(IDirect3DDevice9* dev, Stage0Fix& f) {
+  if (!f.on) return;
+  o.SetTextureStageState(dev, 0, D3DTSS_COLOROP, f.op);
+  o.SetTextureStageState(dev, 0, D3DTSS_COLORARG1, f.a1);
+  o.SetTextureStageState(dev, 0, D3DTSS_COLORARG2, f.a2);
+  f = Stage0Fix();
 }
 
 // Base of a bake-mode ground draw (RLDouble*, opaque, VS unbound): drawn without its pixel shader, so the bake holds
@@ -5872,6 +6000,9 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   GroundBase groundBase;                                // bake mode: opaque RLDouble base drawn without its pixel shader, alpha 1
   if (g_groundBaseFF && g_layerMode == kLayerBake && g_bakerOn && ff && g_vsUnbound && g_enabled && g_primaryRT && g_vin == kVinDecl &&
       g_curInfo && (g_curInfo->flags & SH_DOUBLE) && ground_base_begin(dev, groundBase)) ++g_groundFFBases;
+  Stage0Fix stage0;                                     // RLDouble* with stage 0 on DISABLE: texture x diffuse for this draw (and its layer)
+  if (g_stage0Fix && !groundBase.on && ff && g_vsUnbound && g_enabled && g_primaryRT && g_vin == kVinDecl && g_curInfo &&
+      (g_curInfo->flags & SH_DOUBLE) && stage0_fix_begin(dev, stage0)) ++g_gs.stage0Fixed;
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) {
@@ -5883,6 +6014,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
   if (litPrev) litPrev->lpVtbl->Release(litPrev);
   if (SUCCEEDED(hr)) { if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
+  stage0_fix_end(dev, stage0);
   if (normalsOff || radOn) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
   if (radOn || radPrev) dev->lpVtbl->SetStreamSource(dev, kRadStream, radPrev, radPrevOff, radPrevStride);
   if (radPrev) radPrev->lpVtbl->Release(radPrev);
@@ -6096,6 +6228,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
       g_layerOn = mode != kLayerOff;
       rbrrtx_layer_enable(mode == kLayerDecal);
       g_groundBaseFF = rbrrtx_env_flag(L"RBRRTX_GROUND_BASE_FF", true);
+      g_stage0Fix = rbrrtx_env_flag(L"RBRRTX_STAGE0_FIX", true);
     }
     g_clockOn = rbrrtx_env_flag(L"RBRRTX_CLOCK", true);
     g_ffNormals = rbrrtx_env_flag(L"RBRRTX_FF_NORMALS", false);
