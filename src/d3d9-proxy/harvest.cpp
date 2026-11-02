@@ -204,7 +204,8 @@ void record(IDirect3DTexture9* tex, const D3DSURFACE_DESC& d, const Lock& lk) {
   ++g_new;
   wchar_t path[MAX_PATH * 2];
   swprintf_s(path, L"%s\\%016llX.dds", g_dir.c_str(), hx);
-  write_dds(path, d.Format, d.Width, d.Height, data);
+  // > 32 MB = our own 4096^2 X8R8G8B8 terrain bake (64 MB per stage, no game texture is that big): tsv line only.
+  if (data.size() <= (32u << 20)) write_dds(path, d.Format, d.Width, d.Height, data);
   if (g_tsv) {
     SYSTEMTIME t;
     GetLocalTime(&t);
