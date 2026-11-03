@@ -169,25 +169,8 @@ bool proxy_owned_option(const std::string& key) {
   return key.rfind("rtx.atmosphere.moon0.", 0) == 0;
 }
 
-void clean_user_conf() {
-  std::ifstream in("user.conf");
-  if (!in) return;
-  std::string line, kept, dropped;
-  unsigned n = 0;
-  while (std::getline(in, line)) {
-    const size_t eq = line.find('=');
-    std::string key = eq == std::string::npos ? std::string() : line.substr(0, eq);
-    while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
-    while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
-    if (!key.empty() && key[0] != '#' && proxy_owned_option(key)) { dropped += (n++ ? ", " : "") + key; continue; }
-    kept += line + "\n";
-  }
-  in.close();
-  if (!n) return;
-  std::ofstream out("user.conf", std::ios::trunc | std::ios::binary);
-  out << kept;
-  log(L"user.conf: dropped %u option(s) the proxy sets per stage (saved from Alt+X): %hs", n, dropped.c_str());
-}
+// (2026-11-03, user: rtx.conf and user.conf work like in Remix and persist.) The proxy no longer rewrites user.conf at
+// start; proxy_owned_option above is kept for reference only.
 
 // Before Remix starts (it opens the mods it finds then): the generated mod (genmod.cpp) with the lit lamp textures, the
 // lit car parts and the foliage known from earlier runs. Remix reloads it when the proxy changes it later.
@@ -207,7 +190,7 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
   DWORD n = GetEnvironmentVariableW(L"RBRRTX_D3D9_BACKEND", g_backend_path, MAX_PATH);
   if (n > 0 && n < MAX_PATH) {
     write_lit_mod();
-    if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(nullptr); clean_user_conf(); return TRUE; }
+    if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(nullptr); return TRUE; }
   } else {
     wchar_t dir[MAX_PATH];
     DWORD len = GetModuleFileNameW(g_self, dir, MAX_PATH);
@@ -219,7 +202,16 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
       swprintf_s(g_backend_path, L"%s\\remix\\d3d9.dll", addon);
       if (GetFileAttributesW(g_backend_path) != INVALID_FILE_ATTRIBUTES) {
         default_env_path(L"DXVK_CONFIG_FILE", addon, L"config\\dxvk.conf");
-        default_env_path(L"DXVK_RTX_CONFIG_FILE", addon, L"config\\rtx.conf");
+        // Remix's own layout: <game>\rtx.conf (Remix Config Save) and <game>\user.conf (User Settings Save) are the player's
+        // files. The shipped defaults (rbr-rtx\config\rtx.conf) are copied there once, when the game folder has none; after
+        // that nothing of ours rewrites, trims or replaces either file (an add-on update never overwrites them).
+        if (GetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE", nullptr, 0) == 0) {
+          wchar_t shipped[MAX_PATH * 2], live[MAX_PATH * 2];
+          swprintf_s(shipped, L"%s\\config\\rtx.conf", addon);
+          swprintf_s(live, L"%s\\rtx.conf", dir);
+          if (CopyFileW(shipped, live, TRUE)) log(L"rtx.conf created from %s (yours from now on)", shipped);
+          SetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE", live);
+        }
         default_env_path(L"DXVK_LOG_PATH", addon, L"logs");
         default_env_path(L"DXVK_METRICS_PATH", addon, L"logs");
         default_env_path(L"DXVK_STATE_CACHE_PATH", addon, L"cache");
@@ -228,7 +220,7 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
         default_env_path(L"DEFAULT_MODS_DIR", addon, L"rtx-remix\\mods");
         default_env_path(L"DXVK_CAPTURE_PATH", addon, L"rtx-remix\\captures");
         write_lit_mod();
-        if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(addon); clean_user_conf(); return TRUE; }
+        if (try_backend(g_backend_path)) { g_remix_backend = true; seed_user_conf(addon); return TRUE; }
       }
     }
   }
