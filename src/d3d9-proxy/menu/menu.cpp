@@ -57,6 +57,11 @@ std::map<std::string, float> g_saved;
 // Remix options the user pinned (menu.ini [remix]): applied at the start after rtx.conf, win over the proxy's own sets.
 std::map<std::string, std::string> g_pins;
 bool g_pins_pending = false;   // some pin still to send to Remix
+// Switched off 2026-11-03 (user): rtx.conf / user.conf (Alt+X Save) are the only owners of Remix settings. The "Remix
+// settings" page and the pins are kept for later; set true to bring them back. Pins already in menu.ini [remix] are kept
+// in the file (g_pins_parked) but not applied.
+constexpr bool kRemixPins = false;
+std::map<std::string, std::string> g_pins_parked;
 
 char g_status[160] = "";      // one line of feedback at the bottom of the window
 
@@ -213,7 +218,7 @@ void load_ini() {
     if (section != "wetness" && section != "textures" && section != "remix") {
       if (g_cb.ini_extra_set) g_cb.ini_extra_set(section.c_str(), key.c_str(), val.c_str());
     } else if (section == "remix") {
-      if (!key.empty()) g_pins[key] = val;
+      if (!key.empty()) (kRemixPins ? g_pins : g_pins_parked)[key] = val;
     } else if (section == "textures") {
       if (g_cb.texture_ini) g_cb.texture_ini(key.c_str(), val.c_str());
     } else if (const WetOpt* o = find_wet(key.c_str())) {
@@ -243,6 +248,7 @@ bool save_ini() {
   for (const auto& kv : g_saved) out << kv.first << '=' << kv.second << '\n';
   out << "\n[remix]\n";
   for (const auto& kv : g_pins) out << kv.first << '=' << kv.second << '\n';
+  for (const auto& kv : g_pins_parked) out << kv.first << '=' << kv.second << '\n';
   out << "\n[textures]\n";
   g_emitted = 0;
   if (g_cb.texture_ini_dump) g_cb.texture_ini_dump(emit_line, &out);
@@ -646,7 +652,7 @@ void ensure_builtin_pages() {
   rbrrtx_menu_add_page("Wetness", page_wetness, nullptr);
   rbrrtx_menu_add_page("Textures", page_textures, nullptr);
   rbrrtx_menu_register_custom_pages();
-  rbrrtx_menu_add_page("Remix settings", page_remix, nullptr);
+  if (kRemixPins) rbrrtx_menu_add_page("Remix settings", page_remix, nullptr);
   rbrrtx_menu_add_page("Debug", page_debug, nullptr);
   rbrrtx_menu_add_page("Save", page_save, nullptr);
 }

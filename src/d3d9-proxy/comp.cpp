@@ -1007,7 +1007,42 @@ bool remix_set_raw(const char* key, const char* value) {
 // A value pinned in the F3 "Remix settings" page (menu.ini [remix]) is the user's: the proxy's own sets of that option
 // (stage weather, atmosphere, wetness driver, experiments...) are dropped and logged once (user 2026-11-02: Alt+X Save
 // leaves out values equal to Remix's defaults, so our rtx.conf won over what the user had set back).
+// User 2026-11-03: rtx.conf and user.conf are the only owners of Remix settings. Options the proxy sets as plain
+// configuration (not as the live stage drivers: sun, fog, haze, moon, texture lists) are left alone when the player's
+// rtx.conf or user.conf names them: what is written there is what Remix runs with.
+bool user_conf_names(const char* key) {
+  const size_t kl = std::strlen(key);
+  wchar_t path[MAX_PATH];
+  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
+  const wchar_t* files[2] = { path, L"user.conf" };
+  for (const wchar_t* f : files) {
+    std::ifstream in(f);
+    for (std::string l; std::getline(in, l);) {
+      size_t s = l.find_first_not_of(" \t\xEF\xBB\xBF");
+      if (s == std::string::npos || l.compare(s, kl, key) != 0) continue;
+      const size_t e = l.find_first_not_of(" \t", s + kl);
+      if (e != std::string::npos && l[e] == '=') return true;
+    }
+  }
+  return false;
+}
+
+bool config_option_owned_by_user(const char* key) {
+  static const char* const cfg[] = { "rtx.enableFog", "rtx.weather.gameWeatherBlend", "rtx.atmosphere.timeCycleEnable",
+    "rtx.atmosphere.aerialPerspectiveHistoryFrames" };   // key-driven experiments (Alt+P rays, debug-sun sky/EV) stay the proxy's
+  for (const char* c : cfg)
+    if (std::strcmp(key, c) == 0) {
+      static std::unordered_set<std::string> told;
+      if (!user_conf_names(key)) return false;
+      if (told.insert(key).second)
+        rbrrtx_log_to(L"rbrrtx_api_options.log", L"not set by the proxy: %S is named in your rtx.conf / user.conf", key);
+      return true;
+    }
+  return false;
+}
+
 void remix_set(const char* key, const char* value) {
+  if (key && config_option_owned_by_user(key)) return;
   if (key && rbrrtx_menu_pinned(key, nullptr, 0)) {
     static std::unordered_set<std::string> told;
     if (told.insert(key).second)
