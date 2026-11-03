@@ -38,6 +38,7 @@ std::vector<Patched> g_patched;
 std::mutex g_lock;
 std::map<void*, std::vector<BYTE>> g_frozen;   // joystick state at the moment the menu opened, per device
 bool g_active = false;                         // the hooks are installed
+bool g_blockAll = false;                       // RBRRTX_MENU_BLOCK_INPUT=1: keyboard and wheel too (default: mouse only)
 bool g_wasOpen = false;
 unsigned g_wipes = 0, g_logged = 0;
 
@@ -58,6 +59,8 @@ HRESULT STDMETHODCALLTYPE hk_GetDeviceState(void* self, DWORD cb, LPVOID data) {
   }
   g_wasOpen = true;
   if (hr != S_OK || !data) return hr;
+  // Default (user 2026-11-03): only the MOUSE is cut off while F3 is open; keyboard and wheel keep driving the game.
+  if (!g_blockAll && cb != 16 && cb != 20) return hr;
   if (cb == 256 || cb == 16 || cb == 20) {
     std::memset(data, 0, cb);
   } else if (cb == 80 || cb == 272) {
@@ -82,7 +85,8 @@ HRESULT STDMETHODCALLTYPE hk_GetDeviceData(void* self, DWORD cbObj, void* rgdod,
   const Patched* p = find_patch(self);
   if (!p) return E_FAIL;
   const HRESULT hr = p->data(self, cbObj, rgdod, inOut, flags);
-  if (rbrrtx_menu_is_open() && rgdod && inOut) {
+  // Buffered data cannot be told apart per device (one shared vtable): only with the full block.
+  if (g_blockAll && rbrrtx_menu_is_open() && rgdod && inOut) {
     std::memset(rgdod, 0, static_cast<size_t>(*inOut) * cbObj);
     *inOut = 0;
   }
@@ -142,7 +146,8 @@ BOOL CALLBACK enum_cb(const void* inst, void* user) {
 }  // namespace
 
 void rbrrtx_dinput_block_install() {
-  if (g_active || !rbrrtx_env_flag(L"RBRRTX_MENU_BLOCK_INPUT", false)) return;
+  if (g_active || !rbrrtx_env_flag(L"RBRRTX_MENU_MOUSE_BLOCK", true)) return;
+  g_blockAll = rbrrtx_env_flag(L"RBRRTX_MENU_BLOCK_INPUT", false);
   HMODULE di8 = GetModuleHandleW(L"dinput8.dll");
   if (!di8) di8 = LoadLibraryW(L"dinput8.dll");
   const auto create = di8 ? reinterpret_cast<PFN_DirectInput8Create>(GetProcAddress(di8, "DirectInput8Create")) : nullptr;

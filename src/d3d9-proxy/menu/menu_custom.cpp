@@ -6,6 +6,9 @@
 // thumbnail or found automatically from the luminance of the island; the mask gets a random lit fraction baked in.
 #include "menu.hpp"
 #include "../custom.hpp"
+#include "../common.hpp"
+#include <cctype>
+#include <string>
 
 #pragma warning(push, 0)
 #include "../third_party/imgui/imgui.h"
@@ -315,12 +318,173 @@ void page_windows(void*) {
   }
 }
 
+// ---- ini editor pages: Atmosphere (atmosphere.ini), Headlights (headlights.ini) --------------------------------------
+// Every "key = value" line of the file as an input field, grouped by [section]; the comment lines right above a key are its
+// tooltip. Save rewrites ONLY the changed values in place (comments, order, spacing and line endings stay; keys are not
+// added or removed; a one-time copy <file>.f3bak is made before the first save of a run).
+struct IniLine {
+  std::string text, prefix, key, val, help, section;
+  bool is_section = false, is_kv = false, dirty = false;
+};
+struct IniDoc {
+  const wchar_t* env;
+  const wchar_t* file;
+  const char* name;
+  const char* after_save;
+  std::wstring path;
+  std::vector<IniLine> lines;
+  bool loaded = false, crlf = false, bom = false, backed_up = false;
+  char filter[64] = "";
+  std::string note;
+};
+
+std::string ini_trim(const std::string& s) {
+  const size_t a = s.find_first_not_of(" \t\r"), b = s.find_last_not_of(" \t\r");
+  return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+}
+
+void ini_load(IniDoc& d) {
+  d.loaded = true;
+  d.lines.clear();
+  d.note.clear();
+  wchar_t p[MAX_PATH * 2] = {};
+  rbrrtx_config_path(d.env, d.file, p, MAX_PATH * 2);
+  d.path = p;
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, p, L"rb") != 0 || !f) { d.note = "file not found"; return; }
+  std::string all;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0;) all.append(buf, n);
+  std::fclose(f);
+  d.bom = all.size() >= 3 && (unsigned char)all[0] == 0xEF && (unsigned char)all[1] == 0xBB && (unsigned char)all[2] == 0xBF;
+  if (d.bom) all.erase(0, 3);
+  d.crlf = all.find("\r\n") != std::string::npos;
+  std::string section, help;
+  size_t pos = 0;
+  while (pos <= all.size()) {
+    size_t e = all.find('\n', pos);
+    if (e == std::string::npos) e = all.size();
+    std::string t = all.substr(pos, e - pos);
+    if (!t.empty() && t.back() == '\r') t.pop_back();
+    IniLine l;
+    l.text = t;
+    const std::string tt = ini_trim(t);
+    if (tt.empty()) help.clear();
+    else if (tt[0] == ';' || tt[0] == '#') { help += (help.empty() ? "" : "\n") + ini_trim(tt.substr(1)); }
+    else if (tt[0] == '[' && tt.find(']') != std::string::npos) { l.is_section = true; section = tt.substr(1, tt.find(']') - 1); help.clear(); }
+    else {
+      const size_t eq = t.find('=');
+      if (eq != std::string::npos) {
+        size_t v = eq + 1;
+        while (v < t.size() && (t[v] == ' ' || t[v] == '\t')) ++v;
+        l.is_kv = true; l.prefix = t.substr(0, v); l.key = ini_trim(t.substr(0, eq)); l.val = ini_trim(t.substr(v));
+        l.help = help; l.section = section;
+      }
+      help.clear();
+    }
+    d.lines.push_back(std::move(l));
+    if (e >= all.size()) break;
+    pos = e + 1;
+  }
+}
+
+bool ini_save(IniDoc& d) {
+  std::wstring bak = d.path + L".f3bak";
+  if (!d.backed_up) { CopyFileW(d.path.c_str(), bak.c_str(), FALSE); d.backed_up = true; }
+  std::string out;
+  if (d.bom) out += "\xEF\xBB\xBF";
+  const char* eol = d.crlf ? "\r\n" : "\n";
+  for (size_t i = 0; i < d.lines.size(); ++i) {
+    const IniLine& l = d.lines[i];
+    out += l.is_kv && l.dirty ? l.prefix + l.val : l.text;
+    if (i + 1 < d.lines.size()) out += eol;
+  }
+  const std::wstring tmp = d.path + L".f3tmp";
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, tmp.c_str(), L"wb") != 0 || !f) return false;
+  const bool ok = std::fwrite(out.data(), 1, out.size(), f) == out.size();
+  std::fclose(f);
+  if (!ok || !MoveFileExW(tmp.c_str(), d.path.c_str(), MOVEFILE_REPLACE_EXISTING)) { DeleteFileW(tmp.c_str()); return false; }
+  for (IniLine& l : d.lines) if (l.dirty) { l.text = l.prefix + l.val; l.dirty = false; }
+  return true;
+}
+
+void page_ini(IniDoc& d) {
+  if (!d.loaded) ini_load(d);
+  ImGui::TextWrapped("%s", d.after_save);
+  ImGui::TextDisabled("%ls", d.path.c_str());
+  if (ImGui::Button("Reload from file")) ini_load(d);
+  ImGui::SameLine();
+  int dirty = 0;
+  for (const IniLine& l : d.lines) dirty += l.dirty ? 1 : 0;
+  if (ImGui::Button("Save to file")) {
+    if (!dirty) d.note = "nothing changed";
+    else { char b[160]; const bool ok = ini_save(d); std::snprintf(b, sizeof(b), ok ? "saved %d value(s)" : "COULD NOT WRITE the file (%d value(s) kept here)", dirty); d.note = b; }
+  }
+  ImGui::SameLine();
+  ImGui::Text("%d unsaved   %s", dirty, d.note.c_str());
+  ImGui::SetNextItemWidth(220);
+  ImGui::InputText("Filter (key or section)", d.filter, sizeof(d.filter));
+  ImGui::Separator();
+  ImGui::BeginChild("ini_scroll", ImVec2(0, 0), false);
+  std::string low(d.filter);
+  for (char& c : low) c = (char)std::tolower((unsigned char)c);
+  const bool filtering = !low.empty();
+  auto matches = [&](const IniLine& l) {
+    if (!filtering) return true;
+    std::string k = l.key + " " + l.section;
+    for (char& c : k) c = (char)std::tolower((unsigned char)c);
+    return k.find(low) != std::string::npos;
+  };
+  bool open = false, any = false;
+  std::string cur = "\x01";
+  for (size_t i = 0; i < d.lines.size(); ++i) {
+    IniLine& l = d.lines[i];
+    if (!l.is_kv) continue;
+    if (l.section != cur) {
+      if (any && open) ImGui::TreePop();
+      cur = l.section; any = false; open = false;
+    }
+    if (!matches(l)) continue;
+    if (!any) {
+      any = true;
+      if (filtering) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      open = ImGui::TreeNode(cur.empty() ? "(top)" : cur.c_str());
+    }
+    if (!open) continue;
+    ImGui::PushID((int)i);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+    if (l.val.size() >= 1000) {
+      ImGui::LabelText(l.key.c_str(), "(long value: edit the file)");
+    } else {
+      char b[1024];
+      std::snprintf(b, sizeof(b), "%s", l.val.c_str());
+      if (l.dirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+      if (ImGui::InputText(l.key.c_str(), b, sizeof(b))) { l.val = b; l.dirty = true; }
+      if (l.dirty) ImGui::PopStyleColor();
+    }
+    if (!l.help.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", l.help.c_str());
+    ImGui::PopID();
+  }
+  if (any && open) ImGui::TreePop();
+  ImGui::EndChild();
+}
+
+IniDoc g_atmo_doc = { L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", "Atmosphere",
+  "atmosphere.ini: stage weather, haze, sun, NUMOS. Hover a key for its comment. Save: the proxy re-reads the file within about a second, so a change shows while you drive." };
+IniDoc g_head_doc = { L"RBRRTX_HEADLIGHTS", L"headlights.ini", "Headlights",
+  "headlights.ini: car lamps. Hover a key for its comment. Save writes the file; the proxy reads it at the next stage start (restart the stage to see a change)." };
+void page_atmo(void*) { page_ini(g_atmo_doc); }
+void page_head(void*) { page_ini(g_head_doc); }
+
 }  // namespace
 
 void rbrrtx_carpaint_register_page();
 
 extern "C" void rbrrtx_menu_register_custom_pages(void) {
   rbrrtx_carpaint_register_page();
+  rbrrtx_menu_add_page("Atmosphere", page_atmo, nullptr);
+  rbrrtx_menu_add_page("Headlights", page_head, nullptr);
   rbrrtx_menu_add_page("Lights", page_lights, nullptr);
   rbrrtx_menu_add_page("Emissive", page_emissive, nullptr);
   rbrrtx_menu_add_page("Windows", page_windows, nullptr);
