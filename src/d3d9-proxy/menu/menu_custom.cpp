@@ -317,7 +317,10 @@ void page_windows(void*) {
 
 }  // namespace
 
+void rbrrtx_carpaint_register_page();
+
 extern "C" void rbrrtx_menu_register_custom_pages(void) {
+  rbrrtx_carpaint_register_page();
   rbrrtx_menu_add_page("Lights", page_lights, nullptr);
   rbrrtx_menu_add_page("Emissive", page_emissive, nullptr);
   rbrrtx_menu_add_page("Windows", page_windows, nullptr);

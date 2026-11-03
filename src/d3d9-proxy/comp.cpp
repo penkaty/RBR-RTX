@@ -17,6 +17,7 @@
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
+void rbrrtx_carpaint_frame(const wchar_t* carModel);
 #include <initguid.h>
 #include <d3d9.h>
 #include "third_party/remix_c.h"
@@ -2977,6 +2978,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (g_enabled && g_apiOk) rbrrtx_headlights_refine();   // no UI trigger this frame: lamps before Present
   if (g_apiOk) {                                            // generated mod: lit car parts, foliage (Remix reloads it)
     rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps());
+    rbrrtx_carpaint_frame(rbrrtx_car_model_path());
     rbrrtx_foliage_frame(g_inMenu);
     rbrrtx_genmod_tick();
   }
@@ -5348,15 +5350,23 @@ bool f3_base_has(unsigned long long h, int c) {
   return false;
 }
 
+// Tagged by the proxy itself at run time: ground base/layer textures (terrain), car dirt maps (decal). Untagging one in
+// the menu must take it out for good, or the next ground flush puts it back ("flags stuck", user 2026-11-03, Zlin).
+bool f3_auto_has(unsigned long long h, int c) {
+  if (c == 0) return g_bakerOn && (g_groundBase.count(h) || (g_layerMode == kLayerBake && g_groundLayer.count(h)));
+  if (c == 1) return g_dirtHashes.count(h) != 0;
+  return false;
+}
+
 bool f3_tagged(unsigned long long h, int c) {
   f3_conf_load();
   if (g_f3Off[c].count(h)) return false;
-  return g_f3Tag[c].count(h) || f3_base_has(h, c);
+  return g_f3Tag[c].count(h) || f3_base_has(h, c) || f3_auto_has(h, c);
 }
 
 void f3_untag(unsigned long long h, int c) {
   g_f3Tag[c].erase(h);
-  if (f3_base_has(h, c)) g_f3Off[c].insert(h);
+  if (f3_base_has(h, c) || f3_auto_has(h, c)) g_f3Off[c].insert(h);
   g_f3Dirty[c] = true;
 }
 
@@ -5386,6 +5396,15 @@ int f3_mark(unsigned long long h, int cls) {
 
 // The list as Remix gets it: rtx.conf's entries (minus the ones the menu took out), then the menu's.
 void f3_send_list(int c) {
+  // Terrain and decal have ONE sender each (ground_tags_flush, send_decal_list); a second one here overwrote the
+  // ground's run-time tags and the next ground flush overwrote the menu's: tags flipped back ("stuck").
+  if (c == 0 || c == 1) {
+    if (c == 1) send_decal_list();
+    if (!g_groundLoaded) ground_tags_load();
+    g_groundDirty = true;                                   // terrain list leaves decals out: resend it too
+    ground_tags_flush(true);
+    return;
+  }
   std::set<unsigned long long> seen;
   std::string list;
   char b[24];
