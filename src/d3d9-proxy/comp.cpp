@@ -17,6 +17,7 @@
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
+#include "prof.hpp"
 void rbrrtx_carpaint_frame(const wchar_t* carModel);
 #include <initguid.h>
 #include <d3d9.h>
@@ -750,7 +751,7 @@ float g_menuBlendH0 = 0.0f;                            // clock hour of the stag
 float g_menuSunEl = 90.0f;                             // the menu sun's height now (blend or menu sun)
 float g_stageSentEl = -1000.0f;                        // the last stage sun sent to NUMOS (elevation), -1000 = none
 int g_stageSentTime = -1;                              // its game time of day (0 morning, 1 noon, 2 evening)
-// The solar path the run forward uses (read from the conf once, when it starts: conf_float reads the whole file).
+// The solar path the run forward uses (read from the conf once, when it starts: conf_float was once a whole file).
 struct SolarPath { float lat, dec; };
 SolarPath g_menuBlendPath = { 0.785f, 0.0f };
 // Moon (user 2026-10-30: "some moonlight, it can not be just pitch black ... realistic values"; "make the moon phase
@@ -1010,22 +1011,58 @@ bool remix_set_raw(const char* key, const char* value) {
 // User 2026-11-03: rtx.conf and user.conf are the only owners of Remix settings. Options the proxy sets as plain
 // configuration (not as the live stage drivers: sun, fog, haze, moon, texture lists) are left alone when the player's
 // rtx.conf or user.conf names them: what is written there is what Remix runs with.
-bool user_conf_names(const char* key) {
-  const size_t kl = std::strlen(key);
+// One parsed copy of rtx.conf and user.conf (user 2026-11-05: rbrrtx_numos_lux_per_unit read the whole 377 KB rtx.conf three
+// times, twice per frame = 9 of the game thread's 11 ms in the menu, prof.hpp). A file is parsed again only when its size or
+// write time changed, checked at most once a second. Last line of a key wins, as in Remix.
+struct ConfFile {
+  std::unordered_map<std::string, std::string> v;
+  ULONGLONG checked = 0;
+  FILETIME time = {};
+  ULONGLONG size = ~0ull;
+};
+
+void conf_refresh(ConfFile& c, const wchar_t* path) {
+  const ULONGLONG now = GetTickCount64();
+  if (c.checked && now - c.checked < 1000) return;
+  c.checked = now;
+  WIN32_FILE_ATTRIBUTE_DATA a = {};
+  ULONGLONG size = 0;
+  if (GetFileAttributesExW(path, GetFileExInfoStandard, &a)) size = (static_cast<ULONGLONG>(a.nFileSizeHigh) << 32) | a.nFileSizeLow;
+  if (size == c.size && CompareFileTime(&a.ftLastWriteTime, &c.time) == 0) return;
+  c.size = size;
+  c.time = a.ftLastWriteTime;
+  c.v.clear();
+  std::ifstream in(path);
+  for (std::string l; std::getline(in, l);) {
+    size_t s = l.find_first_not_of(" \t\xEF\xBB\xBF");
+    if (s == std::string::npos || l[s] == '#') continue;
+    const size_t eq = l.find('=', s);
+    if (eq == std::string::npos) continue;
+    size_t ke = l.find_last_not_of(" \t", eq - 1);
+    if (ke == std::string::npos || ke < s) continue;
+    const size_t vs = l.find_first_not_of(" \t", eq + 1);
+    size_t ve = l.find_last_not_of(" \t\r");
+    c.v[l.substr(s, ke - s + 1)] = vs == std::string::npos || ve == std::string::npos || ve < vs ? std::string() : l.substr(vs, ve - vs + 1);
+  }
+}
+
+const std::string* conf_lookup(const char* name) {
+  static ConfFile rtx;
   wchar_t path[MAX_PATH];
   rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
-  const wchar_t* files[2] = { path, L"user.conf" };
-  for (const wchar_t* f : files) {
-    std::ifstream in(f);
-    for (std::string l; std::getline(in, l);) {
-      size_t s = l.find_first_not_of(" \t\xEF\xBB\xBF");
-      if (s == std::string::npos || l.compare(s, kl, key) != 0) continue;
-      const size_t e = l.find_first_not_of(" \t", s + kl);
-      if (e != std::string::npos && l[e] == '=') return true;
-    }
-  }
-  return false;
+  conf_refresh(rtx, path);
+  const auto it = rtx.v.find(name);
+  return it == rtx.v.end() ? nullptr : &it->second;
 }
+
+const std::string* user_conf_lookup(const char* name) {
+  static ConfFile user;
+  conf_refresh(user, L"user.conf");
+  const auto it = user.v.find(name);
+  return it == user.v.end() ? nullptr : &it->second;
+}
+
+bool user_conf_names(const char* key) { return conf_lookup(key) || user_conf_lookup(key); }
 
 bool config_option_owned_by_user(const char* key) {
   static const char* const cfg[] = { "rtx.enableFog", "rtx.weather.gameWeatherBlend", "rtx.atmosphere.timeCycleEnable",
@@ -1058,17 +1095,8 @@ void remix_set(const char* key, const char* value) {
 // Base values from the conf Remix reads (last line wins); all go back when the debug sun is switched off. Set through
 // remix_set like K.
 float conf_float(const char* name, float dflt) {
-  wchar_t path[MAX_PATH];
-  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
-  std::ifstream in(path);
-  float v = dflt;
-  for (std::string l; std::getline(in, l);) {
-    const size_t k = l.find(name);
-    if (k == std::string::npos || l.find_first_not_of(" \t") != k || l.find_first_of(" \t=", k) != k + std::strlen(name)) continue;
-    const size_t eq = l.find('=', k);
-    if (eq != std::string::npos) v = static_cast<float>(std::atof(l.c_str() + eq + 1));
-  }
-  return v;
+  const std::string* v = conf_lookup(name);
+  return v ? static_cast<float>(std::atof(v->c_str())) : dflt;
 }
 
 void debug_sky() {
@@ -1138,15 +1166,7 @@ struct { float dist, col[3], albedo[3], aniso, sky; } g_atmoBase = {};
 
 void conf_vec3(const char* name, float out[3], float dflt) {
   out[0] = out[1] = out[2] = dflt;
-  wchar_t path[MAX_PATH];
-  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
-  std::ifstream in(path);
-  for (std::string l; std::getline(in, l);) {
-    const size_t k = l.find(name);
-    if (k == std::string::npos || l.find_first_not_of(" \t") != k || l.find_first_of(" \t=", k) != k + std::strlen(name)) continue;
-    const size_t eq = l.find('=', k);
-    if (eq != std::string::npos) sscanf_s(l.c_str() + eq + 1, " %f , %f , %f", &out[0], &out[1], &out[2]);
-  }
+  if (const std::string* v = conf_lookup(name)) sscanf_s(v->c_str(), " %f , %f , %f", &out[0], &out[1], &out[2]);
 }
 
 AtmoFactors atmo_read(const wchar_t* path, const wchar_t* sec) {
@@ -2269,6 +2289,7 @@ IDirect3DIndexBuffer9* g_clockIB[3] = {};              // ours, managed (survive
 unsigned g_clockSlot = 0;
 
 HRESULT STDMETHODCALLTYPE hk_VBLock(IDirect3DVertexBuffer9* vb, UINT off, UINT size, void** data, DWORD flags) {
+  RBR_ZONE(PZ_BUFLOCK);
   const HRESULT hr = o.VBLock(vb, off, size, data, flags);
   if (SUCCEEDED(hr) && !(flags & D3DLOCK_READONLY)) rbrrtx_apiworld_written(vb);   // API world: buffer is dynamic
   if (vb == g_clockVB) {
@@ -2284,6 +2305,7 @@ HRESULT STDMETHODCALLTYPE hk_VBLock(IDirect3DVertexBuffer9* vb, UINT off, UINT s
 }
 
 HRESULT STDMETHODCALLTYPE hk_VBUnlock(IDirect3DVertexBuffer9* vb) {
+  RBR_ZONE(PZ_BUFLOCK);
   if (vb == g_clockVB && g_clockData) {
     const unsigned char* p = static_cast<const unsigned char*>(g_clockData);
     const UINT n = std::min<UINT>(g_clockBytes / 24, 32);
@@ -2301,6 +2323,7 @@ HRESULT STDMETHODCALLTYPE hk_VBUnlock(IDirect3DVertexBuffer9* vb) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_IBLock(IDirect3DIndexBuffer9* ib, UINT off, UINT size, void** data, DWORD flags) {
+  RBR_ZONE(PZ_BUFLOCK);
   const HRESULT hr = o.IBLock(ib, off, size, data, flags);
   if (SUCCEEDED(hr) && !(flags & D3DLOCK_READONLY)) rbrrtx_apiworld_written(ib);
   return hr;
@@ -3012,14 +3035,15 @@ void exp_frame() {
 void end_frame(IDirect3DDevice9* dev) {
   if (g_enabled && g_apiOk) rbrrtx_headlights_refine();   // no UI trigger this frame: lamps before Present
   if (g_apiOk) {                                            // generated mod: lit car parts, foliage (Remix reloads it)
-    rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps());
-    rbrrtx_carpaint_frame(rbrrtx_car_model_path());
-    rbrrtx_foliage_frame(g_inMenu);
-    rbrrtx_genmod_tick();
+    { RBR_ZONE(PZ_EF_LITPARTS); rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps()); }
+    { RBR_ZONE(PZ_EF_CARPAINT); rbrrtx_carpaint_frame(rbrrtx_car_model_path()); }
+    { RBR_ZONE(PZ_EF_FOLIAGE); rbrrtx_foliage_frame(g_inMenu); }
+    { RBR_ZONE(PZ_EF_GENMOD); rbrrtx_genmod_tick(); }
   }
   if (g_sweepDumpFrames && --g_sweepDumpFrames == 0) sweep_dump_end();
-  atmo_frame();
-  exp_frame();
+  { RBR_ZONE(PZ_EF_ATMO); atmo_frame(); }
+  { RBR_ZONE(PZ_EF_EXP); exp_frame(); }
+  const long long keysStart = rbrrtx_prof_now();
   cull_frame_tick();
   if (rbrrtx_key_pressed(RBRKEY_CULLING)) {
     wchar_t w[64];
@@ -3193,20 +3217,21 @@ void end_frame(IDirect3DDevice9* dev) {
     g_sunMoving = moving;
   }
   if (rbrrtx_key_pressed(RBRKEY_SUN_SAVE)) sun_save();
+  rbrrtx_prof_add(PZ_EF_KEYS, rbrrtx_prof_now() - keysStart);
   lamp_mark_frame();                                   // lamp_mark key: finishes the armed pick, arms the next
-  rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk);   // headlights key, automatic switch, car model
+  { RBR_ZONE(PZ_EF_LAMPS); rbrrtx_headlights_frame_end(g_sunShownEl, g_enabled && g_apiOk); }   // headlights key, automatic switch, car model
   {
     D3DMATRIX vinv;
     const float cam[3] = { 0, 0, 0 };
     if (g_frameCam && inverse(g_V, vinv)) {
       const float c[3] = { vinv._41, vinv._42, vinv._43 };
-      rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), c, g_enabled && g_apiOk);
+      RBR_ZONE(PZ_EF_WORLDLIGHTS); rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), c, g_enabled && g_apiOk);
     } else {
-      rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), cam, g_enabled && g_apiOk);
+      RBR_ZONE(PZ_EF_WORLDLIGHTS); rbrrtx_world_lights_frame(rbrrtx_sun_shown_elevation(), cam, g_enabled && g_apiOk);
     }
   }
-  rbrrtx_custom_frame(g_inMenu ? -1 : g_atmoStage.trackId, rbrrtx_sun_shown_elevation(), g_enabled && g_apiOk);   // F3 custom lights
-  numos_ground();                                      // NUMOS: ground level from the car (no-op without NUMOS)
+  { RBR_ZONE(PZ_EF_CUSTOM); rbrrtx_custom_frame(g_inMenu ? -1 : g_atmoStage.trackId, rbrrtx_sun_shown_elevation(), g_enabled && g_apiOk); }   // F3 custom lights
+  { RBR_ZONE(PZ_EF_GROUND); numos_ground(); }           // NUMOS: ground level from the car (no-op without NUMOS)
   if (g_numos && g_apiOk) {
     // NUMOS's lamp glow in fog lives in a froxel grid whose history is reprojected with the camera only (aerial-
     // perspective-v2.md section 2, 32 frames): a lamp that moves with the car leaves a trail that catches up when the car
@@ -3225,9 +3250,9 @@ void end_frame(IDirect3DDevice9* dev) {
       histSent = want;
     }
   }
-  if (g_enabled && g_apiOk && !g_sweep) rbrrtx_windscreen_frame_end();   // drops on the windscreen RBR drew this frame
-  rbrrtx_particles_frame_end();                       // particle test key, emit probe report
-  rbrrtx_wetness_frame(g_expStep >= 0);               // wetness.cpp: puddles build up while it rains
+  if (g_enabled && g_apiOk && !g_sweep) { RBR_ZONE(PZ_EF_WINDSCREEN); rbrrtx_windscreen_frame_end(); }   // drops on the windscreen RBR drew this frame
+  { RBR_ZONE(PZ_EF_PARTICLES); rbrrtx_particles_frame_end(); }   // particle test key, emit probe report
+  { RBR_ZONE(PZ_EF_WETNESS); rbrrtx_wetness_frame(g_expStep >= 0); }   // wetness.cpp: puddles build up while it rains
   {
     // Remix's fallback light (rtx.fallbackLightMode 1 = only while no light exists) went out whenever the
     // headlights came on at night (user 2026-10-23: it is their moonlight). Lights on and no sun: Always (2).
@@ -3303,6 +3328,7 @@ void end_frame(IDirect3DDevice9* dev) {
 // ---------------------------------------------------------------- device hooks
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UINT start, const float* data, UINT count) {
+  RBR_ZONE(PZ_VSCONST);
   if (rbrrtx_menu_is_drawing()) return o.SetVertexShaderConstantF(dev, start, data, count);   // the F3 menu's own draws are not tracked
   if (data && start < 256 && !g_recording) {
     const UINT n = (std::min)(count, 256u - start);
@@ -3313,6 +3339,7 @@ HRESULT STDMETHODCALLTYPE hk_SetVertexShaderConstantF(IDirect3DDevice9* dev, UIN
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetPixelShaderConstantF(IDirect3DDevice9* dev, UINT start, const float* data, UINT count) {
+  RBR_ZONE(PZ_PSCONST);
   if (rbrrtx_menu_is_drawing()) return o.SetPixelShaderConstantF(dev, start, data, count);
   if (data && start < 8 && !g_recording)               // ps_1_1 has c0-c7; c3 = car dirt colour (dirt_draw)
     std::memcpy(g_psc[start], data, (std::min)(count, 8u - start) * 4 * sizeof(float));
@@ -3412,6 +3439,7 @@ void hook_block(IDirect3DStateBlock9* sb, const BlockState& b) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_CreateStateBlock(IDirect3DDevice9* dev, D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
+  RBR_ZONE(PZ_STATEBLOCK);
   if (rbrrtx_menu_is_drawing()) return o.CreateStateBlock(dev, type, out);   // the menu's per-frame block: nothing tracked, its Apply restores the device
   const HRESULT hr = o.CreateStateBlock(dev, type, out);
   if (SUCCEEDED(hr) && out && *out) {                 // holds the current state of its type from the start
@@ -3438,6 +3466,7 @@ HRESULT STDMETHODCALLTYPE hk_EndStateBlock(IDirect3DDevice9* dev, IDirect3DState
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexShader(IDirect3DDevice9* dev, IDirect3DVertexShader9* vs) {
+  RBR_ZONE(PZ_SHADER);
   if (rbrrtx_menu_is_drawing()) return o.SetVertexShader(dev, vs);
   if (g_recording) { g_rec.hasVS = true; g_rec.vs = vs; g_rec.vsUnbound = false; }
   else track_vs(vs);
@@ -3457,6 +3486,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateVertexDeclaration(IDirect3DDevice9* dev, cons
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetVertexDeclaration(IDirect3DDevice9* dev, IDirect3DVertexDeclaration9* decl) {
+  RBR_ZONE(PZ_SHADER);
   if (rbrrtx_menu_is_drawing()) return o.SetVertexDeclaration(dev, decl);
   if (g_recording) { g_rec.hasVin = true; g_rec.vin = kVinDecl; g_rec.decl = decl; g_rec.fvf = 0; }
   else { g_curDecl = decl; g_vin = kVinDecl; }
@@ -3464,6 +3494,7 @@ HRESULT STDMETHODCALLTYPE hk_SetVertexDeclaration(IDirect3DDevice9* dev, IDirect
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetFVF(IDirect3DDevice9* dev, DWORD fvf) {
+  RBR_ZONE(PZ_SHADER);
   if (rbrrtx_menu_is_drawing()) return o.SetFVF(dev, fvf);
   if (g_recording) { g_rec.hasVin = true; g_rec.vin = kVinFvf; g_rec.decl = nullptr; g_rec.fvf = fvf; }
   else { g_curDecl = nullptr; g_curFVF = fvf; g_vin = kVinFvf; }
@@ -3479,6 +3510,7 @@ bool screen_space_input(IDirect3DDevice9* dev) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetTextureStageState(IDirect3DDevice9* dev, DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD v) {
+  RBR_ZONE(PZ_TSS);
   if (rbrrtx_menu_is_drawing()) return o.SetTextureStageState(dev, stage, type, v);
   if (g_recording) return o.SetTextureStageState(dev, stage, type, v);
   if (stage == 0)
@@ -3488,12 +3520,14 @@ HRESULT STDMETHODCALLTYPE hk_SetTextureStageState(IDirect3DDevice9* dev, DWORD s
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetRenderState(IDirect3DDevice9* dev, D3DRENDERSTATETYPE state, DWORD v) {
+  RBR_ZONE(PZ_RSTATE);
   if (rbrrtx_menu_is_drawing()) return o.SetRenderState(dev, state, v);
   if (state == D3DRS_LIGHTING && !g_recording) g_lighting = v;
   return o.SetRenderState(dev, state, v);
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetTransform(IDirect3DDevice9* dev, D3DTRANSFORMSTATETYPE state, const D3DMATRIX* m) {
+  RBR_ZONE(PZ_XFORM);
   if (rbrrtx_menu_is_drawing()) return o.SetTransform(dev, state, m);
   static unsigned logged[3] = {};
   for (int i = 0; i < 3; ++i)                          // diagnostics: does the game (or a plugin) set these itself?
@@ -3536,12 +3570,14 @@ bool is_primary_rt(IDirect3DSurface9* s) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_SetRenderTarget(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9* rt) {
+  RBR_ZONE(PZ_RT);
   if (index == 0) g_primaryRT = is_primary_rt(rt);
   if (rbrrtx_gauge_probe_on && index == 0) rbrrtx_gauge_probe_rt(rt);
   return o.SetRenderTarget(dev, index, rt);
 }
 
 HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
+  RBR_ZONE(PZ_SCENE);
   const HRESULT hr = o.BeginScene(dev);
   ++g_st.scenes;
   if (SUCCEEDED(hr) && !g_sunDrawn) {
@@ -3582,9 +3618,11 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
 
 HRESULT STDMETHODCALLTYPE hk_Present(IDirect3DDevice9* dev, const RECT* src, const RECT* dst, HWND wnd, const RGNDATA* dirty) {
   if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_frame();
-  end_frame(dev);
-  f3_present(dev);                                     // F3 menu: list updates, texture probe, the menu's own scene
-  const HRESULT hr = o.Present(dev, src, dst, wnd, dirty);
+  { RBR_ZONE(PZ_END_FRAME); end_frame(dev); }
+  { RBR_ZONE(PZ_F3); f3_present(dev); }                 // F3 menu: list updates, texture probe, the menu's own scene
+  HRESULT hr;
+  { RBR_ZONE(PZ_PRESENT); hr = o.Present(dev, src, dst, wnd, dirty); }
+  rbrrtx_prof_frame();
   if (g_remixPlus) rbrrtx_remixplus_frame();           // light destroys before this Present no longer block their hash
   return hr;
 }
@@ -4995,7 +5033,7 @@ HRESULT alphacut_draw(IDirect3DDevice9* dev, const RbrAlphaCut& ac) {
 // (texture factor), alpha blended, no depth write. Its texture hash goes into rtx.decalTextures (with rtx.conf's own),
 // so Remix lays it on the body instead of tracing a second surface. Render-target dirt maps have no hash: drawn untagged.
 // RBRRTX_CAR_DIRT=0 = off. Raster (key 0) turns the layer off, and the game's own shader shows the dirt there.
-std::string g_decalBase;                               // rtx.decalTextures from rtx.conf ("" = none)
+bool g_decalDirty = false;                             // a new decal tag waits for the next batch (f3_tags_frame)
 std::set<unsigned long long> g_dirtHashes;
 // F3 menu texture tags (glue below): class 0 terrain, 1 decal, 2 animated water, 3 ignore. g_f3Tag = added in the menu,
 // g_f3Off = taken out of a list that rtx.conf or the run-time tags put the hash in.
@@ -5003,24 +5041,13 @@ std::set<unsigned long long> g_f3Tag[4], g_f3Off[4];
 void send_decal_list();
 
 std::string conf_string(const char* name) {
-  wchar_t path[MAX_PATH];
-  rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
-  std::ifstream in(path);
-  std::string v;
-  for (std::string l; std::getline(in, l);) {
-    const size_t k = l.find(name);
-    if (k == std::string::npos || l.find_first_not_of(" \t") != k || l.find_first_of(" \t=", k) != k + std::strlen(name)) continue;
-    const size_t eq = l.find('=', k);
-    if (eq == std::string::npos) continue;
-    v = l.substr(l.find_first_not_of(" \t", eq + 1) == std::string::npos ? l.size() : l.find_first_not_of(" \t", eq + 1));
-    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) v.pop_back();
-  }
-  return v;
+  const std::string* v = conf_lookup(name);
+  return v ? *v : std::string();
 }
 
 void decal_tag(unsigned long long hx, const wchar_t* what) {
   if (!g_dirtHashes.insert(hx).second) return;
-  send_decal_list();                                   // rtx.conf's list + the car dirt maps + the menu's tags
+  g_decalDirty = true;                                 // sent with the next batch, not per new texture
   clog(L"%s: %016llX tagged as decal (%zu decal textures added)", what, hx, g_dirtHashes.size());
 }
 
@@ -5055,7 +5082,7 @@ std::vector<unsigned long long> parse_hashes(const std::string& s) {
     char* e = nullptr;
     const unsigned long long h = std::strtoull(s.c_str() + p, &e, 16);
     const size_t n = static_cast<size_t>(e - (s.c_str() + p));
-    if (n > 2) v.push_back(h);
+    if (n > 2 && !(p > 0 && s[p - 1] == '-')) v.push_back(h);   // "-0x..." = removed by the user, not in the list
     p += n > 2 ? n : 2;
   }
   return v;
@@ -5065,11 +5092,21 @@ void ground_tags_load() {
   g_groundLoaded = true;
   for (unsigned long long h : parse_hashes(conf_string("rtx.decalTextures"))) g_decalConfSet.insert(h);
   size_t stripped = 0;
-  for (unsigned long long h : parse_hashes(conf_string("rtx.terrainTextures"))) {
+  // The catalog of ground textures is the add-on's (config-remixplus\\terrain-catalog.txt, user 2026-11-05), not a list in the
+  // player's rtx.conf: there it could not be taken back per stage, and it was 120 KB of a file that is meant to be the user's.
+  std::string catalog;
+  {
+    wchar_t path[MAX_PATH * 2] = {};
+    rbrrtx_config_path(L"RBRRTX_TERRAIN_CATALOG", L"terrain-catalog.txt", path, MAX_PATH * 2);
+    std::ifstream in(path, std::ios::binary);
+    if (in) catalog.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  if (catalog.empty()) catalog = conf_string("rtx.terrainTextures");
+  for (unsigned long long h : parse_hashes(catalog)) {
     if (g_decalConfSet.count(h)) { ++stripped; continue; }
     if (g_terrainConfSet.insert(h).second) g_terrainConf.push_back(h);
   }
-  if (stripped) g_groundDirty = true;                       // the catalog part is sent once without the decal textures
+  g_groundDirty = true;                                     // the catalog goes out once, without the decal textures
   clog(L"ground blend: conf terrain list %zu hashes (%zu also in rtx.decalTextures: taken out, they stay decals), decal list %zu; baker %s; second layer mode %s",
        g_terrainConf.size(), stripped, g_decalConfSet.size(), g_bakerOn ? L"ON" : L"off",
        g_layerMode == kLayerBake ? L"bake" : g_layerMode == kLayerDecal ? L"decal" : L"off");
@@ -5080,11 +5117,20 @@ bool ground_is_decal(unsigned long long hx) {
   return g_decalConfSet.count(hx) || g_dirtHashes.count(hx) || g_f3Tag[1].count(hx);
 }
 
+// A hash taken out in the F3 menu: "-0x..." (the runtime records it in the rtx.conf layer, as unticking it in Alt+X does).
+void append_removals(std::string& list, const std::set<unsigned long long>& off) {
+  char b[24];
+  for (unsigned long long h : off) {
+    sprintf_s(b, "-0x%016llX", h);
+    if (!list.empty()) list += ", ";
+    list += b;
+  }
+}
+
 void ground_tags_flush(bool force) {
   if (!g_groundLoaded || !g_groundDirty || (!force && g_frame - g_groundFlushFrame < 90)) return;
   g_groundDirty = false;
   g_groundFlushFrame = g_frame;
-  if (!g_bakerOn && g_f3Tag[0].empty() && g_f3Off[0].empty()) return;   // baker off in the conf: terrain decals from the conf list, no tags
   std::unordered_set<unsigned long long> seen;
   std::string list;
   char b[24];
@@ -5100,6 +5146,7 @@ void ground_tags_flush(bool force) {
     if (g_layerMode == kLayerBake) for (unsigned long long h : g_groundLayer) add(h);
   }
   for (unsigned long long h : g_f3Tag[0]) add(h);           // tagged in the F3 menu
+  append_removals(list, g_f3Off[0]);
   remix_set("rtx.terrainTextures", list.c_str());
   g_groundSent = seen.size();
   ++g_groundFlushes;
@@ -5449,15 +5496,13 @@ void f3_send_list(int c) {
     if (!list.empty()) list += ", ";
     list += b;
   };
-  for (unsigned long long h : g_f3ConfVec[c]) add(h);
-  for (unsigned long long h : g_f3Tag[c]) add(h);
+  for (unsigned long long h : g_f3Tag[c]) add(h);           // rtx.conf's own entries are Remix's already (lower layer)
+  append_removals(list, g_f3Off[c]);
   remix_set(kF3Key[c], list.c_str());
   clog(L"menu: %S sent: %zu hashes", kF3Key[c], seen.size());
 }
 
 void send_decal_list() {
-  static bool baseRead = false;
-  if (!baseRead) { baseRead = true; g_decalBase = conf_string("rtx.decalTextures"); }
   std::set<unsigned long long> seen;
   std::string list;
   char b[24];
@@ -5467,9 +5512,9 @@ void send_decal_list() {
     if (!list.empty()) list += ", ";
     list += b;
   };
-  for (unsigned long long h : parse_hashes(g_decalBase)) add(h);
   for (unsigned long long h : g_dirtHashes) add(h);
   for (unsigned long long h : g_f3Tag[1]) add(h);
+  append_removals(list, g_f3Off[1]);
   remix_set("rtx.decalTextures", list.c_str());
 }
 
@@ -5477,11 +5522,13 @@ void send_decal_list() {
 void f3_tags_frame() {
   if (!g_apiOk || g_frame - g_f3SendFrame < 20) return;
   bool any = false;
+  any = g_decalDirty;
   for (int c = 0; c < 4; ++c) any |= g_f3Dirty[c];
   if (!any) return;
   g_f3SendFrame = g_frame;
   f3_conf_load();
   for (int c = 0; c < 4; ++c) {
+    if (c == 1 && g_decalDirty) { g_decalDirty = false; g_f3Dirty[1] = true; }
     if (!g_f3Dirty[c]) continue;
     g_f3Dirty[c] = false;
     if (c == 0) {
@@ -6285,13 +6332,16 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       if (rbrrtx_rain_skip_texture(rbrrtx_texture_hash(t))) return D3D_OK;
     }
   }
-  if (cull_draw(dev)) {                                      // distance culling (culling.ini, key M)
+  bool culled = false;
+  { RBR_ZONE(PZ_DRAW_CULL); culled = cull_draw(dev); }
+  if (culled) {                                      // distance culling (culling.ini, key M)
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"culling");
     return D3D_OK;
   }
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
   texture_probe_draw(dev);                                   // F3 texture picker: the same ray, every frame while the page asks
-  void* lampGlow = world_light_draw(dev);                    // lamp textures (lights.ini): a light at the object
+  void* lampGlow = nullptr;
+  { RBR_ZONE(PZ_DRAW_WORLDLIGHT); lampGlow = world_light_draw(dev); }                    // lamp textures (lights.ini): a light at the object
   if (!lampGlow && g_primaryRT && g_enabled && g_apiOk && rbrrtx_emit_wanted()) {   // F3 emissives / windows: the twin texture of the saved material
     IDirect3DBaseTexture9* et = nullptr;
     if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &et)) && et) {
@@ -6453,7 +6503,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   ground_base_end(dev, groundBase);
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
   if (litPrev) litPrev->lpVtbl->Release(litPrev);
-  if (SUCCEEDED(hr)) { if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
+  if (SUCCEEDED(hr)) { RBR_ZONE(PZ_DRAW_EXTRA); if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
   stage0_fix_end(dev, stage0);
   if (normalsOff || radOn) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
   if (radOn || radPrev) dev->lpVtbl->SetStreamSource(dev, kRadStream, radPrev, radPrevOff, radPrevStride);
@@ -6477,17 +6527,19 @@ UINT verts_for(D3DPRIMITIVETYPE t, UINT prims) {
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT start, UINT count) {
+  RBR_ZONE(PZ_DRAW_HOOK);
   if (rbrrtx_menu_is_drawing()) return o.DrawPrimitive(dev, t, start, count);
   g_pendingPrims = count;
   g_drawType = t;
   g_drawFirstVert = start;
   g_drawNumVert = verts_for(t, count);
   g_dip.valid = false;
-  return comp_draw(dev, [&] { return o.DrawPrimitive(dev, t, start, cap_prims(count)); });
+  return comp_draw(dev, [&] { RBR_ZONE(PZ_DRAW_BACKEND); return o.DrawPrimitive(dev, t, start, cap_prims(count)); });
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, INT base, UINT minIdx,
                                                   UINT numV, UINT startIdx, UINT count) {
+  RBR_ZONE(PZ_DRAW_HOOK);
   if (rbrrtx_menu_is_drawing()) return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, count);
   g_pendingPrims = count;
   g_drawType = t;
@@ -6496,27 +6548,29 @@ HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitive(IDirect3DDevice9* dev, D3DPRIM
   g_dip = { t == D3DPT_TRIANGLELIST && base >= 0, base, minIdx, numV, startIdx, count };
   g_inDip = true;
   g_dipTriList = t == D3DPT_TRIANGLELIST;
-  const HRESULT hr = comp_draw(dev, [&] { return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
+  const HRESULT hr = comp_draw(dev, [&] { RBR_ZONE(PZ_DRAW_BACKEND); return o.DrawIndexedPrimitive(dev, t, base, minIdx, numV, startIdx, cap_prims(count)); });
   g_dip.valid = false;
   g_inDip = false;
   return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT count, const void* data, UINT stride) {
+  RBR_ZONE(PZ_DRAW_HOOK);
   if (rbrrtx_menu_is_drawing()) return o.DrawPrimitiveUP(dev, t, count, data, stride);
   g_pendingPrims = count;
   g_drawNumVert = 0;                                   // no vertex buffer: not culled
   g_dip.valid = false;
-  return comp_draw(dev, [&] { return o.DrawPrimitiveUP(dev, t, cap_prims(count), data, stride); });
+  return comp_draw(dev, [&] { RBR_ZONE(PZ_DRAW_BACKEND); return o.DrawPrimitiveUP(dev, t, cap_prims(count), data, stride); });
 }
 
 HRESULT STDMETHODCALLTYPE hk_DrawIndexedPrimitiveUP(IDirect3DDevice9* dev, D3DPRIMITIVETYPE t, UINT minIdx, UINT numV,
                                                     UINT count, const void* idx, D3DFORMAT fmt, const void* data, UINT stride) {
+  RBR_ZONE(PZ_DRAW_HOOK);
   if (rbrrtx_menu_is_drawing()) return o.DrawIndexedPrimitiveUP(dev, t, minIdx, numV, count, idx, fmt, data, stride);
   g_pendingPrims = count;
   g_drawNumVert = 0;
   g_dip.valid = false;
-  return comp_draw(dev, [&] { return o.DrawIndexedPrimitiveUP(dev, t, minIdx, numV, cap_prims(count), idx, fmt, data, stride); });
+  return comp_draw(dev, [&] { RBR_ZONE(PZ_DRAW_BACKEND); return o.DrawIndexedPrimitiveUP(dev, t, minIdx, numV, cap_prims(count), idx, fmt, data, stride); });
 }
 
 // Occlusion queries (suspect a in g_uiTriggerOn): same bookkeeping as Remix's D3D9Query::Issue, so g_oqActive is
