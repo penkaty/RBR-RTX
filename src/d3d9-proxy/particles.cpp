@@ -75,7 +75,9 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <fstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 
 bool rbrrtx_surface_lookup_on = false;
@@ -308,6 +310,7 @@ struct DustCfg {
   float wakeOnKmh = 25.0f;                             // [snow_wake]: drawn from this car speed, rate in speed steps
   wchar_t tex[64] = L"dust_puff.dds";
 } g_cfg, g_smoke;
+float g_maxCoverage = 1.0f, g_coverageSent = -1.0f;   // rtx.particles.maxScreenCoverage; [dust] max_screen_coverage
 
 // Rain/snow presets (user 2026-10-23 run 2): light rain = many small drops at the run-2 speed; heavy rain = big drops,
 // faster, shorter streaks; light snow = many fluffy flakes falling slowly; heavy snow = big flakes, faster and dense.
@@ -451,7 +454,7 @@ int game_emitter_kind(void* arg1) {
                    name_has_any(name, g_cfg.smokeGame) ? 2 : 0;
   g_gameKind[arg1] = kind;
   plog(L"particles: game emitter %S: %s", name, kind == 1 ? L"dust: never spawned, drives the Remix dust" :
-       kind == 2 ? L"smoke: never spawned, drives the Remix tyre smoke (no dust at the wheel, slide long enough)" : L"kept");
+       kind == 2 ? L"smoke: never spawned, drives the Remix tyre smoke (dry tarmac, moving, slide long enough)" : L"kept");
   return kind;
 }
 
@@ -551,6 +554,7 @@ void load_cfg() {
     for (wchar_t* t = wcstok_s(v, L", ", &ctx); t && c.nHideCams < 8; t = wcstok_s(nullptr, L", ", &ctx))
       c.hideCams[c.nHideCams++] = _wtoi(t);
   }
+  g_maxCoverage = cfg_float(L"max_screen_coverage", g_maxCoverage, 0.0f, 16.0f);
   g_cfg = c;
   DustCfg sm = smoke_defaults();
   if (found) { g_sec = L"smoke"; load_fx(sm); g_sec = L"dust"; }
@@ -938,11 +942,49 @@ int wheel_points(const float* car, float out[4][3], int wheelOf[4]) {
   return count;
 }
 
+// Physics\physics.lsp names RBR's surfaces, one per line: Tarmac_Fine_Clean_Dry ("Tarmac_Fine_Clean_Dry" ; id 37, rev 42
+// A wheel's material is this id, and it changes with the track condition (Gravel_Coarse_Deep_Dry 41, _Wet 43).
+std::unordered_set<uint32_t> g_tarmacDry;
+bool g_tarmacRead = false;
+
+void read_surface_table() {
+  g_tarmacRead = true;
+  std::ifstream in("Physics\\physics.lsp", std::ios::binary);
+  std::string line;
+  unsigned total = 0;
+  while (std::getline(in, line)) {
+    const size_t q = line.find("(\"");
+    if (q == std::string::npos) continue;
+    const size_t e = line.find('"', q + 2);
+    if (e == std::string::npos) continue;
+    const size_t id = line.find("; id ", e);
+    if (id == std::string::npos) continue;
+    ++total;
+    const std::string name = line.substr(q + 2, e - q - 2);
+    if (name.rfind("Tarmac_", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, "_Dry") == 0)
+      g_tarmacDry.insert(static_cast<uint32_t>(std::atoi(line.c_str() + id + 5)));
+  }
+  plog(L"particles: physics.lsp: %u surfaces, %zu dry tarmac; tyre smoke only there, not in rain", total, g_tarmacDry.size());
+}
+
+// Tyre smoke (user 2026-11-05): on tarmac only, none when damp, wet or raining.
+bool smoke_surface(uint32_t mat) {
+  if (!g_tarmacRead) read_surface_table();
+  if (!g_tarmacDry.count(mat)) return false;
+  float pct = 0.0f;
+  return rbrrtx_precip_state(&pct) != 1;
+}
+
 void draw_emitter() {
   float r[20];
   if (!rbrrtx_player_car_raw(r)) return;
   update_speed(r + 16);
   if (camera_hidden() || !make_emitter()) return;
+  if (g_coverageSent != g_maxCoverage) {
+    char v[32];
+    sprintf_s(v, "%.3f", g_maxCoverage);
+    if (rbrrtx_remix_set("rtx.particles.maxScreenCoverage", v)) g_coverageSent = g_maxCoverage;
+  }
   const ULONGLONG now = GetTickCount64();
   float wheel[4][3];
   int wheelOf[4];
@@ -954,8 +996,8 @@ void draw_emitter() {
     const DustCfg* fx = nullptr;
     if (g_moving && now - wh.dustT < g_dustHoldMs) fx = &g_cfg;          // the game asks for dust here
     else if (g_smoke.enabled && g_kmh >= g_smoke.onKmh && now - wh.smokeLast < g_dustHoldMs &&
-             wh.smokeLast - wh.smokeStart >= static_cast<ULONGLONG>(g_smoke.slideSeconds * 1000.0f))
-      fx = &g_smoke;                                   // tarmac: a slide long enough
+             wh.smokeLast - wh.smokeStart >= static_cast<ULONGLONG>(g_smoke.slideSeconds * 1000.0f) && smoke_surface(wh.mat))
+      fx = &g_smoke;                                   // dry tarmac: a slide long enough
     if (!fx) continue;
     const float x = wheel[w][0], y = wheel[w][2] + fx->height, z = wheel[w][1];
     const float* tint = nullptr;

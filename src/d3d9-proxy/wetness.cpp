@@ -1,12 +1,10 @@
-// wetness.cpp - wet roads and puddles that build up while it rains (user 2026-11-01: "the wet puddles accumulating,
-// and the water really acting like water like in xoxor's work").
+// wetness.cpp - wet roads and puddles from the stage's conditions (user 2026-11-01: "the wet puddles accumulating, and the
+// water really acting like water like in xoxor's work"; 2026-11-05: weather is static in RBR, so the value is too).
 //
 // The runtime (our Remix Plus branch, port of xoxor4d's rtx_fork_wetness: darkened wet ground, mirror-like puddles in
-// the hollows, ripples and raindrop rings) reads one frame value, rtx.wet.globalWetness 0..1: the puddles' water level
-// rises with it, so they grow from the low spots outward and dry from the edges. This file drives that value from the
-// stage: it starts at the track's own condition (RBR's Dry / Damp / Wet), heads to rain_target while the game's rain
-// falls (faster the harder it rains), and dries back towards the track's condition when the rain stops. Time runs only
-// while driving (paused, menu and replays hold the value). Config: rbr-rtx\config\wetness.ini (RBRRTX_WETNESS).
+// the hollows, ripples and raindrop rings) reads rtx.wet.globalWetness 0..1. This file sets it once per stage from the
+// track's condition (RBR's Dry / Damp / Wet), fog and rain, and Rain Intensity from the rain: heavy 1, light 0.5, none 0.
+// Config: rbr-rtx\config\wetness.ini (RBRRTX_WETNESS). F3 sliders still override it live.
 // Remix Plus only (1.5.2 has no wet options); nothing is sent while a sweep or experiment runs (they set their own).
 #define CINTERFACE
 #include "common.hpp"
@@ -18,15 +16,12 @@
 namespace {
 
 bool g_on = true, g_loaded = false;
-float g_base[3] = { 0.0f, 0.4f, 0.7f };               // start value for RBR's Dry / Damp / Wet track condition
-float g_rainTarget = 1.0f, g_rainMin = 2.0f, g_dryMin = 15.0f, g_headStart = 1.0f, g_snowTarget = -1.0f;
+float g_base[3] = { 0.0f, 0.40f, 0.80f };             // RBR's Dry / Damp / Wet track condition (user 2026-11-05)
+float g_fog = 0.15f, g_rainLight = 0.40f, g_rainHeavy = 0.80f, g_snowTarget = -1.0f;
 std::string g_option = "rtx.wet.globalWetness", g_rainOption, g_dropsOption;
-float g_w = 0.0f, g_sent = -1.0f, g_rainSent = -1.0f;
+float g_w = 0.0f, g_sent = -1.0f, g_rainSent = -1.0f, g_rainNow = 0.0f, g_logged = -1.0f;
 int g_dropsSent = -1;
-int g_track = -1, g_cond = -1;
-LARGE_INTEGER g_last = {}, g_qpf = {};
 unsigned g_frames = 0;
-double g_logT = 0.0;
 
 float ini_f(const wchar_t* path, const wchar_t* key, float dflt) {
   wchar_t v[64] = {};
@@ -50,19 +45,16 @@ void load() {
   g_base[0] = ini_f(path, L"dry", g_base[0]);
   g_base[1] = ini_f(path, L"damp", g_base[1]);
   g_base[2] = ini_f(path, L"wet", g_base[2]);
-  g_rainTarget = ini_f(path, L"rain_target", g_rainTarget);
-  g_rainMin = (std::max)(0.05f, ini_f(path, L"rain_minutes", g_rainMin));
-  g_dryMin = (std::max)(0.05f, ini_f(path, L"dry_minutes", g_dryMin));
-  g_headStart = (std::max)(0.0f, ini_f(path, L"rain_head_start_minutes", g_headStart));
+  g_fog = ini_f(path, L"dry_fog", g_fog);
+  g_rainLight = ini_f(path, L"rain_light", g_rainLight);
+  g_rainHeavy = ini_f(path, L"rain_heavy", g_rainHeavy);
   g_snowTarget = ini_f(path, L"snow_target", g_snowTarget);
   g_option = ini_s(path, L"option", "rtx.wet.globalWetness");
   g_rainOption = ini_s(path, L"rain_option", "rtx.wet.rainIntensity");
   g_dropsOption = ini_s(path, L"raindrops_option", "rtx.wet.raindrops");
-  QueryPerformanceFrequency(&g_qpf);
-  rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness (%s): %s, start dry %.2f damp %.2f wet %.2f, rain -> %.2f (%.1f min), dries in "
-                L"%.1f min, head start %.1f min, -> %S%s%S", path, g_on ? L"on" : L"OFF", g_base[0], g_base[1], g_base[2],
-                g_rainTarget, g_rainMin, g_dryMin, g_headStart, g_option.c_str(), g_rainOption.empty() ? L"" : L", rain -> ",
-                g_rainOption.c_str());
+  rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness (%s): %s, dry %.2f (fog %.2f) damp %.2f wet %.2f, light rain %.2f, heavy rain %.2f, -> %S%s%S",
+                path, g_on ? L"on" : L"OFF", g_base[0], g_fog, g_base[1], g_base[2], g_rainLight, g_rainHeavy, g_option.c_str(),
+                g_rainOption.empty() ? L"" : L", rain -> ", g_rainOption.c_str());
 }
 
 // Rain now, 0..1 (the game's rain as the particles see it; the sky's name if the Remix rain is off).
@@ -75,16 +67,13 @@ float rain_now(const RbrStageInfo& si, bool* snow) {
   return 0.0f;
 }
 
-// One step of dt seconds: towards the rain target (time constant rain_minutes at full rain, longer in light rain) or
-// back towards the track's own condition (dry_minutes).
-float step(float w, float base, float rain, bool snow, double dt) {
-  float target = base, tau = g_dryMin * 60.0f;
-  if (snow && g_snowTarget >= 0.0f) target = g_snowTarget;
-  else if (!snow && rain > 0.01f) {
-    target = (std::max)(base, g_rainTarget);
-    tau = g_rainMin * 60.0f / (std::max)(0.1f, rain);
-  }
-  return target + (w - target) * static_cast<float>(std::exp(-dt / tau));
+// The stage's wetness: the wetter of its track condition and its weather. Fog damps a dry road (skyType 8, 9).
+float stage_wetness(const RbrStageInfo& si, int cond, float rain, bool snow) {
+  float w = g_base[cond];
+  if (cond == 0 && (si.skyType == 8 || si.skyType == 9)) w = (std::max)(w, g_fog);
+  if (snow) return g_snowTarget >= 0.0f ? g_snowTarget : w;
+  if (rain > 0.01f) w = (std::max)(w, rain >= 0.75f ? g_rainHeavy : g_rainLight);
+  return w;
 }
 
 }  // namespace
@@ -96,31 +85,15 @@ void rbrrtx_wetness_frame(bool hold) {
   RbrStageInfo si = {};
   const bool info = rbrrtx_stage_info(&si);
   const bool stage = info && (si.gameMode == 1 || si.gameMode == 2 || si.gameMode == 8 || si.gameMode == 10);
-  LARGE_INTEGER now;
-  QueryPerformanceCounter(&now);
-  const double dt = g_last.QuadPart ? static_cast<double>(now.QuadPart - g_last.QuadPart) / g_qpf.QuadPart : 0.0;
-  g_last = now;
   bool snow = false;
   const float rain = stage ? rain_now(si, &snow) : 0.0f;
-  const int cond = info ? std::clamp(si.wetness, 0, 2) : 0;
-  if (!stage) {
-    g_w = 0.0f;                                         // menu: dry; the next stage starts from its own condition
-    g_track = -1;
-  } else if (si.trackId != g_track || cond != g_cond) {  // a new stage (or restart with other weather)
-    g_track = si.trackId;
-    g_cond = cond;
-    g_w = g_base[cond];
-    if (rain > 0.01f && !snow && g_headStart > 0.0f)     // it has been raining for a while before the start
-      g_w = step(g_w, g_base[cond], rain, snow, g_headStart * 60.0);
-    rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness: stage %d, track %s, %s %.0f %%: start %.2f", si.trackId,
-                  rbrrtx_wetness_name(cond), snow ? L"snow" : L"rain", rain * 100.0f, g_w);
-  } else if (si.gameMode == 1 || si.gameMode == 10) {   // driving or pre-stage: time runs (pause and replay hold)
-    g_w = step(g_w, g_base[cond], rain, snow, (std::min)(dt, 0.25));
-  }
-  g_logT += dt;
-  if (stage && g_logT > 30.0) {
-    g_logT = 0.0;
-    rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness: %.2f (%s %.0f %%)", g_w, snow ? L"snow" : L"rain", rain * 100.0f);
+  g_rainNow = snow ? 0.0f : rain;
+  g_w = stage ? stage_wetness(si, info ? std::clamp(si.wetness, 0, 2) : 0, rain, snow) : 0.0f;
+  if (stage && g_w != g_logged) {
+    g_logged = g_w;
+    rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness: stage %d, track %s, sky %s, %s %.0f %%: %.2f", si.trackId,
+                  rbrrtx_wetness_name(std::clamp(si.wetness, 0, 2)), rbrrtx_sky_name(si.skyType), snow ? L"snow" : L"rain",
+                  rain * 100.0f, g_w);
   }
   if (hold || ++g_frames % 15) return;                  // a few times a second is plenty for a slow value
   float menuValue = 0.0f;                               // an option the user moved in the F3 menu is theirs (the menu sent it)
@@ -129,7 +102,7 @@ void rbrrtx_wetness_frame(bool hold) {
     sprintf_s(v, "%.3f", g_w);
     if (rbrrtx_remix_set(g_option.c_str(), v)) g_sent = g_w;
   }
-  const float drops = snow ? 0.0f : rain;              // raindrop rings on puddles and wet ground while it rains
+  const float drops = g_rainNow;                       // raindrop rings on puddles and wet ground while it rains
   if (!g_rainOption.empty() && std::fabs(drops - g_rainSent) > 0.01f && !rbrrtx_menu_option_locked(g_rainOption.c_str(), &menuValue)) {
     char v[32];
     sprintf_s(v, "%.2f", drops);
@@ -141,3 +114,4 @@ void rbrrtx_wetness_frame(bool hold) {
 }
 
 float rbrrtx_wetness_now() { return g_w; }
+float rbrrtx_wetness_rain_now() { return g_rainNow; }

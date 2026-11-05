@@ -5192,8 +5192,10 @@ void ground_tags_flush(bool force) {
     if (!list.empty()) list += ", ";
     list += b;
   };
-  for (unsigned long long h : g_terrainConf) if (!g_groundReject.count(h)) add(h);   // catalog hashes drawn as walls/roofs/slopes this stage stay out
-  if (g_bakerOn) {                                          // (the run-time ground tags are for the baker)
+  // RBRRTX_NO_TERRAIN=1 (runner -NoTerrain): only hashes tagged by hand; with an empty list the baker does nothing.
+  static const bool noTerrain = _wgetenv(L"RBRRTX_NO_TERRAIN") && _wtoi(_wgetenv(L"RBRRTX_NO_TERRAIN")) != 0;
+  if (!noTerrain) for (unsigned long long h : g_terrainConf) if (!g_groundReject.count(h)) add(h);   // catalog hashes drawn as walls/roofs/slopes this stage stay out
+  if (g_bakerOn && !noTerrain) {                            // (the run-time ground tags are for the baker)
     for (unsigned long long h : g_groundBase) add(h);
     if (g_layerMode == kLayerBake) for (unsigned long long h : g_groundLayer) add(h);
   }

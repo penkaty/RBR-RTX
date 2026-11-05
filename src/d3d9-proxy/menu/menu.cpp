@@ -26,6 +26,9 @@
 // The win32 backend defines this but its header does not declare it (remix-comp-base does the same).
 LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
+float rbrrtx_wetness_now();
+float rbrrtx_wetness_rain_now();
+
 namespace {
 
 // ---- state -------------------------------------------------------------------------------------------------
@@ -115,6 +118,7 @@ const WetOpt kWet[] = {
   { "rtx.wet.rainShadowDither",          "Rain Shadow Dither (quality 1)", 1, 1.00f, 0.0f, 0.0f,  nullptr, 1 },
   { "rtx.wet.mapExtent",                 "Rain Map Extent",                0, 128.0f, 8.0f, 1024.0f, "%.0f", 1 },
   { "rtx.wet.mapResolution",             "Rain Map Resolution",            2, 512.0f, 64.0f, 2048.0f, "%d", 1 },
+  { "rtx.wet.mapUpdateDistance",         "Rain Map Update Distance (0 = every frame)", 0, 8.0f, 0.0f, 32.0f, "%.1f", 1 },
   { "rtx.wet.mapTraceAbove",             "Rain Map Trace Above Camera",    0, 100.0f, 1.0f, 1000.0f, "%.0f", 1 },
   { "rtx.wet.mapTraceBelow",             "Rain Map Trace Below Camera",    0, 60.0f, 1.0f, 1000.0f, "%.0f", 1 },
   { "rtx.wet.occlusionMinHeight",        "Rain Shadow Min Height",         0, 2.5f, 0.0f, 50.0f,  "%.1f", 1 },
@@ -161,6 +165,11 @@ bool send_option(const char* key, int type, float v) {
   else if (type == 2) std::snprintf(buf, sizeof(buf), "%d", static_cast<int>(v + (v < 0 ? -0.5f : 0.5f)));
   else std::snprintf(buf, sizeof(buf), "%.6f", v);
   return g_cb.remix_set(key, buf) != 0;
+}
+
+// The rain driver owns these. A moved slider holds for this session; they are never saved, so a stage's conditions apply.
+bool wet_driver_owned(const char* key) {
+  return !std::strcmp(key, "rtx.wet.globalWetness") || !std::strcmp(key, "rtx.wet.raindrops") || !std::strcmp(key, "rtx.wet.rainIntensity");
 }
 
 const WetOpt* find_wet(const char* key) {
@@ -223,6 +232,7 @@ void load_ini() {
     } else if (section == "textures") {
       if (g_cb.texture_ini) g_cb.texture_ini(key.c_str(), val.c_str());
     } else if (const WetOpt* o = find_wet(key.c_str())) {
+      if (wet_driver_owned(key.c_str())) continue;
       if (o->type == 1) g_touched[key] = (val == "True" || val == "1") ? 1.0f : 0.0f;
       else g_touched[key] = static_cast<float>(std::atof(val.c_str()));
     }
@@ -252,7 +262,7 @@ bool save_ini() {
     return false;
   }
   out << "; RBR-RTX menu settings (written by the F3 menu; the game's user.conf is never touched)\n[wetness]\n";
-  for (const auto& kv : g_saved) out << kv.first << '=' << kv.second << '\n';
+  for (const auto& kv : g_saved) if (!wet_driver_owned(kv.first.c_str())) out << kv.first << '=' << kv.second << '\n';
   out << "\n[remix]\n";
   for (const auto& kv : g_pins) out << kv.first << '=' << kv.second << '\n';
   for (const auto& kv : g_pins_parked) out << kv.first << '=' << kv.second << '\n';
@@ -299,8 +309,7 @@ void apply_pending() {
   // when the user locked them. Not reachable yet: all again on a later tick.
   for (const WetOpt& o : kWet) {
     const auto it = g_touched.find(o.key);
-    const bool driver = !std::strcmp(o.key, "rtx.wet.globalWetness") || !std::strcmp(o.key, "rtx.wet.raindrops") ||
-                        !std::strcmp(o.key, "rtx.wet.rainIntensity");
+    const bool driver = wet_driver_owned(o.key);
     if (it == g_touched.end() && driver) continue;
     if (!send_option(o.key, o.type, it != g_touched.end() ? it->second : o.def)) return;
   }
@@ -332,8 +341,9 @@ void page_info(void*) {
 }
 
 void page_wetness(void*) {
-  ImGui::TextWrapped("Wet roads, puddles and raindrops (Remix Plus rtx.wet.*). Values you move here are kept "
-                     "and win over the automatic rain driver until you restart. Save writes them to menu.ini.");
+  ImGui::TextWrapped("Wet roads, puddles and raindrops (Remix Plus rtx.wet.*). Save writes moved values to menu.ini. "
+                     "Global Wetness, Raindrops and Rain Intensity follow the stage: moving one holds it until you "
+                     "restart or press Release locks, and they are not saved.");
   ImGui::Spacing();
   if (!g_cb.remix_set) ImGui::TextDisabled("No remix_set callback: sliders show, nothing is sent.");
   for (int pass = 0; pass < 2; ++pass) {
@@ -342,6 +352,11 @@ void page_wetness(void*) {
       if (o.adv != pass) continue;
       const auto it = g_touched.find(o.key);
       float v = it != g_touched.end() ? it->second : o.def;
+      if (it == g_touched.end() && wet_driver_owned(o.key)) {
+        if (!std::strcmp(o.key, "rtx.wet.globalWetness")) v = rbrrtx_wetness_now();
+        else if (!std::strcmp(o.key, "rtx.wet.rainIntensity")) v = rbrrtx_wetness_rain_now();
+        else v = rbrrtx_wetness_rain_now() > 0.01f ? 1.0f : 0.0f;
+      }
       bool changed = false;
       if (o.type == 1) {
         bool b = v >= 0.5f;
