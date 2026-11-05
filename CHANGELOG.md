@@ -3,12 +3,44 @@
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
 RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing within 0.1 ms.
 
-## Next
+## 0.4.0 (being prepared, not released)
+
+The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. The reasoning and findings are in the [technical notes](docs/release-0.4.0.md). Items marked *not yet seen* were built but not confirmed in game.
 
 ### Licence
 From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT.
 
-## Unreleased (branch remixplus-2): Remix Plus 2.0.0, not tested in game yet
+### Weather and sky
+- **NUMOS clouds, fog and haze follow the game's weather,** with presets per sky type. A stage can have its own preset; Legazpi-Gabiria does, with more cloud. Hazy skies carry more cloud too.
+- **Main menu weather** changes slowly between random skies, with a 10 % chance of fog or rain. *Not yet seen.*
+- **Heavy rain has lightning, and rain has low cloud banks and thicker fog.** *Not yet seen.*
+
+### Roads
+- **Wet roads and puddles** from the track condition and the rain. Saved F3 wetness values now apply from the start, and holds on the stage-driven values end with the stage. *Not yet seen.*
+- **Raindrops can be dense and small at once.** New Raindrop Density slider, on by default at 16 times the old density. *Not yet seen.*
+- **Automatic Terrain tags are off.** This removes the grey ground and moving textures. Textures you tag by hand keep the flag.
+- **The second ground layer shades as ground:** smooth normals and wetness on every twin.
+
+### Particles
+- **Dust** has larger puffs and is less grey on grey roads, and the emission rate is lower than before. **Snow surfaces** throw their own, smaller snow dust.
+- **Falling snow draws at all now.** The runtime dropped particles under 10 cm. Flakes are larger and packed closer to the camera. *Not yet seen.*
+- **Tyre smoke only on dry tarmac,** while moving and not in rain.
+- **Particles fade before they fill the screen,** the worst case for frame rate.
+- **Sky light reaches particles,** so dust and smoke are no longer dark under an overcast sky.
+
+### Lights
+- **Brights reach further:** 1.5 times the candela, which is about 1.2 times the distance. *Not yet seen.*
+- **Headlights by car year** in candela and kelvin, on the car as drawn. Lit lenses, hot brake discs, street lamps from textures or marked in game.
+- **Brake lens left behind the car:** trial fix, see the technical notes. *Not yet seen.*
+
+### Faster
+- `rtx.conf` is read once, not twice per frame (9 of 10.6 ms in the menu).
+- Car draws skip vertex capture (menu 16.57 to 13.83 ms).
+- Comparison runs against earlier versions are still to come.
+
+### Stability
+- **Alt+K sweep:** the opacity micromap steps, which came right before both sweep crashes, are gone. *Not yet seen.*
+- Saves swap in whole, so a crash cannot empty `menu.ini`.
 
 ### F3 in-game menu
 - **A menu inside the game window** (key `F3`, `menu` in `keys.ini`; Dear ImGui drawn by the add-on, Alt+X Remix is unchanged).

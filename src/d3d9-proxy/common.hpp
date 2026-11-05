@@ -299,6 +299,7 @@ int rbrrtx_key_vk(int action, bool withAlt);
 // that the user moved in the menu (key such as "rtx.wet.globalWetness"; value = the menu's).
 extern "C" int rbrrtx_menu_is_drawing(void);
 extern "C" int rbrrtx_menu_option_locked(const char* key, float* value);
+extern "C" void rbrrtx_menu_release_stage_locks(void);
 // comp.cpp: DLL_PROCESS_DETACH through FreeLibrary: the menu and its window subclass go.
 void rbrrtx_comp_shutdown();
 

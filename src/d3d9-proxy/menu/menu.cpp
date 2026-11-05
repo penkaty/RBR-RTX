@@ -93,6 +93,7 @@ const WetOpt kWet[] = {
   { "rtx.wet.raindrops",                 "Raindrops",                      1, 0.00f, 0.0f, 0.0f,  nullptr },
   { "rtx.wet.rainIntensity",             "Rain Intensity",                 0, 1.00f, 0.0f, 1.0f,  "%.2f" },
   { "rtx.wet.raindropScale",             "Raindrop Scale",                 0, 3.00f, 0.1f, 10.0f, "%.2f" },
+  { "rtx.wet.raindropDensity",           "Raindrop Density",               0, 4.00f, 1.0f, 8.0f,  "%.2f" },
   { "rtx.wet.raindropGroundScale",       "Raindrops on Wet Ground",        0, 1.00f, 0.0f, 1.0f,  "%.2f" },
   { "rtx.wet.minNormal",                 "Min Up Normal",                  0, 0.54f, 0.0f, 1.0f,  "%.2f" },
   { "rtx.wet.blendWidth",                "Blend Width",                    0, 0.33f, 0.0f, 1.0f,  "%.2f" },
@@ -238,6 +239,9 @@ void load_ini() {
     }
   }
   g_saved = g_touched;
+  // rbrrtx_menu_set_callbacks runs before this load, when nothing was loaded yet: without this the saved values waited
+  // for the first slider move, and rtx.conf's ones showed until then (user 2026-11-05, Chirdonhead).
+  g_pending_apply = !g_touched.empty();
   g_pins_pending = !g_pins.empty();
 }
 
@@ -305,13 +309,11 @@ void apply_pins() {
 void apply_pending() {
   apply_pins();
   if (!g_pending_apply || !g_cb.remix_set) return;
-  // Every option goes out, saved value or default, so the page shows what Remix has. The three the rain driver owns go only
-  // when the user locked them. Not reachable yet: all again on a later tick.
+  // Saved values only: a value never saved stays as rtx.conf has it. Not reachable yet: all again on a later tick.
   for (const WetOpt& o : kWet) {
     const auto it = g_touched.find(o.key);
-    const bool driver = wet_driver_owned(o.key);
-    if (it == g_touched.end() && driver) continue;
-    if (!send_option(o.key, o.type, it != g_touched.end() ? it->second : o.def)) return;
+    if (it == g_touched.end()) continue;
+    if (!send_option(o.key, o.type, it->second)) return;
   }
   g_pending_apply = false;
 }
@@ -342,8 +344,8 @@ void page_info(void*) {
 
 void page_wetness(void*) {
   ImGui::TextWrapped("Wet roads, puddles and raindrops (Remix Plus rtx.wet.*). Save writes moved values to menu.ini. "
-                     "Global Wetness, Raindrops and Rain Intensity follow the stage: moving one holds it until you "
-                     "restart or press Release locks, and they are not saved.");
+                     "Global Wetness, Raindrops and Rain Intensity follow the stage: moving one holds it until the "
+                     "stage ends or you press Release locks, and they are not saved.");
   ImGui::Spacing();
   if (!g_cb.remix_set) ImGui::TextDisabled("No remix_set callback: sliders show, nothing is sent.");
   for (int pass = 0; pass < 2; ++pass) {
@@ -887,6 +889,13 @@ int rbrrtx_menu_option_locked(const char* key, float* value) {
   if (it == g_touched.end()) return 0;
   if (value) *value = it->second;
   return 1;
+}
+
+// A new stage has its own conditions: slider holds on the three values the stage drives end with the old one.
+void rbrrtx_menu_release_stage_locks(void) {
+  g_touched.erase("rtx.wet.globalWetness");
+  g_touched.erase("rtx.wet.rainIntensity");
+  g_touched.erase("rtx.wet.raindrops");
 }
 
 int rbrrtx_menu_pinned(const char* key, char* value, size_t value_len) {

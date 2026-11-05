@@ -4,115 +4,75 @@
 
 [![Release](https://img.shields.io/github/v/release/penkaty/RBR-RTX?include_prereleases&label=release&color=76b900)](https://github.com/penkaty/RBR-RTX/releases)
 [![Downloads](https://img.shields.io/github/downloads/penkaty/RBR-RTX/total?label=downloads&color=76b900)](https://github.com/penkaty/RBR-RTX/releases)
-[![NVIDIA driver](https://img.shields.io/badge/NVIDIA%20driver-572.18%2B-76b900?logo=nvidia&logoColor=white)](#requirements)
-[![RTX Remix](https://img.shields.io/badge/RTX%20Remix-1.5.2-76b900)](https://github.com/NVIDIAGameWorks/rtx-remix)
+[![Remix Plus](https://img.shields.io/badge/Remix%20Plus-2.0-76b900)](https://github.com/penkaty/dxvk-remix)
 [![Issues](https://img.shields.io/github/issues/penkaty/RBR-RTX?label=open%20issues)](https://github.com/penkaty/RBR-RTX/issues)
 
-Path tracing for **Richard Burns Rally + RallySimFans (RSF)** through NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
+Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sky, weather and wet roads, through
+[Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 
 <img src=".github/img/aston_030.webp" alt="Aston Martin, path traced, 0.3.0" width="90%">
 
-**This is not a remaster.** The mod only makes RBR readable for RTX Remix. 
+**This is not a remaster.** The stages, cars and physics are the game's own. The mod only adds files, and it uninstalls cleanly.
 
 **Work in progress: expect issues, and please [report them](docs/troubleshooting.md).**
 
 </div>
 
-## Requirements
-
-| | |
-|---|---|
-| **GPU** | NVIDIA RTX card (20-series or newer) |
-| **NVIDIA driver** | **572.18 or newer** (the minimum RTX Remix 1.5.2 checks for). Older drivers are not supported. |
-| **Game** | Richard Burns Rally with the RallySimFans launcher, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
-| **Must NOT be installed** | **ReShade** and the **RBR Lights Plugin**. With either one in the game, Remix will not run properly. Remove them first (for ReShade also its Vulkan layer). RBR-RTX has its own headlights, see below. |
-
-## Installation
-
-1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) (`.7z` opens with [7-Zip](https://www.7-zip.org/)) and unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`.
-2. RSF launcher settings: **Cubic env maps off**, **Render car shadows off**, **Particles off** (Remix uses its own particle renderer). Normal or windowed 'Fullscreen mode' in the launcher is recommended.
-3. Start the game. The first start compiles shaders and takes longer. **Alt+X** opens the Remix menu.
-~~4. Optional: [RBR-RTX-base-mod](https://github.com/penkaty/RBR-RTX-base-mod) adds PBR materials for the original Warthog stages. Install it after RBR-RTX, the same way.~~
-
-**Updating from 0.2 or older:** unpack over the old files, then delete `user.conf` in the RBR folder (and an edited
-`rbr-rtx\config\keys.ini`). Old saved settings override the new defaults.
-**Uninstall:** run `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added; no game file was ever changed.
-
-## Help wanted: sky, sun and weather
-
-So far I have focused on much needed performance fixes and on cutting the unused vertex calls and draws. Still ahead
-is an ungodly amount of work that can only be done in a reasonable time with the help of people willing to test it.
-RBR bakes each stage's light into the scenery, so the path-traced sun has to be made to agree with the bake, stage by
-stage and time of day by time of day. Nothing in the game files tells us when it does not, so **only a player looking
-at the stage can tell**. From easiest to hardest:
-
-**1. Sky textures that block the sun (easiest).** Some stages use a skybox that literally blocks the sun. Pick that
-texture with the Remix dev tools (**Alt+X**) and give it the *sky texture* flag. Mention which stage it happened to me and it will be fixed in the next release.
-
-**2. Sun position.** Stages differ in how they bake their light. RBR-RTX reads the sun direction left in the stage files
-and places the Remix sun to match. Some stages will be perfectly fine. Others lack it entirely or use a straight-up 90 degree sun. For those the sun
-position is automated from the chosen weather, an approximate time of day and the stage's location. This is where manual
-input is needed: **every stage and time of day you set right is fixed for all players in the next release**.
-
-**How, to set the sun position under 20 seconds**:
-
-1. Press **`/`** for the debug sun.
-2. Hold **`[`** / **`]`** to turn it around and **`;`** / **`'`** to lower / raise it until the light matches the baked shadows.
-3. Press **`\`**. A windows beep confirms: that sun is kept for this stage and time of day, now and next time you drive it.
-4. Send me `rbr-rtx\config\sun-saved.ini` ([GitHub issues](https://github.com/penkaty/RBR-RTX/issues)); copy it out before uninstalling.
-
-The suns already fixed are listed in the [changelog](CHANGELOG.md). More detail: [Fixing the sun](docs/fixing-the-sun.md).
-
-**3. Sun intensity and the weather look (hardest).** Even when the sun position fits the bake and the theme of the
-stage, its intensity has to be regulated properly. There are two ways: dim and brighten the sun, which works today with
-**Alt+N** / **Alt+M** (10 % per press), and enlarge it so shadows get softer, which is not in yet. The goal is a full
-volumetric atmospheric weather system that matches the original raster look (heavy fog, distant haze, overcast, clear
-day). In many cases the weather name alone will not give enough information, so manual input will be needed here too.
-
-## Keybinds
-
-Keys work while the game window is active. Every key can be changed in `rbr-rtx\config\keys.ini`; 
-the full list is in [Keybinds](docs/keybinds.md).
-
-| Key | What it does |
-|---|---|
-| **Alt+K** | **Stage sweep for bug reports:** hold still about 25 seconds until the beep |
-| **0** | **Ray tracing on/off**, to compare with the original picture |
-| 7 | Dust and tyre smoke on/off |
-| **9** | **Mark a problem while driving** (beep and screenshot, keeps that stage's report) |
-| **L** | **Headlights:** off, two lamps, brights (four lamps). They also switch on by themselves when the sun is low. |
-| P | Ray bounces 2 (default) / 1: 1 is faster, but some heavily forested stages then show a black background behind the first two rows of trees |
-| U | Distance culling on/off |
-| `/` | Debug sun on/off. Then `[` `]` turn it, `;` `'` lower / raise it |
-| `\` | Keep the sun now shown for this stage and time of day (beep) |
-| Alt+7 | Rain and snow: Remix or the game's own |
-| Alt+Y | Ground second layer (sea, cliffs, road edges): decal layer (default) / terrain bake (experiment) / off, one beep tone each; a change on a stage applies at the next stage load |
-| **F3** | **In-game menu:** wetness sliders, texture tagger (aim the middle of the screen, tag Terrain / Decal / Water / Ignore; saved in `config\menu.ini`), info and key list. Stop the car first: the controls keep working behind it. |
-| Alt+PageUp | Lamp marker: aim the middle of the screen at a street lamp's head and press; every lamp of that type gets a light at night (`config\lights-marked.ini`; a beep: two rising tones = marked, one low = failed) |
-| Alt+M / Alt+N | Sun dimmer / brighter, 10 % per press |
-| Alt+P | Performance test: hold still about a minute, results go to the log |
-| Alt+X | Remix's own menu (graphics settings, debug views) |
-
 ## What it does
 
-- **Remix compatibility.** RBR draws everything with vertex shaders, which Remix cannot place in 3D. The mod rebuilds
-  camera and object positions from the game's shader data and hands them to Remix.
-- **Sun, sky and weather.** The Remix sun follows each stage's sun direction. RBR's sky type, clouds, time of day and
-  the stage's country set Remix haze, sky light and sun strength.
-- **Dynamic lights.** Includes all the vehicle lights, flashes from the exhaust backfiring and more coming soon.
-- **Particles and weather.** Dust, tyre smoke, rain, snow and windscreen drops as real Remix particles; rain, snow
-  and fog as closed in as the original. Tunable while driving: [Particles, rain, snow and weather](docs/particles-and-weather.md).
-- **Reporting tools.** Every stage you drive is logged and zipped locally (frame rate, stutter, car, stage, PC).
-  Nothing is sent anywhere.
-- **A pure add-on.** It does not modify or overwrite any game files, it adds `d3d9.dll` and an `rbr-rtx\` folder and uninstalls cleanly.
+- **Path tracing on the original game.** RBR draws everything with vertex shaders, which Remix cannot place in 3D. The mod rebuilds camera and object positions from the game's shader data and hands them to Remix.
+- **Sun, sky and weather.** The NUMOS sky follows each stage's sun, weather and time of day: real clouds, fog and haze, and a main menu whose weather slowly changes.
+- **Wet roads.** Damp and wet tracks darken the road and fill its hollows with puddles, and rain leaves ripples and raindrop rings.
+- **Particles.** Dust takes the colour of the ground, and tarmac smokes under a slide. Rain, snow and windscreen drops are real particles, lit by the sun and sky.
+- **Dynamic lights.** Headlights by car year in real candela, brake and reversing lights, hot brake discs, backfire flashes and street lamps.
+- **An in-game menu.** **F3** has wetness sliders, a texture tagger, custom lights, car paint and per-stage atmosphere.
+- **Reporting tools.** Every stage you drive is logged and zipped locally. Nothing is sent anywhere.
+- **A pure add-on.** It adds `d3d9.dll` and an `rbr-rtx\` folder. No game file is changed.
 
 <div align="center">
 <img src=".github/img/bmw_030.webp" alt="BMW, path traced, 0.3.0" width="90%">
 <img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
 </div>
 
-Known issues are listed in [docs/known-issues.md](docs/known-issues.md). Unusual weather (snow, fog, rain, night),
-rarely driven stages and Bob's Track Builder stages can look wrong.
+## Requirements
+
+| | |
+|---|---|
+| **GPU** | NVIDIA RTX card (20-series or newer) with a current driver |
+| **Game** | Richard Burns Rally with the RallySimFans launcher, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
+| **Must NOT be installed** | **ReShade** and the **RBR Lights Plugin**. With either one in the game, Remix will not run properly. |
+
+## Installation
+
+1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) (`.7z` opens with [7-Zip](https://www.7-zip.org/)) and unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`.
+2. RSF launcher settings: **Cubic env maps off**, **Render car shadows off**, **Particles off**.
+3. Start the game. The first start compiles shaders and takes longer.
+
+**Updating from 0.3 or older:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
+**Uninstall:** run `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
+
+## The keys worth knowing
+
+You need none of these to drive. [All keys](docs/keybinds.md) can be changed in `rbr-rtx\config\keys.ini`.
+
+| Key | What it does |
+|---|---|
+| **F3** | In-game menu |
+| **Alt+X** | Remix's own menu |
+| **L** | Headlights: off, two lamps, brights |
+| **0** | Ray tracing on/off, to compare with the original picture |
+| **9** | Mark a problem while driving |
+| **Alt+K** | Stage sweep for bug reports: hold still until the beep |
+
+## Help wanted
+
+RBR bakes each stage's light into the scenery, so the path-traced sun and weather have to agree with the bake, stage by stage. **Only a player looking at the stage can tell when they do not.** Every stage you set right is fixed for all players in the next release.
+
+- **A sky that blocks the sun:** flag the texture as a sky texture in **Alt+X** and tell me the stage.
+- **A sun in the wrong place:** it takes under 20 seconds, see [Fixing the sun](docs/fixing-the-sun.md).
+- **A bug:** run **Alt+K** on the spot and send the report, see [Troubleshooting](docs/troubleshooting.md).
+
+**Work in progress:** unusual weather, rare stages and Bob's Track Builder stages can look wrong. See [Known issues](docs/known-issues.md).
 
 ## Documentation
 
@@ -120,26 +80,27 @@ rarely driven stages and Bob's Track Builder stages can look wrong.
 |---|---|
 | [Installation](docs/installation.md) | Step by step, updating, uninstalling, RSF launcher settings |
 | [Keybinds](docs/keybinds.md) | Every key |
-| [Particles, rain, snow and weather](docs/particles-and-weather.md) | Dust, rain, snow, windscreen drops, fog: what the settings do and how to change them |
+| [Particles, rain, snow and weather](docs/particles-and-weather.md) | What the settings do and how to change them |
 | [Fixing the sun](docs/fixing-the-sun.md) | Set a stage's sun and send it in |
 | [Troubleshooting](docs/troubleshooting.md) | Black picture, low FPS, crashes, how to report a problem |
 | [Known issues](docs/known-issues.md) | What is not working yet |
-| [Remix settings for strong PCs](docs/remix-settings.md) | Raise the graphics quality if your GPU has headroom |
-| [Contributing](CONTRIBUTING.md) | Reports, sun fixes, code, building from source |
+| [Remix settings for strong PCs](docs/remix-settings.md) | Raise the quality if your GPU has headroom |
+| [0.4.0 technical notes](docs/release-0.4.0.md) | How it works, what we found, runtime options |
 | [Changelog](CHANGELOG.md) | What changed in each version, and why |
+| [Contributing](CONTRIBUTING.md) | Reports, sun fixes, code, building from source |
 
 <details>
 <summary><b>Credits</b></summary>
 
-- [NVIDIA RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix): [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix)
-  runtime and Remix API header, [bridge-remix](https://github.com/NVIDIAGameWorks/bridge-remix).
 - [Kim2091](https://github.com/Kim2091) (sparkles): **Remix Plus** ([RemixProjGroup/dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix)),
   the [NUMOS](https://github.com/Kim2091/numos-sky) sky, clouds, weather and fog, and the runtime branch this mod's renderer is
   built on ([Kim2091/dxvk-remix](https://github.com/Kim2091/dxvk-remix) `fnv/main`: 32-bit bridge API forwarding, retained
   instances, terrain layers, D3D9 texture import), shown working in [New Vegas RTX](https://github.com/Kim2091/New-Vegas-RTX).
   Much of what this mod does depends on Kim's work. Also [PBRify_Remix](https://github.com/Kim2091/PBRify_Remix) (our PBR maps)
   and [Remix-Wrappers](https://github.com/Kim2091/Remix-Wrappers).
-- [xoxor4d](https://github.com/xoxor4d): their compatibility mods are the blueprint for this one:
+- [NVIDIA RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix): [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix)
+  runtime and Remix API header, [bridge-remix](https://github.com/NVIDIAGameWorks/bridge-remix).
+- [xoxor4d](https://github.com/xoxor4d): the wetness and CardNormals work in our runtime; their compatibility mods are the blueprint for this one:
   [remix-comp-base](https://github.com/xoxor4d/remix-comp-base), [p2-rtx](https://github.com/xoxor4d/p2-rtx),
   [gta4-rtx](https://github.com/xoxor4d/gta4-rtx), [l4d2-rtx](https://github.com/xoxor4d/l4d2-rtx),
   [t4-rtx](https://github.com/xoxor4d/t4-rtx), [nfsc-rtx](https://github.com/xoxor4d/nfsc-rtx) (Remix injection fix),
@@ -169,5 +130,5 @@ no paid downloads, paywalls, paid or early-access tiers, paid installation, or b
 
 **If you paid for this mod, you were scammed: please tell us.**
 
-Third-party parts keep their own licences, see [THIRD-PARTY.md](THIRD-PARTY.md). The NVIDIA RTX Remix runtime in `rbr-rtx\remix` is not
-covered by this licence. Not affiliated with or endorsed by NVIDIA.
+Third-party parts keep their own licences, see [THIRD-PARTY.md](THIRD-PARTY.md). The runtime in `rbr-rtx\remix` is not covered by this licence;
+its source and licences are at [penkaty/dxvk-remix](https://github.com/penkaty/dxvk-remix). Not affiliated with or endorsed by NVIDIA.

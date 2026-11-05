@@ -114,6 +114,7 @@ typedef void (*rbrrtx_menu_page_fn)(void* user);
 int  rbrrtx_menu_init(HWND game_window, IDirect3DDevice9* dev);
 int  rbrrtx_menu_wndproc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp);
 void rbrrtx_menu_tick(void);
+void rbrrtx_menu_release_stage_locks(void);
 void rbrrtx_menu_frame(IDirect3DDevice9* dev);
 void rbrrtx_menu_device_lost(void);
 void rbrrtx_menu_device_reset(IDirect3DDevice9* dev);

@@ -11,6 +11,7 @@ Start with the [main page](../README.md) for requirements and installation. Thes
 | [Troubleshooting](troubleshooting.md) | Black picture, low FPS, a crash, or you want to report something |
 | [Known issues](known-issues.md) | You wonder whether a problem is already known |
 | [Remix settings for strong PCs](remix-settings.md) | Your GPU has headroom and you want a better picture |
+| [0.4.0 technical notes](release-0.4.0.md) | You want to know how it works, what we found and the runtime options |
 | [Contributing](../CONTRIBUTING.md) | You want to help with reports, sun fixes or code |
 
 New pages go in this folder and get a row here.

@@ -1,7 +1,7 @@
 # Installation
 
 ## Before you start
-- NVIDIA RTX GPU and driver **572.18 or newer** (the minimum RTX Remix 1.5.2 itself checks for; older drivers get a Remix error dialog at start).
+- NVIDIA RTX GPU and a current driver (0.4.0 was tested on 617.42).
 - **ReShade and the RBR Lights Plugin must not be installed.** Remix does not run properly with either one. Remove
   them first: for ReShade also delete its Vulkan layer and shader folders, for the plugin remove it from the game's `Plugins\` folder.
 - RSF launcher: **Graphics mode = Normal**. The Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`, which

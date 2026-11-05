@@ -85,6 +85,14 @@ void rbrrtx_wetness_frame(bool hold) {
   RbrStageInfo si = {};
   const bool info = rbrrtx_stage_info(&si);
   const bool stage = info && (si.gameMode == 1 || si.gameMode == 2 || si.gameMode == 8 || si.gameMode == 10);
+  // Stage entered or left: slider holds end, and everything goes out again (the menu sent other values than g_sent knows).
+  static bool wasStage = false;
+  if (stage != wasStage) {
+    wasStage = stage;
+    rbrrtx_menu_release_stage_locks();
+    g_sent = g_rainSent = -1.0f;
+    g_dropsSent = -1;
+  }
   bool snow = false;
   const float rain = stage ? rain_now(si, &snow) : 0.0f;
   g_rainNow = snow ? 0.0f : rain;

@@ -19,7 +19,7 @@ and 3080 are especially welcome, and so are tests on RSF cars and stages we do n
   `build.ps1` assembles `dist/RBR-RTX/` with NVIDIA's Remix runtime.
 - Needs Visual Studio 2022 with the C++ x86 tools:
   ```powershell
-  .\build.ps1 -Remix <extracted RTX Remix 1.5.2 release>     # add -Diagnostics for tester builds
+  .\build.ps1 -Remix <built runtime folder, from penkaty/dxvk-remix rbr-main>     # add -Diagnostics for tester builds
   .\dist\RBR-RTX\rbr-rtx\install.ps1 -Game <RBR folder>
   ```
 - Branches: `main` is tested releases, `dev` is work in progress. Open pull requests against **`dev`**.
