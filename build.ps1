@@ -42,6 +42,7 @@ Copy-Item $proxy $dist
 Get-ChildItem $Remix -Force | Where-Object { $_.Name -notin 'NvRemixLauncher32.exe', 'NvRemixLauncher32.pdb', 'd3d8to9.dll', 'ThirdPartyLicenses-d3d8to9.txt', '.trex_arm64', 'artifacts_readme.txt' } |
   Copy-Item -Destination $remixDst -Recurse -Force
 Get-ChildItem (Join-Path $here 'package') -Force | Copy-Item -Destination $dist -Recurse -Force
+Copy-Item (Join-Path $here 'LICENSE'), (Join-Path $here 'THIRD-PARTY.md') (Join-Path $dist 'rbr-rtx') -Force
 # Dev runs write into the runtime folder (crash dumps, logs, ReShade injected into NvRemixBridge.exe): never ship those.
 $leftovers = '*.pdb', '*.dmp', '*.log', 'ReShade*', 'nrc_session_log.txt', 'user.conf', 'imgui.ini'
 Get-ChildItem $remixDst -Recurse -Force -File | Where-Object { $n = $_.Name; $leftovers | Where-Object { $n -like $_ } } |

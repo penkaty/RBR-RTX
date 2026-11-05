@@ -33,4 +33,8 @@ Be respectful: see the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security p
 see the [Security Policy](SECURITY.md).
 
 ## Licence
-MIT, see [LICENSE](LICENSE). RTX Remix is NVIDIA's and keeps its own licence.
+RBR-RTX is under the [PolyForm Noncommercial License 1.0.0](LICENSE): free to use, change and share, never to be sold. RTX Remix is NVIDIA's and
+keeps its own licence, see [THIRD-PARTY.md](THIRD-PARTY.md).
+
+By sending a contribution you confirm you may do so, and you license it to the project under the project's licence. You also allow the maintainer
+to relicense it, including under MIT or Zlib when a general fix goes to dxvk-remix.
