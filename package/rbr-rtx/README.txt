@@ -146,3 +146,6 @@ Uninstall
   (copy out anything you want to keep). Files that were there before stay.
 
 Requires an RTX GPU. RTX Remix is NVIDIA's (licence in rbr-rtx\remix\LICENSE.txt).
+
+RBR-RTX is free. It may be used, changed and shared, but never sold: PolyForm Noncommercial 1.0.0, see rbr-rtx\LICENSE.
+If you paid for this mod, you were scammed. Third-party parts keep their own licences: rbr-rtx\THIRD-PARTY.md.

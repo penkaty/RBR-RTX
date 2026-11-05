@@ -3,6 +3,11 @@
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
 RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing within 0.1 ms.
 
+## Next
+
+### Licence
+From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT.
+
 ## 0.3.0 (2026-10-25)
 
 ### Particles, rain, snow and weather on the Remix API
