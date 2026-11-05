@@ -155,4 +155,13 @@ rarely driven stages and Bob's Track Builder stages can look wrong.
 
 </details>
 
-MIT licence, see [LICENSE](LICENSE). RTX Remix is NVIDIA's (its licence is in `rbr-rtx\remix\LICENSE.txt`).
+## Licence
+
+RBR-RTX is free and source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE), for everything after version 0.3.0.
+Versions up to 0.3.0 were released under MIT. You may use it, change it and share it for free. You may not sell it or any part of it:
+no paid downloads, paywalls, paid or early-access tiers, paid installation, or bundling with anything paid. No commercial licence is offered.
+
+**If you paid for this mod, you were scammed: please tell us.**
+
+Third-party parts keep their own licences, see [THIRD-PARTY.md](THIRD-PARTY.md). The NVIDIA RTX Remix runtime in `rbr-rtx\remix` is not
+covered by this licence. Not affiliated with or endorsed by NVIDIA.
