@@ -5257,6 +5257,13 @@ void append_removals(std::string& list, const std::set<unsigned long long>& off)
   }
 }
 
+// Automatic Terrain tags (the catalog and the run-time ground tags) are off by default (user 2026-11-05, DECISIONS): only
+// textures tagged by hand get Terrain, so the baker has nothing to do. RBRRTX_NO_TERRAIN=0 (runner -Terrain) brings them back.
+bool ground_auto_terrain() {
+  static const bool on = !rbrrtx_env_flag(L"RBRRTX_NO_TERRAIN", true);
+  return on;
+}
+
 void ground_tags_flush(bool force) {
   if (!g_groundLoaded || !g_groundDirty || (!force && g_frame - g_groundFlushFrame < 90)) return;
   g_groundDirty = false;
@@ -5270,10 +5277,8 @@ void ground_tags_flush(bool force) {
     if (!list.empty()) list += ", ";
     list += b;
   };
-  // RBRRTX_NO_TERRAIN=1 (runner -NoTerrain): only hashes tagged by hand; with an empty list the baker does nothing.
-  static const bool noTerrain = _wgetenv(L"RBRRTX_NO_TERRAIN") && _wtoi(_wgetenv(L"RBRRTX_NO_TERRAIN")) != 0;
-  if (!noTerrain) for (unsigned long long h : g_terrainConf) if (!g_groundReject.count(h)) add(h);   // catalog hashes drawn as walls/roofs/slopes this stage stay out
-  if (g_bakerOn && !noTerrain) {                            // (the run-time ground tags are for the baker)
+  if (ground_auto_terrain()) for (unsigned long long h : g_terrainConf) if (!g_groundReject.count(h)) add(h);   // catalog hashes drawn as walls/roofs/slopes this stage stay out
+  if (g_bakerOn && ground_auto_terrain()) {                            // (the run-time ground tags are for the baker)
     for (unsigned long long h : g_groundBase) add(h);
     if (g_layerMode == kLayerBake) for (unsigned long long h : g_groundLayer) add(h);
   }
@@ -5593,7 +5598,7 @@ void f3_conf_load() {
 // In rtx.conf or in this session's run-time tags (not the menu's own set).
 bool f3_base_has(unsigned long long h, int c) {
   if (g_f3Conf[c].count(h)) return true;
-  if (c == 0) return g_groundBase.count(h) || (g_layerMode == kLayerBake && g_groundLayer.count(h));
+  if (c == 0) return ground_auto_terrain() && (g_groundBase.count(h) || (g_layerMode == kLayerBake && g_groundLayer.count(h)));
   if (c == 1) return g_dirtHashes.count(h) != 0;
   return false;
 }
@@ -5601,7 +5606,7 @@ bool f3_base_has(unsigned long long h, int c) {
 // Tagged by the proxy itself at run time: ground base/layer textures (terrain), car dirt maps (decal). Untagging one in
 // the menu must take it out for good, or the next ground flush puts it back ("flags stuck", user 2026-11-03, Zlin).
 bool f3_auto_has(unsigned long long h, int c) {
-  if (c == 0) return g_bakerOn && (g_groundBase.count(h) || (g_layerMode == kLayerBake && g_groundLayer.count(h)));
+  if (c == 0) return ground_auto_terrain() && g_bakerOn && (g_groundBase.count(h) || (g_layerMode == kLayerBake && g_groundLayer.count(h)));
   if (c == 1) return g_dirtHashes.count(h) != 0;
   return false;
 }
