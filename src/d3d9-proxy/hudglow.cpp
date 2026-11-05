@@ -31,7 +31,7 @@ IDirect3DBaseTexture9* g_s15 = nullptr;               // not owned; compared onl
 BOOL g_b1 = FALSE;
 bool g_applied = false;
 IDirect3DBaseTexture9* g_prevSlot = nullptr;          // owned while applied
-unsigned g_draws = 0, g_nightDraws = 0;
+unsigned g_draws = 0, g_nightDraws = 0, g_layerSkips = 0;
 
 std::unordered_map<const void*, bool> g_isRt;         // s0 texture -> is a render target (RBRHUD's display copy)
 decltype(IDirect3DDevice9Vtbl::SetTexture) g_setTexture = nullptr;
@@ -97,6 +97,13 @@ void rbrrtx_hudglow_before(void* device) {
   if (!g_on || !g_s15 || !g_setTexture) return;
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   if (!s0_is_display(dev)) return;
+  // Layers drawn over the gauge face (the E30's 2048x512 needle layer: transparent but for the needles) are blended or
+  // alpha-tested. Run 20261101-130413 showed the E30 gauges black with the glow on: the protocol material made the layer
+  // solid. Only the opaque display copy glows.
+  DWORD blend = FALSE, test = FALSE;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &test);
+  if (blend || test) { ++g_layerSkips; return; }
   dev->lpVtbl->GetTexture(dev, g_slot, &g_prevSlot);
   g_setTexture(dev, g_slot, g_s15);
   const DWORD mod = 0u | (0xFu << 4) | (g_slot << 8) | (0xFu << 12) | kGlowTimesAlbedo |
@@ -123,6 +130,7 @@ void rbrrtx_hudglow_forget() { g_isRt.clear(); }    // textures created/released
 
 void rbrrtx_hudglow_log() {
   if (!g_on) return;
-  wlog(L"hud glow: %u RBRHUD gauge draws marked since last line (%u with b1 = night glow)", g_draws, g_nightDraws);
-  g_draws = g_nightDraws = 0;
+  wlog(L"hud glow: %u RBRHUD gauge draws marked since last line (%u with b1 = night glow), %u blended / alpha-tested layers left unlit",
+       g_draws, g_nightDraws, g_layerSkips);
+  g_draws = g_nightDraws = g_layerSkips = 0;
 }

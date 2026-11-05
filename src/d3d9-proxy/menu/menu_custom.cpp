@@ -159,6 +159,14 @@ RbrEmit* find_emit(unsigned long long tex, RbrEmit* store) {
   return nullptr;
 }
 
+// Pitch (degrees below horizontal, 90 = straight down) and yaw (degrees around y, 0 = +z) to a world direction (y up).
+void pitch_yaw_dir(float pitch, float yaw, float out[3]) {
+  const float p = pitch * 3.14159265f / 180.0f, y = yaw * 3.14159265f / 180.0f;
+  out[0] = std::cos(p) * std::sin(y);
+  out[1] = -std::sin(p);
+  out[2] = std::cos(p) * std::cos(y);
+}
+
 // ---- Emissive (props) ------------------------------------------------------------------------------------------------
 void page_emissive(void*) {
   ImGui::TextWrapped("Make the texture of a prop glow. Aim the middle of the screen at it; the yellow box is the part of the texture "
@@ -167,6 +175,9 @@ void page_emissive(void*) {
   static bool freeze = false, island_only = true;
   static float rgb[3] = { 1.0f, 0.75f, 0.45f }, intensity = 6.0f, kelvin = 3000.0f;
   static int mode = 0;
+  // Light the prop casts (user 2026-11-05: stadium floodlights); every mesh with the texture gets one at its centre.
+  static bool cast = false;
+  static float lumens = 40000.0f, cone = 30.0f, softness = 0.2f, pitch = 90.0f, yaw = 0.0f;
   ImGui::Checkbox("Freeze (keep the last hit)", &freeze);
   rbrrtx_menu_pick pick = {};
   rbrrtx_menu_probe(&pick, freeze ? 0 : 1);
@@ -182,6 +193,15 @@ void page_emissive(void*) {
     ImGui::RadioButton("at night", &mode, 0);
     ImGui::SameLine();
     ImGui::RadioButton("always", &mode, 1);
+    ImGui::Checkbox("also cast light (a lamp at every mesh with this texture)", &cast);
+    if (cast) {
+      ImGui::SliderFloat("lumens", &lumens, 1000.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+      ImGui::SliderFloat("cone half angle (0 = every way)", &cone, 0.0f, 90.0f, "%.0f deg");
+      ImGui::SliderFloat("cone softness", &softness, 0.0f, 1.0f, "%.2f");
+      ImGui::SliderFloat("pitch below horizontal", &pitch, -90.0f, 90.0f, "%.0f deg");
+      ImGui::SliderFloat("yaw", &yaw, 0.0f, 360.0f, "%.0f deg");
+      ImGui::TextDisabled("Or aim every lamp of it at a point: make it emissive, look at the point, press Aim here in the list.");
+    }
     ImGui::BeginDisabled(!pick.hash[0]);
     if (ImGui::Button("Make emissive")) {
       RbrEmit store = {};
@@ -197,6 +217,10 @@ void page_emissive(void*) {
       } else {
         e.nrects = 0;                                    // the whole texture
       }
+      e.lumens = cast ? lumens : 0.0f;
+      e.cone = cone;
+      e.softness = softness;
+      pitch_yaw_dir(pitch, yaw, e.dir);
       rbrrtx_emit_set(e);
       status("emissive set (Save keeps it); it glows once the generated mod has reloaded, about 10 s");
     }
@@ -211,6 +235,40 @@ void page_emissive(void*) {
     ImGui::Text("0x%016llX  %s  intensity %.1f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
     ImGui::SameLine();
     if (ImGui::SmallButton("Remove")) remove = static_cast<int>(i);
+    if (e.lumens > 0.0f) {
+      // Edits apply on release: each one reloads the lamps (and the drag would otherwise do it every frame).
+      bool edit = false;
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.0f);
+      ImGui::SliderFloat("lm", &e.lumens, 1000.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+      edit |= ImGui::IsItemDeactivatedAfterEdit();
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
+      ImGui::SliderFloat("cone", &e.cone, 0.0f, 90.0f, "%.0f deg");
+      edit |= ImGui::IsItemDeactivatedAfterEdit();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!pick.found);
+      if (ImGui::SmallButton("Aim here")) {             // every lamp of it points at what the crosshair hits now
+        e.aim = 1;
+        std::memcpy(e.aimAt, pick.point, sizeof(e.aimAt));
+        edit = true;
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Down")) { e.aim = 0; e.dir[0] = 0.0f; e.dir[1] = -1.0f; e.dir[2] = 0.0f; edit = true; }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("No light")) { e.lumens = 0.0f; edit = true; }
+      if (e.aim) ImGui::TextDisabled("  aimed at (%.1f %.1f %.1f)", e.aimAt[0], e.aimAt[1], e.aimAt[2]);
+      if (edit) {
+        rbrrtx_emit_set_light(e);
+        status("light changed (Save keeps it)");
+      }
+    } else if (ImGui::SmallButton("Cast light")) {
+      e.lumens = lumens;
+      e.cone = cone;
+      e.softness = softness;
+      pitch_yaw_dir(pitch, yaw, e.dir);
+      rbrrtx_emit_set_light(e);
+    }
     ImGui::PopID();
     if (remove == i) { rbrrtx_emit_remove(e.tex); break; }
   }

@@ -26,6 +26,7 @@ This page is for people who want the detail. For an introduction, see the [main 
 - **Sky-lit particles were compiled out.** `RESOLVE_SKY_LIT_PARTICLES` is defined nowhere upstream, so particles only got the froxel radiance cache, which holds analytic lights. Under NUMOS that left dust dark. Reported as [RemixProjGroup/dxvk-remix#48](https://github.com/RemixProjGroup/dxvk-remix/issues/48).
 - **A size guard removed falling snow.** `kMinimumAuthoredSize = 0.1` assumes centimetres. At `sceneScale` 1 with a game unit of one metre, that is 10 cm, and our flakes are 2 to 5 cm. The guard now only drops degenerate particles (0.001).
 - **The screen-size cull counts render pixels.** `minParticleSize` is compared against the render resolution, which DLSS Performance halves. At 1080p that removes a 2.25 cm flake at about 16 m, so a large spawner mostly feeds particles that never draw. It is now the option `rtx.particles.minScreenSize`, set to 1 here, and the snow spawner shrank from 36 m to 26 m with larger flakes. *Not yet seen.*
+- **Particles never saw a headlight beam.** Their only local light is the froxel cache times `rtx.volumetrics.volumetricConsumerGain` (0.008 under NUMOS), which is coarse with volumetrics off; a narrow beam in rain did not register. New `rtx.particles.localLightGain` adds the unshadowed light of sphere lights near each particle hit (range and count capped), cone shaping included. The cache also averaged 128 frames (`rtx.volumetrics.maxAccumulationFrames`), so particle light lagged seconds behind; the package sets 16. *Not yet seen.*
 - **Overdraw is the main cost of a camera inside dust.** The proxy's particle zone stays under 0.005 ms. New `rtx.particles.maxScreenCoverage` fades a billboard between 1 and 2 screen heights, then drops it.
 
 ### Wetness
@@ -46,6 +47,15 @@ RBR's ground shader computes `mix(t0, t1, t1.a * v.a)` per pixel. Stages disagre
 - Rain presets use `cloudLayer2` as a low bank instead of a high deck. It is lit and cut by the scene, unlike height fog. *Not yet seen.*
 - The main menu drifts between random presets over 120 s through `gameWeatherOutgoing` and `gameWeatherBlend`, with a 10 % chance of bad weather. *Not yet seen.*
 
+### RBRHUD
+- **Its windscreen settings are pixel shader work.** `CarGlassInternal.pso` (constant table: `b0` regions only, `c0`): alpha = `a >= threshold ? a : a * opacity`, or `a * opacity` everywhere. Remix never runs it, so F4 did nothing. The proxy reads `rbrhud.ini [windscreen]` whenever it changes, writes the windscreen sheet with its alpha remapped the same way, and draws a twin texture whose generated-mod material holds it with the glass roughness. *Not yet seen.*
+- **Gauge glow through the material protocol is back on,** at `rtx.fnvProtocol.glowEmissiveIntensity` 0.25 (1.0 washed the display out) and only on opaque display draws (blended needle layers turned black). *Not yet seen.*
+- **Display render-target hashes depend on start order.** Many render targets are made before the car loads; the hash is a creation counter. Live tagging waits for one more probe run that shows whether the counter offset is constant.
+
+### Indirect light response
+- **The SHaRC Medium preset refreshes the cache sparsely:** one update path per 12x12 pixels and no primary vertex, set on the Derived layer above `rtx.conf`. The user layer overrides it with 8x8 and the primary vertex. `rtx.di.confidenceHistoryLength` 4 (8) lets the denoiser confidence follow light changes sooner. *Not yet seen.*
+- **The NUMOS cloud screen pass is the biggest cost after ray reconstruction:** 4.2 ms at Cloud Resolution Auto, which picks Full at DLSS Performance. Quarter is the setting to try when frame time matters.
+
 ### Stability
 - **Sweep crash (device lost, `nvlddmkm` event 153).** Two Alt+K sweeps died in the same place: 10 to 12 s after the "opacity micromaps off" step, right as its second `Integrate Indirect` pipeline finished compiling. The stalled frame held an OMM bake of about 507,000 micro-triangles. The cause is not proven, and no Aftermath dump exists yet. The OMM steps are out of the sweep. *Not yet seen.*
 - **Key 0 can still lose the device.** It rebuilds every BLAS at once.
@@ -58,8 +68,11 @@ RBR's ground shader computes `mix(t0, t1, t1.a * v.a)` per pixel. Stages disagre
 | `rtx.wet.mapUpdateDistance` | 0 | set in F3 | Rain map trace distance |
 | `rtx.wet.raindropDensity` | 4 | 4 | Raindrops per grid axis |
 | `rtx.particleSkyAmbientScale` | 1 | 1 | Scale of the restored sky term |
+| `rtx.particles.localLightGain` | 0 (off) | 1 | Sphere lights (headlights, lamps) on API particles |
+| `rtx.particles.localLightRangeMeters` | 40 | 40 | Lights farther from a particle are skipped |
+| `rtx.particles.localLightMaxCount` | 64 | 64 | Most sphere lights looked at per particle hit |
 
-`rtx.numFramesToKeepInstances = 0` ships as a **trial**, against brake lenses lingering behind the car after the pedal is released. A lens that stops being drawn was kept for a frame at its old position. If car parts flicker, this setting is the first suspect.
+`rtx.numFramesToKeepInstances = 0` was tried against brake lenses lingering behind the car and undone: it did not help, and it stopped rain and snow from showing.
 
 ## Performance
 Comparison runs against earlier versions are still to come, and this section will carry their numbers. Measured so far, on an RTX 2080 Ti at 1080p: the menu and car figures above, and about 2.8 ms saved by the car path on Gabiria.

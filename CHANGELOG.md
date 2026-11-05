@@ -27,15 +27,26 @@ From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to 
 - **Tyre smoke only on dry tarmac,** while moving and not in rain.
 - **Particles fade before they fill the screen,** the worst case for frame rate.
 - **Sky light reaches particles,** so dust and smoke are no longer dark under an overcast sky.
+- **Headlights and lamps light the rain.** Particles used to take light only from a coarse cache, so a beam never showed in the drops at night. *Not yet seen.*
+- **Particle light follows changes faster:** that cache now averages 16 frames instead of 128.
 
 ### Lights
 - **Brights reach further:** 1.5 times the candela, which is about 1.2 times the distance. *Not yet seen.*
 - **Headlights by car year** in candela and kelvin, on the car as drawn. Lit lenses, hot brake discs, street lamps from textures or marked in game.
-- **Brake lens left behind the car:** trial fix, see the technical notes. *Not yet seen.*
+- **Brake lens left behind the car:** still open. The trial fix was undone; it hid rain and snow.
+- **Emissive props can cast light.** In the F3 Emissive page, "also cast light" puts a lamp on every mesh with that texture: a cone in a direction you choose, or aimed at a point (stadium floodlights, street lamps). lights.ini kinds take the same cone keys. *Not yet seen.*
+
+### RBRHUD
+- **F4 windscreen opacity and banner threshold work under Remix.** RBRHUD's shader does this in the game, and Remix never runs it; RBR-RTX now applies the same rule to the windscreen texture. *Not yet seen.*
+- **Gauge displays glow again,** dimmer than the first try, and the needle layers of analogue gauges are left out (they turned black). *Not yet seen.*
+
+### Lighting response
+- **The indirect light cache reacts faster** to a light switching or moving: with the Medium SHaRC preset it refreshed one path per 12x12 pixels; now 8x8, with the visible surface added. *Not yet seen.*
 
 ### Faster
 - `rtx.conf` is read once, not twice per frame (9 of 10.6 ms in the menu).
 - Car draws skip vertex capture (menu 16.57 to 13.83 ms).
+- A state block created every frame (by a plugin) is reused instead of re-created through the bridge: 1.3 to 12 ms a frame down to 0.06 ms.
 - Comparison runs against earlier versions are still to come.
 
 ### Stability

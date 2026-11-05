@@ -57,6 +57,15 @@ struct Kind {
   bool pole = false;                                   // auto = 1: keep a vertex group only on a pole (comp.cpp)
   float minHeight = 3.0f;                              // pole test: group at least this far above the draw beneath
   float glow = 0.0f;                                   // emissive intensity of the marked glass while lit (0 = none)
+  // Spot kind (user 2026-11-05: stadium floodlights made emissive; every mesh with the texture also casts a cone).
+  float cone = 0.0f;                                   // half angle in degrees, 0 = a plain omni lamp
+  float softness = 0.2f, focus = 0.0f;
+  float dir[3] = { 0.0f, -1.0f, 0.0f };                // world direction (normalised), used when there is no aim point
+  bool aim = false;
+  float aimAt[3] = {};                                 // aim = x, y, z: every lamp of the kind points at this world point
+  bool alwaysOn = false;                               // always_on = 1: lit whatever the sun (stadium lights in a night race)
+  bool hasRgb = false;                                 // colour given directly (F3 emissive props) instead of a temperature
+  float rgb[3] = { 1.0f, 1.0f, 1.0f };
 };
 struct Lamp {
   uint64_t hash = 0;
@@ -70,6 +79,7 @@ struct Lamp {
 
 const remixapi_Interface* g_api = nullptr;
 std::unordered_map<uint64_t, Kind> g_kinds;            // texture hash -> lamp kind
+std::unordered_map<uint64_t, Kind> g_custom;           // F3 emissive props that cast light (custom.cpp); merged last, they win
 std::vector<Lamp> g_lamps;
 bool g_on = true;
 float g_onBelow = 6.0f, g_fade = 4.0f;
@@ -148,6 +158,20 @@ size_t load_kinds(const wchar_t* path, const wchar_t* dfltPath, bool marked = fa
     k.minHeight = num(L"min_height", k.minHeight);
     k.glow = (std::max)(0.0f, num(L"glow", 0.0f));
     k.pole = !marked && ini_f(path, s, L"auto", 0.0f) != 0.0f;
+    k.cone = std::clamp(num(L"cone", 0.0f), 0.0f, 179.0f);
+    k.softness = std::clamp(num(L"cone_softness", k.softness), 0.0f, 1.0f);
+    k.focus = (std::max)(0.0f, num(L"focus", k.focus));
+    k.alwaysOn = num(L"always_on", 0.0f) != 0.0f;
+    wchar_t vec[96] = {};
+    GetPrivateProfileStringW(s, L"direction", L"", vec, 96, path);
+    float dv[3] = {};
+    if (vec[0] && swscanf_s(vec, L"%f , %f , %f", &dv[0], &dv[1], &dv[2]) == 3) {
+      const float len = std::sqrt(dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]);
+      if (len > 1e-4f) for (int i = 0; i < 3; ++i) k.dir[i] = dv[i] / len;
+    }
+    vec[0] = 0;
+    GetPrivateProfileStringW(s, L"aim", L"", vec, 96, path);
+    k.aim = vec[0] && swscanf_s(vec, L"%f , %f , %f", &k.aimAt[0], &k.aimAt[1], &k.aimAt[2]) == 3;
     GetPrivateProfileStringW(s, L"where", L"any", a, 32, path);
     k.where = !_wcsicmp(a, L"menu") ? 1 : !_wcsicmp(a, L"stage") ? 2 : 0;
     // texture = one hash or several, comma separated
@@ -312,6 +336,7 @@ void load() {
   size_t markedKinds = 0;
   if (GetFileAttributesW(markedPath) != INVALID_FILE_ATTRIBUTES) markedKinds = load_kinds(markedPath, path, true);
   const size_t own = load_kinds(path, nullptr);
+  for (const auto& kv : g_custom) g_kinds[kv.first] = kv.second;
   glow_refresh();
   rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights (%s): %s, %zu lamp texture(s) (%zu own, %zu found in textures, %zu marked in game), "
                 L"on below sun %.1f deg (fade %.1f), at most %u", path, g_on ? L"on" : L"OFF", g_kinds.size(), own, autoKinds,
@@ -441,7 +466,7 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
   g_litFraction = layerOn && g_on ? k : 0.0f;
   std::vector<Lamp*> lit;
   for (Lamp& l : g_lamps)
-    if (l.seen == g_frame && k > 0.0f && layerOn && g_on) lit.push_back(&l);
+    if (l.seen == g_frame && (k > 0.0f || l.kind->alwaysOn) && layerOn && g_on) lit.push_back(&l);
     else if (l.h) { destroy(l); ++g_destroyedUnseen; }
   auto d2 = [&](const Lamp* l) {
     const float dx = l->pos[0] - cam[0], dy = l->pos[1] - cam[1], dz = l->pos[2] - cam[2];
@@ -460,21 +485,42 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
   if (unitLux <= 0.0f) unitLux = 6400.0f;
   for (Lamp* l : lit) {
     const Kind& kd = *l->kind;
+    const float lv = kd.alwaysOn ? 1.0f : k;
     const bool isNew = !l->h;
     const bool posMoved = l->sent[0] != l->pos[0] || l->sent[1] != l->pos[1] || l->sent[2] != l->pos[2];
-    const bool levelMoved = std::fabs(k - l->sentK) > 0.05f;   // 5 % steps: a sweeping sun is not a re-create per frame
+    const bool levelMoved = std::fabs(lv - l->sentK) > 0.05f;   // 5 % steps: a sweeping sun is not a re-create per frame
     const bool moved = isNew || posMoved || levelMoved;
     if (moved) {
       if (isNew) ++g_createNew; else if (posMoved) ++g_createMoved; else ++g_createLevel;
       if (!rbrrtx_remix_plus()) destroy(*l);           // 1.5.2: a re-create needs the old handle gone (headlights.cpp)
       float rgb[3];
       kelvin_rgb(kd.kelvin, rgb);
-      const float rad = k * kd.lumens / (4.0f * 3.14159265f) / (unitLux * 3.14159265f * kd.radius * kd.radius);
+      if (kd.hasRgb) {
+        const float m = (std::max)(kd.rgb[0], (std::max)(kd.rgb[1], kd.rgb[2]));
+        for (int i = 0; i < 3; ++i) rgb[i] = m > 0.0f ? kd.rgb[i] / m : 1.0f;
+      }
+      // A spot kind's lumens leave through its cone (solid angle 2 pi (1 - cos half angle)), not the whole sphere:
+      // Remix's shaping only masks a light (headlights.cpp), so the intensity is raised here.
+      const float coneRad = kd.cone * 3.14159265f / 180.0f;
+      const float solid = kd.cone > 0.0f ? 2.0f * 3.14159265f * (1.0f - std::cos(coneRad)) : 4.0f * 3.14159265f;
+      const float rad = lv * kd.lumens / solid / (unitLux * 3.14159265f * kd.radius * kd.radius);
       remixapi_LightInfoSphereEXT sphere = {};
       sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
       sphere.position = { l->pos[0], l->pos[1], l->pos[2] };
       sphere.radius = kd.radius;
-      sphere.shaping_hasvalue = false;
+      sphere.shaping_hasvalue = kd.cone > 0.0f;
+      if (kd.cone > 0.0f) {
+        float d[3] = { kd.dir[0], kd.dir[1], kd.dir[2] };
+        if (kd.aim) {
+          const float v[3] = { kd.aimAt[0] - l->pos[0], kd.aimAt[1] - l->pos[1], kd.aimAt[2] - l->pos[2] };
+          const float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+          if (len > 1e-3f) for (int i = 0; i < 3; ++i) d[i] = v[i] / len;
+        }
+        sphere.shaping_value.direction = { d[0], d[1], d[2] };
+        sphere.shaping_value.coneAngleDegrees = kd.cone;
+        sphere.shaping_value.coneSoftness = kd.softness;
+        sphere.shaping_value.focusExponent = kd.focus;
+      }
       sphere.volumetricRadianceScale = kd.volumetric;
       remixapi_LightInfo info = {};
       info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
@@ -490,9 +536,9 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
       }
       if (++g_created <= 8)
         rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights: %s lit at (%.2f %.2f %.2f), %.0f lm x %.2f, radiance %.0f",
-                      kd.name.c_str(), l->pos[0], l->pos[1], l->pos[2], kd.lumens, k, rad);
+                      kd.name.c_str(), l->pos[0], l->pos[1], l->pos[2], kd.lumens, lv, rad);
       std::copy(l->pos, l->pos + 3, l->sent);
-      l->sentK = k;
+      l->sentK = lv;
     }
     g_api->DrawLightInstance(l->h);
   }
@@ -519,6 +565,32 @@ void rbrrtx_world_lights_reset() {
 
 // The lamp kinds read again (after the lamp_mark key wrote lights-marked.ini): the lamps go (they point at their kind) and
 // are found again from the next draws.
+void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
+                                  const float dir[3], int aim, const float aimAt[3], int always) {
+  if (lumens <= 0.0f) {
+    if (!g_custom.erase(tex)) return;
+  } else {
+    Kind k;
+    wchar_t n[40];
+    swprintf_s(n, L"emissive_%016llX", tex);
+    k.name = n;
+    k.anchor = 1;
+    k.lumens = lumens;
+    k.radius = 0.25f;
+    k.hasRgb = true;
+    std::copy(rgb, rgb + 3, k.rgb);
+    k.cone = std::clamp(cone, 0.0f, 179.0f);
+    k.softness = std::clamp(softness, 0.0f, 1.0f);
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (len > 1e-4f) for (int i = 0; i < 3; ++i) k.dir[i] = dir[i] / len;
+    k.aim = aim != 0;
+    std::copy(aimAt, aimAt + 3, k.aimAt);
+    k.alwaysOn = always != 0;
+    g_custom[tex] = k;
+  }
+  rbrrtx_world_lights_reload();
+}
+
 void rbrrtx_world_lights_reload() {
   rbrrtx_world_lights_reset();
   g_kinds.clear();

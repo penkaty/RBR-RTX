@@ -311,6 +311,11 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on) {
 }
 
 // ---- emissives
+// The emissive's light (worldlights.cpp lamp kind keyed by its texture), or none.
+void push_light(const RbrEmit& e, bool remove = false) {
+  rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1);
+}
+
 int rbrrtx_emit_count() { return static_cast<int>(g_emit.size()); }
 
 bool rbrrtx_emit_get(int i, RbrEmit* out) {
@@ -330,11 +335,31 @@ void rbrrtx_emit_set(const RbrEmit& e) {
     if (!m.empty()) { st.mask = m; st.readyAt = GetTickCount64() + kSettle; }
   }
   publish();
+  push_light(e);
   clog2(L"emissive %016llX set: %s, %s, intensity %.2f, colour %.2f %.2f %.2f, %d rectangle(s)%s", e.tex, e.windows ? L"windows" : L"prop",
         e.mode ? L"always" : L"at night", e.intensity, e.rgb[0], e.rgb[1], e.rgb[2], e.nrects, e.windows ? L" (lit fraction baked into the mask)" : L"");
+  if (e.lumens > 0.0f)
+    clog2(L"emissive %016llX casts light: %.0f lm, %s %.0f deg, %s (%.2f %.2f %.2f)", e.tex, e.lumens, e.cone > 0.0f ? L"cone" : L"omni", e.cone,
+          e.aim ? L"aimed at" : L"direction", e.aim ? e.aimAt[0] : e.dir[0], e.aim ? e.aimAt[1] : e.dir[1], e.aim ? e.aimAt[2] : e.dir[2]);
+}
+
+void rbrrtx_emit_set_light(const RbrEmit& e) {
+  const auto it = g_emit.find(e.tex);
+  if (it == g_emit.end()) return;
+  RbrEmit& d = it->second;
+  d.lumens = e.lumens;
+  d.cone = e.cone;
+  d.softness = e.softness;
+  std::memcpy(d.dir, e.dir, sizeof(d.dir));
+  d.aim = e.aim;
+  std::memcpy(d.aimAt, e.aimAt, sizeof(d.aimAt));
+  push_light(d, d.lumens <= 0.0f);
+  clog2(L"emissive %016llX light: %.0f lm, cone %.0f deg, %s", e.tex, d.lumens, d.cone, d.aim ? L"aimed at a point" : L"along a direction");
 }
 
 void rbrrtx_emit_remove(unsigned long long tex) {
+  const auto it = g_emit.find(tex);
+  if (it != g_emit.end() && it->second.lumens > 0.0f) push_light(it->second, true);
   g_emit.erase(tex);
   publish();
   clog2(L"emissive %016llX removed", tex);
@@ -458,6 +483,7 @@ int rbrrtx_emit_auto_windows(unsigned long long tex, void* texture, const float 
 // ---- menu.ini sections
 // [lights.<stage>] l<id> = x, y, z, r, g, b, lumens, radius, flicker, mode
 // [emissive] / [windows] <hex16> = mode, intensity, r, g, b, litPercent, seed, u0 v0 u1 v1; u0 v0 u1 v1; ...
+//   [| light=lumens, cone, softness, dx, dy, dz, aim, ax, ay, az]   (an emissive prop that casts light)
 void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value) {
   if (!section || !key || !value) return;
   if (!std::strncmp(section, "lights.", 7)) {
@@ -484,8 +510,15 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
       ++e.nrects;
       p += used;
     }
+    e.softness = 0.2f;
+    e.dir[1] = -1.0f;
+    if (const char* lp = std::strstr(value, "| light=")) {
+      sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
+               &e.aimAt[0], &e.aimAt[1], &e.aimAt[2]);
+    }
     g_emit[e.tex] = e;
     g_state[e.tex];
+    if (e.lumens > 0.0f) push_light(e);
   }
 }
 
@@ -518,6 +551,9 @@ int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* use
                          e.rgb[2], e.litPercent, e.seed);
       for (int i = 0; i < e.nrects && len < static_cast<int>(sizeof(b)) - 80; ++i)
         len += snprintf(b + len, sizeof(b) - len, "%.5f %.5f %.5f %.5f; ", e.rects[i][0], e.rects[i][1], e.rects[i][2], e.rects[i][3]);
+      if (e.lumens > 0.0f && len < static_cast<int>(sizeof(b)) - 160)
+        snprintf(b + len, sizeof(b) - len, "| light=%.0f, %.1f, %.2f, %.4f, %.4f, %.4f, %d, %.2f, %.2f, %.2f", e.lumens, e.cone, e.softness, e.dir[0], e.dir[1],
+                 e.dir[2], e.aim, e.aimAt[0], e.aimAt[1], e.aimAt[2]);
       emit(b, user);
       ++items;
     }

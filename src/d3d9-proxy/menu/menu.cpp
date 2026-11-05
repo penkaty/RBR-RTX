@@ -866,7 +866,10 @@ void rbrrtx_menu_shutdown(void) {
   cursor_for_menu(false);
   if (g_dx9_ready) { g_dx9_ready = false; ImGui_ImplDX9_Shutdown(); }
   ImGui_ImplWin32_Shutdown();
-  ImGui::DestroyContext();
+  // No DestroyContext: on the game's own FreeLibrary at quit (run 20261105-211941) ImGui::Shutdown read freed window
+  // memory (access violation in SetWindowActiveForSkipRefresh, swallowed by the loader). The context is left to the
+  // unload; nothing else holds it.
+  ImGui::SetCurrentContext(nullptr);
   g_imgui_ready = false;
   g_open = false;
   g_dev = nullptr;

@@ -28,6 +28,14 @@ struct RbrEmit {
   unsigned seed;
   int nrects;
   float rects[kEmitMaxRects][4];
+  // Cast light (user 2026-11-05, stadium floodlights): every mesh drawn with the texture also gets a Remix light at its
+  // centre (worldlights.cpp), in the emissive's colour and mode. lumens 0 = none. cone > 0 = a spot of that half angle
+  // (degrees) along dir, or toward aimAt when aim = 1; cone 0 = lit every way.
+  float lumens;
+  float cone, softness;
+  float dir[3];
+  int aim;
+  float aimAt[3];
 };
 
 int rbrrtx_custom_light_count();                       // lights of the current stage
@@ -41,6 +49,7 @@ int rbrrtx_emit_count();
 bool rbrrtx_emit_get(int i, RbrEmit* out);
 void rbrrtx_emit_set(const RbrEmit& e);                // add or replace by texture
 void rbrrtx_emit_remove(unsigned long long tex);
+void rbrrtx_emit_set_light(const RbrEmit& e);          // only the light fields of an existing emissive (no mod rewrite)
 // Window panes found automatically inside `island` (u0, v0, u1, v1) of the texture: dark / glassy rectangular cells by luminance.
 // `texture` is the game's IDirect3DTexture9 (its mip chain is saved next to the mod first). Returns the number written to out.
 int rbrrtx_emit_auto_windows(unsigned long long tex, void* texture, const float island[4], float out[][4], int max);

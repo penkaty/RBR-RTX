@@ -178,7 +178,13 @@ int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, 
 void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
-void rbrrtx_world_lights_reload();                              // lights*.ini read again (after the lamp_mark key; lamps go)
+void rbrrtx_world_lights_reload();
+// rbrhud.cpp: the cockpit windscreen with RBRHUD's F4 opacity / threshold (rbrhud.ini [windscreen]); nullptr = unchanged.
+void* rbrrtx_rbrhud_windscreen_twin(void* device, void* baseTexture, unsigned long long srcHash);
+// An F3 emissive prop that casts light (custom.cpp): a lamp kind for its texture; lumens <= 0 removes it. Lamps go and are
+// found again from the next draws.
+void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
+                                  const float dir[3], int aim, const float aimAt[3], int always);                              // lights*.ini read again (after the lamp_mark key; lamps go)
 float rbrrtx_world_lights_mark_glow();                         // lights.ini [lights] mark_glow: the glow a new lamp mark gets
 void rbrrtx_world_lights_startup();                             // before the backend loads, after rbrrtx_genmod_init: glowing lamp materials of earlier runs
 // A draw with a marked lamp texture (kind with glow > 0) while the lamps are on: the twin texture to bind (its generated

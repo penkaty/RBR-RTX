@@ -6583,6 +6583,13 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       et->lpVtbl->Release(et);
     }
   }
+  if (!lampGlow && g_apiOk && is_glass_draw()) {             // RBRHUD's F4 windscreen opacity (rbrhud.cpp): the remapped twin
+    IDirect3DBaseTexture9* wt = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &wt)) && wt) {
+      lampGlow = rbrrtx_rbrhud_windscreen_twin(dev, wt, rbrrtx_texture_hash(wt));
+      wt->lpVtbl->Release(wt);
+    }
+  }
   g_primCap = UINT_MAX;
   if (g_primaryRT && g_curInfo && (g_curInfo->flags & SH_PARTICLE) && rbrrtx_rain_probe_on()) {   // rain probe
     IDirect3DBaseTexture9* t = nullptr;
