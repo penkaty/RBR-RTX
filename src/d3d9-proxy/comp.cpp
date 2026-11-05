@@ -1400,6 +1400,59 @@ float moon_phase_today() {
   return static_cast<float>(cycles - std::floor(cycles));
 }
 
+// Main menu weather (user 2026-11-05): the clouds drift between random weathers, each change taking menu_weather_seconds,
+// using the runtime's game blend (rtx.weather.gameWeatherOutgoing -> gameWeather). menu_bad_weather_chance of the changes
+// head for bad weather: fog from [sky.<id>] fog_visibility, and rain through the Remix particles.
+struct MenuWx { const char* id; const wchar_t* section; float rain; };
+const MenuWx kMenuGood[] = { { "Clear", L"sky.Crisp", 0.0f }, { "LightCloud", nullptr, 0.0f }, { "PartCloud", nullptr, 0.0f },
+                             { "HeavyCloud", nullptr, 0.0f }, { "Hazy", L"sky.Hazy", 0.0f } };
+const MenuWx kMenuBad[] = { { "LightFog", L"sky.LightFog", 0.0f }, { "HeavyFog", L"sky.HeavyFog", 0.0f },
+                            { "LightRain", L"sky.LightRain", 50.0f }, { "HeavyRain", L"sky.HeavyRain", 100.0f } };
+bool g_mwOn = false;
+const MenuWx* g_mwTo = nullptr;
+std::string g_mwFromId = "Menu, RBR";
+float g_mwFromFog = 0.0f, g_mwFromRain = 0.0f, g_mwSeconds = 120.0f, g_mwBad = 0.1f;
+ULONGLONG g_mwStart = 0;
+
+float menu_wx_fog(const MenuWx* w) {
+  if (!w || !w->section || !g_atmoPath[0]) return 0.0f;
+  wchar_t v[32] = {};
+  GetPrivateProfileStringW(w->section, L"fog_visibility", L"0", v, 32, g_atmoPath);
+  return static_cast<float>(_wtof(v));
+}
+
+void menu_wx_next() {
+  if (g_mwTo) {
+    g_mwFromId = g_mwTo->id;
+    g_mwFromFog = menu_wx_fog(g_mwTo);
+    g_mwFromRain = g_mwTo->rain;
+  }
+  const bool bad = static_cast<float>(std::rand()) / RAND_MAX < g_mwBad;
+  const MenuWx* list = bad ? kMenuBad : kMenuGood;
+  const int n = bad ? static_cast<int>(std::size(kMenuBad)) : static_cast<int>(std::size(kMenuGood));
+  const MenuWx* pick = g_mwTo;
+  for (int tries = 0; tries < 8 && pick == g_mwTo; ++tries) pick = &list[std::rand() % n];
+  g_mwTo = pick;
+  g_mwStart = GetTickCount64();
+  remix_set("rtx.weather.gameWeatherOutgoing", g_mwFromId.c_str());
+  remix_set("rtx.weather.gameWeatherBlend", "0");
+  atmo_send("rtx.weather.gameWeather", g_mwTo->id, "");
+  clog(L"atmosphere: menu weather: %S -> %S over %.0f s", g_mwFromId.c_str(), g_mwTo->id, g_mwSeconds);
+}
+
+// Called a few times a second. Steps this small on a two-minute blend are not visible.
+void menu_wx_frame() {
+  if (!g_mwOn) return;
+  float t = static_cast<float>(GetTickCount64() - g_mwStart) / (g_mwSeconds * 1000.0f);
+  if (t >= 1.0f) { menu_wx_next(); t = 0.0f; }
+  const float s = t * t * (3.0f - 2.0f * t);
+  remix_set("rtx.weather.gameWeatherBlend", fmt1(s).c_str());
+  const float toFog = menu_wx_fog(g_mwTo);                        // visibilities blend as extinction, 0 = no fog
+  const float e = (g_mwFromFog > 0.0f ? 1.0f / g_mwFromFog : 0.0f) * (1.0f - s) + (toFog > 0.0f ? 1.0f / toFog : 0.0f) * s;
+  atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(e > 0.0f ? 1.0f / e : 0.0f), "");
+  rbrrtx_particles_menu_rain(s < 0.5f ? g_mwFromRain : g_mwTo->rain);
+}
+
 // Menu <-> stage under NUMOS: the menu gets the base weather at once and, after a stage, runs forward from the stage's
 // time to the menu sun (menu_blend_sun); a stage sends its own sun again (numos_weather then sends its weather).
 void numos_menu(bool menu) {
@@ -1413,6 +1466,20 @@ void numos_menu(bool menu) {
     atmo_send("rtx.atmosphere.aerosolDensity", aer, aer);
     atmo_send("rtx.atmosphere.fogAlbedo", alb, alb);
     remix_set("rtx.atmosphere.timeCycleEnable", "False");   // the 2-minute menu day of 2026-10-30 is gone
+    if (g_atmoPath[0] && GetPrivateProfileIntW(L"menu", L"menu_weather", 1, g_atmoPath)) {
+      wchar_t v[32] = {};
+      GetPrivateProfileStringW(L"menu", L"menu_weather_seconds", L"120", v, 32, g_atmoPath);
+      g_mwSeconds = (std::max)(static_cast<float>(_wtof(v)), 5.0f);
+      GetPrivateProfileStringW(L"menu", L"menu_bad_weather_chance", L"0.1", v, 32, g_atmoPath);
+      g_mwBad = static_cast<float>(_wtof(v));
+      static bool seeded = false;
+      if (!seeded) { seeded = true; std::srand(static_cast<unsigned>(GetTickCount64())); }
+      g_mwOn = true;
+      g_mwTo = nullptr;
+      g_mwFromId = "Menu, RBR";
+      g_mwFromFog = g_mwFromRain = 0.0f;
+      menu_wx_next();
+    }
     g_numosSunWeather = 1.0f;
     g_menuBlend = g_stageSentEl > -999.0f && g_menuBlendSeconds > 0.0f;
     if (g_menuBlend) {
@@ -1427,6 +1494,12 @@ void numos_menu(bool menu) {
          : L"the menu sun");
     g_stageSentEl = -1000.0f;
   } else {
+    if (g_mwOn) {                                      // a stage's weather at once, as at game start
+      g_mwOn = false;
+      remix_set("rtx.weather.gameWeatherOutgoing", "");
+      remix_set("rtx.weather.gameWeatherBlend", "1");
+      rbrrtx_particles_menu_rain(0.0f);
+    }
     g_menuBlend = false;
     g_numosSentEl = g_numosSentAz = -1000.0f;          // the stage's sun again at once
   }
@@ -1470,6 +1543,7 @@ void atmo_frame() {
     rbrrtx_hudglow_forget();
     menuApplied = true;
   }
+  menu_wx_frame();
   static std::wstring nightKey;
   if (inStage) {                                       // night weather: also with the atmosphere off
     wchar_t k[64];
@@ -5087,6 +5161,9 @@ HRESULT alphacut_draw(IDirect3DDevice9* dev, const RbrAlphaCut& ac) {
 // RBRRTX_CAR_DIRT=0 = off. Raster (key 0) turns the layer off, and the game's own shader shows the dirt there.
 bool g_decalDirty = false;                             // a new decal tag waits for the next batch (f3_tags_frame)
 std::set<unsigned long long> g_dirtHashes;
+// Second-layer twins are what the eye sees of the ground on stages like Whaanga, so they shade as ground (user's Alt+X test
+// 2026-11-05, run 20261105-172317): smooth normals and wet, sent with the decal list. RBRRTX_TWIN_FLAGS=0 = decal only.
+std::set<unsigned long long> g_twinHashes;
 // F3 menu texture tags (glue below): class 0 terrain, 1 decal, 2 animated water, 3 ignore. g_f3Tag = added in the menu,
 // g_f3Off = taken out of a list that rtx.conf or the run-time tags put the hash in.
 std::set<unsigned long long> g_f3Tag[4], g_f3Off[4];
@@ -5100,6 +5177,7 @@ std::string conf_string(const char* name) {
 void decal_tag(unsigned long long hx, const wchar_t* what) {
   if (!g_dirtHashes.insert(hx).second) return;
   g_decalDirty = true;                                 // sent with the next batch, not per new texture
+  if (!std::wcscmp(what, L"ground second layer")) g_twinHashes.insert(hx);
   clog(L"%s: %016llX tagged as decal (%zu decal textures added)", what, hx, g_dirtHashes.size());
 }
 
@@ -5604,6 +5682,18 @@ void send_decal_list() {
   for (unsigned long long h : g_f3Tag[1]) add(h);
   append_removals(list, g_f3Off[1]);
   remix_set("rtx.decalTextures", list.c_str());
+  static const bool twinFlags = rbrrtx_env_flag(L"RBRRTX_TWIN_FLAGS", true);
+  if (twinFlags && !g_twinHashes.empty()) {
+    std::string twins;
+    char t[24];
+    for (unsigned long long h : g_twinHashes) {
+      sprintf_s(t, "0x%016llX", h);
+      if (!twins.empty()) twins += ", ";
+      twins += t;
+    }
+    remix_set("rtx.smoothNormalsTextures", twins.c_str());
+    remix_set("rtx.wetTextures", twins.c_str());
+  }
 }
 
 // Per Present: batched list updates (nothing is sent unless the menu changed a tag).

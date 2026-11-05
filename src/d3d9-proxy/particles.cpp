@@ -71,6 +71,7 @@
 #include "common.hpp"
 #include <d3d9.h>
 #include "third_party/remix_c.h"
+#include "menu/menu.hpp"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -309,7 +310,7 @@ struct DustCfg {
   int spawner = 0;                                     // 0 squares (above), 1 car shell: roof + sides + rear (snow wake)
   float wakeOnKmh = 25.0f;                             // [snow_wake]: drawn from this car speed, rate in speed steps
   wchar_t tex[64] = L"dust_puff.dds";
-} g_cfg, g_smoke;
+} g_cfg, g_smoke, g_snowDust;
 float g_maxCoverage = 1.0f, g_coverageSent = -1.0f;   // rtx.particles.maxScreenCoverage; [dust] max_screen_coverage
 
 // Rain/snow presets (user 2026-10-23 run 2): light rain = many small drops at the run-2 speed; heavy rain = big drops,
@@ -559,6 +560,9 @@ void load_cfg() {
   DustCfg sm = smoke_defaults();
   if (found) { g_sec = L"smoke"; load_fx(sm); g_sec = L"dust"; }
   g_smoke = sm;
+  DustCfg sd = c;
+  if (found) { g_sec = L"snow_dust"; load_fx(sd); g_sec = L"dust"; }
+  g_snowDust = sd;
   for (int i = 0; i < PRE_COUNT; ++i) {
     g_pre[i] = precip_defaults(i);
     if (found) { g_sec = kPreSection[i]; load_fx(g_pre[i]); g_sec = L"dust"; }
@@ -944,7 +948,7 @@ int wheel_points(const float* car, float out[4][3], int wheelOf[4]) {
 
 // Physics\physics.lsp names RBR's surfaces, one per line: Tarmac_Fine_Clean_Dry ("Tarmac_Fine_Clean_Dry" ; id 37, rev 42
 // A wheel's material is this id, and it changes with the track condition (Gravel_Coarse_Deep_Dry 41, _Wet 43).
-std::unordered_set<uint32_t> g_tarmacDry;
+std::unordered_set<uint32_t> g_tarmacDry, g_snowSurface;
 bool g_tarmacRead = false;
 
 void read_surface_table() {
@@ -963,8 +967,15 @@ void read_surface_table() {
     const std::string name = line.substr(q + 2, e - q - 2);
     if (name.rfind("Tarmac_", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, "_Dry") == 0)
       g_tarmacDry.insert(static_cast<uint32_t>(std::atoi(line.c_str() + id + 5)));
+    if (name.rfind("Snow", 0) == 0) g_snowSurface.insert(static_cast<uint32_t>(std::atoi(line.c_str() + id + 5)));
   }
-  plog(L"particles: physics.lsp: %u surfaces, %zu dry tarmac; tyre smoke only there, not in rain", total, g_tarmacDry.size());
+  plog(L"particles: physics.lsp: %u surfaces, %zu dry tarmac (tyre smoke only there, not in rain), %zu snow (their own dust)",
+       total, g_tarmacDry.size(), g_snowSurface.size());
+}
+
+bool snow_surface(uint32_t mat) {
+  if (!g_tarmacRead) read_surface_table();
+  return g_snowSurface.count(mat) != 0;
 }
 
 // Tyre smoke (user 2026-11-05): on tarmac only, none when damp, wet or raining.
@@ -994,7 +1005,7 @@ void draw_emitter() {
     if (wheelOf[w] < 0) continue;                      // guessed position: the game said nothing about this wheel
     const Wheel& wh = g_wheels[wheelOf[w]];
     const DustCfg* fx = nullptr;
-    if (g_moving && now - wh.dustT < g_dustHoldMs) fx = &g_cfg;          // the game asks for dust here
+    if (g_moving && now - wh.dustT < g_dustHoldMs) fx = snow_surface(wh.mat) ? &g_snowDust : &g_cfg;   // the game asks for dust here
     else if (g_smoke.enabled && g_kmh >= g_smoke.onKmh && now - wh.smokeLast < g_dustHoldMs &&
              wh.smokeLast - wh.smokeStart >= static_cast<ULONGLONG>(g_smoke.slideSeconds * 1000.0f) && smoke_surface(wh.mat))
       fx = &g_smoke;                                   // dry tarmac: a slide long enough
@@ -1398,9 +1409,21 @@ void killbox_frame(bool precip) {
   g_kbSent = true;
 }
 
+// Rain in the main menu's bad weather (comp.cpp menu weather): no game emitters there, so the camera comes from the proxy.
+float g_menuRain = 0.0f;
+
 void draw_precip() {
-  const int kind = precip_kind();
-  const float inten = kind ? weather_intensity() : 0.0f;
+  int kind = precip_kind();
+  float inten = kind ? weather_intensity() : 0.0f;
+  if (!kind && g_menuRain > 0.0f) {
+    float pos[3], fwd[3];
+    if (rbrrtx_menu_camera(pos, fwd)) {                // render space; these are physics space, Y and Z swapped
+      g_camPos[0] = pos[0]; g_camPos[1] = pos[2]; g_camPos[2] = pos[1];
+      g_camFwd[0] = fwd[0]; g_camFwd[1] = fwd[2]; g_camFwd[2] = fwd[1];
+      kind = 1;
+      inten = g_menuRain;
+    }
+  }
   const int pre = !kind || inten < 1.0f ? -1 : (kind == 2 ? PRE_SNOW_LIGHT : PRE_RAIN_LIGHT) + (inten >= g_heavyFrom ? 1 : 0);
   if (kind != g_shownKind || pre != g_shownStep) {
     plog(L"rain: Remix %s, intensity %.0f %%", pre < 0 ? L"none" : kPreSection[pre], inten);
@@ -1599,6 +1622,8 @@ void rbrrtx_particles_init(const remixapi_Interface* api) {
   plog(L"rain: Remix rain/snow %s (key %s: Remix <-> game's own)%s", g_precip ? L"ON, game's cut" : L"off",
        rbrrtx_key_name(RBRKEY_RAIN), g_rainProbe ? L"; probe lines every 10 s" : L"");
 }
+
+void rbrrtx_particles_menu_rain(float percent) { g_menuRain = percent; }
 
 void rbrrtx_particles_emit(bool sweeping) {
   if (g_test && !sweeping) draw_emitter();
