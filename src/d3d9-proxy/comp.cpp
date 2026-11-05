@@ -265,6 +265,7 @@ struct Orig {
   decltype(IDirect3DDevice9Vtbl::EndStateBlock) EndStateBlock;
   decltype(IDirect3DStateBlock9Vtbl::Capture) StateBlockCapture;
   decltype(IDirect3DStateBlock9Vtbl::Apply) StateBlockApply;
+  decltype(IDirect3DStateBlock9Vtbl::Release) StateBlockRelease;
   decltype(IDirect3DQuery9Vtbl::Issue) QueryIssue;
   decltype(IDirect3DQuery9Vtbl::Release) QueryRelease;
   decltype(IDirect3DVertexBuffer9Vtbl::Lock) VBLock;
@@ -3554,10 +3555,59 @@ void hook_block(IDirect3DStateBlock9* sb, const BlockState& b) {
   patch(&sb->lpVtbl->Apply, &hk_StateBlockApply, o.StateBlockApply);
 }
 
+// State block pool (2026-11-05, run 20261105-194648): something draws with a CreateStateBlock + Release every frame while
+// driving. Through the bridge CreateStateBlock waits for the server: 1.3-1.7 ms a frame with ray tracing off, up to 12 ms
+// with it on. Capture is local and asynchronous there (bridge d3d9_stateblock.cpp), so a block the caller released is
+// kept (our own reference) and handed out again, Captured: the same content a new block of that type starts with.
+// Released for good before Reset. RBRRTX_SB_POOL=0 = off.
+struct PooledBlock { D3DSTATEBLOCKTYPE type; bool free; };
+std::unordered_map<IDirect3DStateBlock9*, PooledBlock> g_sbPool;
+unsigned g_sbReused = 0, g_sbCreated = 0;
+
+ULONG STDMETHODCALLTYPE hk_StateBlockRelease(IDirect3DStateBlock9* sb) {
+  auto it = g_sbPool.find(sb);
+  if (it == g_sbPool.end() || it->second.free) return o.StateBlockRelease(sb);
+  const ULONG r = o.StateBlockRelease(sb);           // our reference stays
+  if (r == 1) it->second.free = true;
+  return r - 1;
+}
+
+void sb_pool_drop() {                                // before Reset: every pooled block goes for good
+  for (auto& kv : g_sbPool) o.StateBlockRelease(kv.first);
+  g_sbPool.clear();
+}
+
 HRESULT STDMETHODCALLTYPE hk_CreateStateBlock(IDirect3DDevice9* dev, D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
   RBR_ZONE(PZ_STATEBLOCK);
-  if (rbrrtx_menu_is_drawing()) return o.CreateStateBlock(dev, type, out);   // the menu's per-frame block: nothing tracked, its Apply restores the device
-  const HRESULT hr = o.CreateStateBlock(dev, type, out);
+  static const bool pool = rbrrtx_env_flag(L"RBRRTX_SB_POOL", true);
+  const bool menu = rbrrtx_menu_is_drawing() != 0;
+  HRESULT hr = E_FAIL;
+  bool reused = false;
+  if (pool && out) {
+    for (auto& kv : g_sbPool) {
+      if (!kv.second.free || kv.second.type != type) continue;
+      if (FAILED(o.StateBlockCapture(kv.first))) break;
+      kv.second.free = false;
+      kv.first->lpVtbl->AddRef(kv.first);
+      *out = kv.first;
+      hr = D3D_OK;
+      reused = true;
+      if (++g_sbReused == 1 || g_sbReused % 36000 == 0)
+        clog(L"state blocks: %u reused from the pool, %u created (%zu pooled)", g_sbReused, g_sbCreated, g_sbPool.size());
+      break;
+    }
+  }
+  if (!reused) {
+    hr = o.CreateStateBlock(dev, type, out);
+    if (SUCCEEDED(hr) && out && *out && pool && g_sbPool.size() < 16) {
+      if (!o.StateBlockRelease) o.StateBlockRelease = (*out)->lpVtbl->Release;
+      patch(&(*out)->lpVtbl->Release, &hk_StateBlockRelease, o.StateBlockRelease);
+      (*out)->lpVtbl->AddRef(*out);
+      g_sbPool[*out] = PooledBlock{ type, false };
+      ++g_sbCreated;
+    }
+  }
+  if (menu) return hr;                                // the menu's per-frame block: nothing tracked, its Apply restores the device
   if (SUCCEEDED(hr) && out && *out) {                 // holds the current state of its type from the start
     BlockState b;
     b.hasVin = b.hasVS = type == D3DSBT_ALL || type == D3DSBT_VERTEXSTATE;
@@ -3758,6 +3808,7 @@ void remember_backbuffer(IDirect3DDevice9* dev) {
 
 HRESULT STDMETHODCALLTYPE hk_Reset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
   f3_before_reset();                                   // default-pool menu objects and held texture references go first
+  sb_pool_drop();
   const HRESULT hr = o.Reset(dev, pp);
   f3_after_reset(dev, hr);
   if (SUCCEEDED(hr)) {                                 // Reset restores default device state
