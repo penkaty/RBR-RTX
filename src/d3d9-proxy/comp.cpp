@@ -5966,7 +5966,7 @@ int f3_key_line(int i, char* buf, size_t n) {
 }
 
 void f3_config_dir(wchar_t* buf, size_t n) {
-  rbrrtx_config_path(L"RBRRTX_MENU_DIR_UNSET", L"menu.ini", buf, n);   // the config folder; the menu adds menu.ini
+  rbrrtx_config_path(L"RBRRTX_MENU_INI", L"menu.ini", buf, n);   // the config folder; the menu adds menu.ini
   if (wchar_t* slash = wcsrchr(buf, L'\\')) *slash = 0;
 }
 

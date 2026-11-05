@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <vector>
 
 namespace {
@@ -409,7 +410,27 @@ bool ini_save(IniDoc& d) {
   return true;
 }
 
-void page_ini(IniDoc& d) {
+// "stage.458" or "stage.458.HeavyRain" -> "stage.458  Rosciszow-Walim" from the folder Maps\458-Rosciszow-Walim. Cached.
+const std::string& section_label(const std::string& section) {
+  static std::map<std::string, std::string> cache;
+  const auto it = cache.find(section);
+  if (it != cache.end()) return it->second;
+  std::string label = section;
+  if (section.rfind("stage.", 0) == 0) {
+    const std::wstring id = std::to_wstring(std::atoi(section.c_str() + 6));
+    WIN32_FIND_DATAW fd;
+    const HANDLE h = FindFirstFileW((L"Maps\\" + id + L"-*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+      FindClose(h);
+      label += "  ";
+      for (const wchar_t* c = fd.cFileName + id.size() + 1; *c; ++c) label += *c < 128 ? static_cast<char>(*c) : '?';
+    }
+  }
+  return cache[section] = label;
+}
+
+// scope: 0 every section, 1 all but [stage.*], 2 only [stage.*].
+void page_ini(IniDoc& d, int scope = 0) {
   if (!d.loaded) ini_load(d);
   ImGui::TextWrapped("%s", d.after_save);
   ImGui::TextDisabled("%ls", d.path.c_str());
@@ -431,8 +452,10 @@ void page_ini(IniDoc& d) {
   for (char& c : low) c = (char)std::tolower((unsigned char)c);
   const bool filtering = !low.empty();
   auto matches = [&](const IniLine& l) {
+    const bool stage = l.section.rfind("stage.", 0) == 0;
+    if ((scope == 1 && stage) || (scope == 2 && !stage)) return false;
     if (!filtering) return true;
-    std::string k = l.key + " " + l.section;
+    std::string k = l.key + " " + section_label(l.section);
     for (char& c : k) c = (char)std::tolower((unsigned char)c);
     return k.find(low) != std::string::npos;
   };
@@ -449,7 +472,7 @@ void page_ini(IniDoc& d) {
     if (!any) {
       any = true;
       if (filtering) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-      open = ImGui::TreeNode(cur.empty() ? "(top)" : cur.c_str());
+      open = ImGui::TreeNode(cur.empty() ? "(top)" : section_label(cur).c_str());
     }
     if (!open) continue;
     ImGui::PushID((int)i);
@@ -474,7 +497,8 @@ IniDoc g_atmo_doc = { L"RBRRTX_ATMOSPHERE", L"atmosphere.ini", "Atmosphere",
   "atmosphere.ini: stage weather, haze, sun, NUMOS. Hover a key for its comment. Save: the proxy re-reads the file within about a second, so a change shows while you drive." };
 IniDoc g_head_doc = { L"RBRRTX_HEADLIGHTS", L"headlights.ini", "Headlights",
   "headlights.ini: car lamps. Hover a key for its comment. Save writes the file; the proxy reads it at the next stage start (restart the stage to see a change)." };
-void page_atmo(void*) { page_ini(g_atmo_doc); }
+void page_atmo(void*) { page_ini(g_atmo_doc, 1); }
+void page_atmo_stage(void*) { page_ini(g_atmo_doc, 2); }
 void page_head(void*) { page_ini(g_head_doc); }
 
 }  // namespace
@@ -484,6 +508,7 @@ void rbrrtx_carpaint_register_page();
 extern "C" void rbrrtx_menu_register_custom_pages(void) {
   rbrrtx_carpaint_register_page();
   rbrrtx_menu_add_page("Atmosphere", page_atmo, nullptr);
+  rbrrtx_menu_add_page("Per stage", page_atmo_stage, nullptr);
   rbrrtx_menu_add_page("Headlights", page_head, nullptr);
   rbrrtx_menu_add_page("Lights", page_lights, nullptr);
   rbrrtx_menu_add_page("Emissive", page_emissive, nullptr);

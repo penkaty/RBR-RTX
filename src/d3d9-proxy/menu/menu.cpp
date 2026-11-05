@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <string>
@@ -45,7 +46,7 @@ bool g_imgui_ready = false;   // ImGui context + Win32 backend exist
 bool g_dx9_ready = false;     // ImGui DX9 backend initialised for g_dev (it holds one reference on the device)
 bool g_open = false;
 bool g_drawing = false;
-bool g_pending_apply = false; // menu.ini values still to send to Remix (waits for remix_set)
+bool g_pending_apply = true;  // menu.ini values still to send to Remix (waits for remix_set)
 bool g_srgb_fix = false;      // remix-comp-base forces SRGB sampler/write around its draws; off until tested
 int g_toggle_vk = VK_F3;      // keys.ini "menu"; 0 = the menu cannot be opened
 
@@ -89,29 +90,29 @@ const WetOpt kWet[] = {
   { "rtx.wet.raindrops",                 "Raindrops",                      1, 0.00f, 0.0f, 0.0f,  nullptr },
   { "rtx.wet.rainIntensity",             "Rain Intensity",                 0, 1.00f, 0.0f, 1.0f,  "%.2f" },
   { "rtx.wet.raindropScale",             "Raindrop Scale",                 0, 3.00f, 0.1f, 10.0f, "%.2f" },
-  { "rtx.wet.raindropGroundScale",       "Raindrops on Wet Ground",        0, 0.50f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.minNormal",                 "Min Up Normal",                  0, 0.50f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.blendWidth",                "Blend Width",                    0, 0.10f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.fullyWetRoughnessScale",    "Fully Wet Roughness Scale",      0, 0.00f, 0.0f, 2.0f,  "%.2f" },
+  { "rtx.wet.raindropGroundScale",       "Raindrops on Wet Ground",        0, 1.00f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.minNormal",                 "Min Up Normal",                  0, 0.54f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.blendWidth",                "Blend Width",                    0, 0.33f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.fullyWetRoughnessScale",    "Fully Wet Roughness Scale",      0, 0.02f, 0.0f, 2.0f,  "%.2f" },
   { "rtx.wet.patches",                   "Wet Patches",                    1, 1.00f, 0.0f, 0.0f,  nullptr },
   { "rtx.wet.puddles",                   "Puddles",                        1, 1.00f, 0.0f, 0.0f,  nullptr },
-  { "rtx.wet.puddleCoverage",            "Puddle Coverage",                0, 0.64f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.depressionWeight",          "Depression Weight",              0, 0.30f, 0.0f, 5.0f,  "%.2f" },
-  { "rtx.wet.slopeLimit",                "Slope Limit",                    0, 0.053f, 0.005f, 1.0f, "%.3f" },
-  { "rtx.wet.slopeFeather",              "Slope Feather",                  0, 2.40f, 0.1f, 4.0f,  "%.2f" },
-  { "rtx.wet.puddleOcclusion",           "Rain Shadow Weight",             0, 0.50f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.puddleRoughness",           "Water Roughness",                0, 0.02f, 0.0f, 1.0f,  "%.3f" },
-  { "rtx.wet.puddleDarkening",           "Water Darkening",                0, 0.25f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.shoreDarkening",            "Shore Darkening",                0, 0.80f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.rippleStrength",            "Ripple Strength",                0, 0.08f, 0.0f, 1.0f,  "%.3f" },
-  { "rtx.wet.rippleSpeed",               "Ripple Speed",                   0, 2.50f, 0.0f, 10.0f, "%.2f" },
-  { "rtx.wet.rippleVariation",           "Ripple Gusts",                   0, 0.48f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.puddleCoverage",            "Puddle Coverage",                0, 1.00f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.depressionWeight",          "Depression Weight",              0, 0.33f, 0.0f, 5.0f,  "%.2f" },
+  { "rtx.wet.slopeLimit",                "Slope Limit",                    0, 0.150f, 0.005f, 1.0f, "%.3f" },
+  { "rtx.wet.slopeFeather",              "Slope Feather",                  0, 0.33f, 0.1f, 4.0f,  "%.2f" },
+  { "rtx.wet.puddleOcclusion",           "Rain Shadow Weight",             0, 1.00f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.puddleRoughness",           "Water Roughness",                0, 0.025f, 0.0f, 1.0f,  "%.3f" },
+  { "rtx.wet.puddleDarkening",           "Water Darkening",                0, 0.15f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.shoreDarkening",            "Shore Darkening",                0, 0.50f, 0.0f, 1.0f,  "%.2f" },
+  { "rtx.wet.rippleStrength",            "Ripple Strength",                0, 0.50f, 0.0f, 1.0f,  "%.3f" },
+  { "rtx.wet.rippleSpeed",               "Ripple Speed",                   0, 1.00f, 0.0f, 10.0f, "%.2f" },
+  { "rtx.wet.rippleVariation",           "Ripple Gusts",                   0, 0.30f, 0.0f, 1.0f,  "%.2f" },
   { "rtx.wet.minRoughness",              "Roughness Floor",                0, 0.05f, 0.0f, 1.0f,  "%.3f" },
   { "rtx.wet.albedoDarkening",           "Albedo Darkening",               0, 0.50f, 0.0f, 1.0f,  "%.2f" },
-  { "rtx.wet.saturationBoost",           "Saturation Boost",               0, 0.18f, 0.0f, 2.0f,  "%.2f" },
+  { "rtx.wet.saturationBoost",           "Saturation Boost",               0, 0.50f, 0.0f, 2.0f,  "%.2f" },
   { "rtx.wet.rainShadow",                "Rain Shadow",                    1, 1.00f, 0.0f, 0.0f,  nullptr },
   { "rtx.wet.puddleQuality",             "Puddle Quality (0 off, 1 noise, 2 rain map)", 2, 2.0f, 0.0f, 2.0f, "%d", 1 },
-  { "rtx.wet.rainShadowDither",          "Rain Shadow Dither (quality 1)", 1, 0.00f, 0.0f, 0.0f,  nullptr, 1 },
+  { "rtx.wet.rainShadowDither",          "Rain Shadow Dither (quality 1)", 1, 1.00f, 0.0f, 0.0f,  nullptr, 1 },
   { "rtx.wet.mapExtent",                 "Rain Map Extent",                0, 128.0f, 8.0f, 1024.0f, "%.0f", 1 },
   { "rtx.wet.mapResolution",             "Rain Map Resolution",            2, 512.0f, 64.0f, 2048.0f, "%d", 1 },
   { "rtx.wet.mapTraceAbove",             "Rain Map Trace Above Camera",    0, 100.0f, 1.0f, 1000.0f, "%.0f", 1 },
@@ -120,13 +121,13 @@ const WetOpt kWet[] = {
   { "rtx.wet.occlusionFeather",          "Rain Shadow Feather",            0, 1.5f, 0.0f, 10.0f,  "%.2f", 1 },
   { "rtx.wet.occlusionRayLength",        "Rain Shadow Ray Length (quality 1)",   0, 80.0f, 1.0f, 1000.0f, "%.0f", 1 },
   { "rtx.wet.occlusionDistance",         "Rain Shadow Ray Distance (quality 1)", 0, 120.0f, 0.0f, 2000.0f, "%.0f", 1 },
-  { "rtx.wet.detailDistance",            "Puddle Distance",                0, 300.0f, 0.0f, 5000.0f, "%.0f", 1 },
-  { "rtx.wet.raindropDistance",          "Raindrop Distance",              0, 35.0f, 0.0f, 500.0f, "%.1f", 1 },
-  { "rtx.wet.microAmplitude",            "Ground Unevenness",              0, 0.03f, 0.001f, 1.0f, "%.3f", 1 },
+  { "rtx.wet.detailDistance",            "Puddle Distance",                0, 850.0f, 0.0f, 5000.0f, "%.0f", 1 },
+  { "rtx.wet.raindropDistance",          "Raindrop Distance",              0, 80.1f, 0.0f, 500.0f, "%.1f", 1 },
+  { "rtx.wet.microAmplitude",            "Ground Unevenness",              0, 0.033f, 0.001f, 1.0f, "%.3f", 1 },
   { "rtx.wet.noiseScale",                "Unevenness Cell Size",           0, 1.00f, 0.1f, 100.0f, "%.2f", 1 },
   { "rtx.wet.edgeWidth",                 "Edge Depth",                     0, 0.025f, 0.0001f, 0.1f, "%.4f", 1 },
-  { "rtx.wet.shoreWidth",                "Shore Height",                   0, 0.02f, 0.0f, 0.5f,  "%.3f", 1 },
-  { "rtx.wet.rippleWavelength",          "Ripple Wavelength (cm)",         0, 12.0f, 1.0f, 200.0f, "%.1f", 1 },
+  { "rtx.wet.shoreWidth",                "Shore Height",                   0, 0.030f, 0.0f, 0.5f,  "%.3f", 1 },
+  { "rtx.wet.rippleWavelength",          "Ripple Wavelength (cm)",         0, 8.8f, 1.0f, 200.0f, "%.1f", 1 },
 };
 
 // Remix defaults of the simple options (gen_remix_defaults.py from the runtime's RtxOptions.md), sorted by key.
@@ -153,13 +154,13 @@ void set_status(const char* text) {
 }
 
 // Sends one option to Remix. Bools go as "True"/"False" (what the proxy's remix_set expects).
-void send_option(const char* key, int type, float v) {
-  if (!g_cb.remix_set) return;
+bool send_option(const char* key, int type, float v) {
+  if (!g_cb.remix_set) return false;
   char buf[32];
   if (type == 1) std::snprintf(buf, sizeof(buf), "%s", v >= 0.5f ? "True" : "False");
   else if (type == 2) std::snprintf(buf, sizeof(buf), "%d", static_cast<int>(v + (v < 0 ? -0.5f : 0.5f)));
   else std::snprintf(buf, sizeof(buf), "%.6f", v);
-  g_cb.remix_set(key, buf);
+  return g_cb.remix_set(key, buf) != 0;
 }
 
 const WetOpt* find_wet(const char* key) {
@@ -227,7 +228,6 @@ void load_ini() {
     }
   }
   g_saved = g_touched;
-  g_pending_apply = !g_touched.empty();
   g_pins_pending = !g_pins.empty();
 }
 
@@ -244,8 +244,13 @@ void emit_raw(const char* line, void* user) {
 bool save_ini() {
   // Written beside the file, then swapped in: a crash or a full disk leaves the old menu.ini whole.
   const std::wstring path = config_file_path(), tmp = path + L".tmp";
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
   std::ofstream out(tmp, std::ios::trunc);
-  if (!out) return false;
+  if (!out) {
+    if (g_cb.log) { char b[400]; std::snprintf(b, sizeof(b), "save FAILED: cannot create %s", narrow_path(tmp).c_str()); g_cb.log(b); }
+    return false;
+  }
   out << "; RBR-RTX menu settings (written by the F3 menu; the game's user.conf is never touched)\n[wetness]\n";
   for (const auto& kv : g_saved) out << kv.first << '=' << kv.second << '\n';
   out << "\n[remix]\n";
@@ -260,6 +265,7 @@ bool save_ini() {
   g_saved_items = static_cast<int>(g_saved.size() + g_pins.size()) + g_emitted + extra;
   out.close();
   if (out.fail() || !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (g_cb.log) { char b[400]; std::snprintf(b, sizeof(b), "save FAILED: cannot replace %s (error %lu)", narrow_path(path).c_str(), GetLastError()); g_cb.log(b); }
     DeleteFileW(tmp.c_str());
     return false;
   }
@@ -289,11 +295,16 @@ void apply_pins() {
 void apply_pending() {
   apply_pins();
   if (!g_pending_apply || !g_cb.remix_set) return;
-  for (const auto& kv : g_touched) {
-    if (const WetOpt* o = find_wet(kv.first.c_str())) send_option(o->key, o->type, kv.second);
+  // Every option goes out, saved value or default, so the page shows what Remix has. The three the rain driver owns go only
+  // when the user locked them. Not reachable yet: all again on a later tick.
+  for (const WetOpt& o : kWet) {
+    const auto it = g_touched.find(o.key);
+    const bool driver = !std::strcmp(o.key, "rtx.wet.globalWetness") || !std::strcmp(o.key, "rtx.wet.raindrops") ||
+                        !std::strcmp(o.key, "rtx.wet.rainIntensity");
+    if (it == g_touched.end() && driver) continue;
+    if (!send_option(o.key, o.type, it != g_touched.end() ? it->second : o.def)) return;
   }
   g_pending_apply = false;
-  set_status("menu.ini values sent to Remix");
 }
 
 // While open the menu draws its own cursor (the game may hide or confine the system one) and lifts a cursor clip.
