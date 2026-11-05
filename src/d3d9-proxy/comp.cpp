@@ -4497,6 +4497,20 @@ void pick_draw(IDirect3DDevice9* dev, LampPick& pk) {
   pk.island = lamp_island(d, bestTri, hp, pk.rect);
 }
 
+// A marks file swapped in whole: a crash or a full disk leaves the old one as it was.
+bool file_replace(const std::wstring& path, const std::string& data) {
+  const std::wstring tmp = path + L".tmp";
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    f.close();
+    if (f.fail()) { DeleteFileW(tmp.c_str()); return false; }
+  }
+  if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+  DeleteFileW(tmp.c_str());
+  return false;
+}
+
 void lamp_pick_draw(IDirect3DDevice9* dev) {
   if (g_pick.armed) pick_draw(dev, g_pick);
 }
@@ -4568,9 +4582,7 @@ std::string lamp_mark_write(const wchar_t* path, unsigned long long tex, const f
   }
   std::string out;
   for (const std::string& l : lines) out += l + "\r\n";
-  std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  f.write(out.data(), static_cast<std::streamsize>(out.size()));
-  if (!f) return std::string();
+  if (!file_replace(path, out)) return std::string();
   *replaced = sameN != 0;
   return name;
 }
@@ -4714,9 +4726,7 @@ bool lamp_mark_remove(int index) {
   for (const std::string& l : lines) out += l + "\r\n";
   wchar_t path[MAX_PATH * 2];
   rbrrtx_lights_marked_path(path, MAX_PATH * 2, false);
-  std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  f.write(out.data(), static_cast<std::streamsize>(out.size()));
-  if (!f) return false;
+  if (!file_replace(path, out)) return false;
   clog(L"lamp mark: [%S] removed from lights-marked.ini (menu)", marks[index].section.c_str());
   g_uvLampCache.clear();
   rbrrtx_world_lights_reload();
@@ -5704,7 +5714,7 @@ void f3_probe_free() {
 }
 
 void texture_probe_draw(IDirect3DDevice9* dev) {
-  if (g_tprobe.armed) pick_draw(dev, g_tprobe);
+  if (g_tprobe.armed) { RBR_ZONE(PZ_F3_PROBE); pick_draw(dev, g_tprobe); }   // armed only while F3 is open on a page that asks
 }
 
 // Per Present, before the menu draws: publishes the armed frame's nearest hit and arms the next frame while the page keeps asking.

@@ -11,7 +11,7 @@ const wchar_t* const kNames[PZ_COUNT] = {
   L"draw", L"draw.backend", L"draw.extra", L"draw.cull", L"draw.worldlight", L"draw.apiworld",
   L"vsconst", L"psconst", L"rstate", L"tss", L"shader", L"xform", L"rt", L"scene", L"stateblock", L"buflock",
   L"end_frame", L"ef.litparts", L"ef.carpaint", L"ef.foliage", L"ef.genmod", L"ef.atmo", L"ef.exp", L"ef.keys", L"ef.lamps",
-  L"ef.worldlights", L"ef.custom", L"ef.ground", L"ef.windscreen", L"ef.particles", L"ef.wetness", L"f3", L"present",
+  L"ef.worldlights", L"ef.custom", L"ef.ground", L"ef.windscreen", L"ef.particles", L"ef.wetness", L"f3", L"present", L"f3.probe",
 };
 long long g_ticks[PZ_COUNT] = {};
 unsigned g_calls[PZ_COUNT] = {};

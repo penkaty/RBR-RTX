@@ -38,6 +38,7 @@ enum RbrProfZone {
   PZ_EF_WETNESS,
   PZ_F3,             // f3_present
   PZ_PRESENT,        // the bridge's Present call
+  PZ_F3_PROBE,       // F3 look-at check, per draw, inside draw; never runs with F3 closed (not in the hook total)
   PZ_COUNT
 };
 

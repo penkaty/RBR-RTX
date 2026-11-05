@@ -242,7 +242,9 @@ void emit_raw(const char* line, void* user) {
 
 // Writes menu.ini: [wetness] = g_saved, [textures] = the proxy's lines.
 bool save_ini() {
-  std::ofstream out(config_file_path(), std::ios::trunc);
+  // Written beside the file, then swapped in: a crash or a full disk leaves the old menu.ini whole.
+  const std::wstring path = config_file_path(), tmp = path + L".tmp";
+  std::ofstream out(tmp, std::ios::trunc);
   if (!out) return false;
   out << "; RBR-RTX menu settings (written by the F3 menu; the game's user.conf is never touched)\n[wetness]\n";
   for (const auto& kv : g_saved) out << kv.first << '=' << kv.second << '\n';
@@ -256,7 +258,12 @@ bool save_ini() {
   out << "\n";
   if (g_cb.ini_extra_dump) extra = g_cb.ini_extra_dump(emit_raw, &out);
   g_saved_items = static_cast<int>(g_saved.size() + g_pins.size()) + g_emitted + extra;
-  return static_cast<bool>(out);
+  out.close();
+  if (out.fail() || !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    DeleteFileW(tmp.c_str());
+    return false;
+  }
+  return true;
 }
 
 // Pins go to Remix once it can take them (the proxy's remix_pin_send says so), logged one line per pin.
