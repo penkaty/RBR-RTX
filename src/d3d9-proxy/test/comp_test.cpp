@@ -10,6 +10,8 @@
 // A seventh frame moves camera, terrain and car ~3 km from the origin (Peklo Snow R): the world matrix derived from
 // c0 x VP^-1 is off by metres there, RBR's own c8 must be used (2026-10-30: lamps jumping around the car).
 // An eighth frame puts a bonnet camera on that car: c8 must still be taken with points within 1 m of the camera plane.
+// Every car frame also draws CarTexture, which has no c8: its W must come from c0 alone within 2 cm (drawn without vertex
+// capture, W alone places the part, 2026-11-05).
 #define WIN32_LEAN_AND_MEAN
 #define CINTERFACE
 #include <windows.h>
@@ -97,6 +99,11 @@ int main() {
   if (rlCode.empty() || carCode.empty()) { printf("shader files missing\n"); return 2; }
   dev->lpVtbl->CreateVertexShader(dev, reinterpret_cast<const DWORD*>(rlCode.data()), &rl);
   dev->lpVtbl->CreateVertexShader(dev, reinterpret_cast<const DWORD*>(carCode.data()), &car);
+  IDirect3DVertexShader9* carNoC8 = nullptr;
+  swprintf_s(path, L"%sVertexShaders\\fog\\CarTexture.vso", dir);
+  std::vector<char> carNoC8Code = read_file(path);
+  if (carNoC8Code.empty()) { printf("shader files missing\n"); return 2; }
+  dev->lpVtbl->CreateVertexShader(dev, reinterpret_cast<const DWORD*>(carNoC8Code.data()), &carNoC8);
   // Frame 2: the same terrain shader with its comment blocks stripped (as some testers' hooks hand it to the device);
   // the proxy must still recognise it, or View/Projection stay at frame 1's camera.
   std::vector<DWORD> rlStrippedCode;
@@ -296,6 +303,16 @@ int main() {
     if (frame == 7)
       for (int i = 0; i < 4; ++i) rows[i][3] += (i & 1) ? 1e-3f : -1e-3f;
     dev->lpVtbl->SetVertexShaderConstantF(dev, 0, &rows[0][0], 4);
+    {
+      dev->lpVtbl->SetVertexShader(dev, carNoC8);
+      dev->lpVtbl->DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof(V));
+      D3DMATRIX nw;
+      dev->lpVtbl->GetTransform(dev, D3DTS_WORLD, &nw);
+      const float en = max_diff(nw, world);
+      printf("frame %d: CarTexture (no c8): world error %.6f\n", frame, en);
+      if (en > 0.02f) ++failures;
+      dev->lpVtbl->SetVertexShader(dev, car);
+    }
     if (frame == 6) {                       // what the derived W = c0 x VP^-1 would be off by here (double inverse)
       float c0[4][4], vpr[4][4];
       memcpy(c0, rows, sizeof(c0));
@@ -334,7 +351,7 @@ int main() {
     if (ew > 1e-3f || ev > 1e-3f || ep > 1e-3f) ++failures;
     dev->lpVtbl->Present(dev, nullptr, nullptr, nullptr, nullptr);
   }
-  decl->lpVtbl->Release(decl); rl->lpVtbl->Release(rl); rlStripped->lpVtbl->Release(rlStripped); car->lpVtbl->Release(car); btb->lpVtbl->Release(btb); btbInst->lpVtbl->Release(btbInst);
+  decl->lpVtbl->Release(decl); rl->lpVtbl->Release(rl); rlStripped->lpVtbl->Release(rlStripped); car->lpVtbl->Release(car); carNoC8->lpVtbl->Release(carNoC8); btb->lpVtbl->Release(btb); btbInst->lpVtbl->Release(btbInst);
   dev->lpVtbl->Release(dev); d3d->lpVtbl->Release(d3d);
   printf(failures ? "FAIL\n" : "PASS\n");
   return failures ? 1 : 0;

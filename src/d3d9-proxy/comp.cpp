@@ -532,6 +532,8 @@ bool is_scenery_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curI
 //   -2.5 ms Legazpi / -1 ms Chirdonhead vs 40 m, and swaying geometry smudged under the denoiser (adr-001, OMM-off run).
 //   RBRRTX_FF_SWAY_NEAR = metres brings near sway back.
 // The VS is unbound lazily: consecutive FF draws keep it null, the next shader draw rebinds the game's VS (g_vsUnbound).
+bool g_ffCar = true;                                   // the car without its vertex shaders (RBRRTX_FF_CAR=0, ff_car key)
+unsigned g_ffCarDraws = 0;
 int g_ffMode = 2, g_ffBase = 2;                        // g_ffBase: start value (env), restored after K steps
 bool g_vsUnbound = false;                              // device has no VS while the game thinks g_curVS is bound
 unsigned g_ffDraws = 0, g_ffSwayFar = 0;                // FF scenery draws / of those swaying ones, since the last log line
@@ -543,6 +545,10 @@ float g_ffSwayNearBase = -1.0f;                        // start value; experimen
 int ff_scenery_class() {
   if (g_ffMode == 0 || !g_enabled || !g_primaryRT || !g_haveCam || g_testMode != 0 || !g_curInfo) return 0;
   const unsigned f = g_curInfo->flags;
+  // Car* shaders only transform (m4x4 c0; the rest is game lighting Remix does not use), so the car needs no vertex capture:
+  // the mesh stays one BLAS moved by its instance transform instead of a capture and a refit per draw per frame. Glass stays
+  // captured for now, and so does a blended (ghost) car. 3 = keep the normals, draw the dirt twin (2026-11-05).
+  if (g_ffCar && (f & SH_CAR) && !(f & (SH_GLASS | SH_ANIM))) return 3;
   const bool rl = (f & SH_SCENERY) && (f & SH_WORLDSPACE);   // RL* only (IO* = object space, interactive)
   if (!rl || (f & SH_ANIM)) return 0;
   if (!(f & SH_SWAY)) return 1;
@@ -2423,6 +2429,31 @@ void frame_camera(const D3DMATRIX& wvp) {
   }
 }
 
+// W from c0 = W x VP without the ill-conditioned clip z: VP's x, y and w columns alone give three equations for each row of
+// W (P._33 ~ 1.0001 makes z nearly a copy of w, which is what W = c0 x VP^-1 amplifies, DECISIONS 2026-10-30). CarTexture and
+// CarTextureNoDirt have no c8, and a car part drawn without capture lands exactly where this matrix puts it.
+bool world_from_c0(const D3DMATRIX& wvp, D3DMATRIX& out) {
+  const double* v = g_VPd.m;
+  const double a[3][3] = { { v[0], v[4], v[8] }, { v[1], v[5], v[9] }, { v[3], v[7], v[11] } };
+  const double det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+                     a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+  if (std::fabs(det) < 1e-12) return false;
+  for (int r = 0; r < 4; ++r) {
+    const double wc = r == 3 ? 1.0 : 0.0;
+    const double b[3] = { wvp.m[r][0] - wc * v[12], wvp.m[r][1] - wc * v[13], wvp.m[r][3] - wc * v[15] };
+    for (int k = 0; k < 3; ++k) {
+      double m[3][3];
+      std::memcpy(m, a, sizeof(m));
+      for (int i = 0; i < 3; ++i) m[i][k] = b[i];
+      const double d = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                       m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+      out.m[r][k] = static_cast<float>(d / det);
+    }
+    out.m[r][3] = static_cast<float>(wc);
+  }
+  return true;
+}
+
 bool before_draw(IDirect3DDevice9* dev) {
   ++g_st.draws;
   g_clockNow = false;
@@ -2550,6 +2581,7 @@ bool before_draw(IDirect3DDevice9* dev) {
     if (off < 1e-3f) world = identity();
   }
   const bool btbFrame = g_btbPrev || g_st.btb > 0;   // the camera is BTB's (other projection): see btb_camera
+  if (g_curInfo && (g_curInfo->flags & SH_CAR) && !btbFrame) world_from_c0(wvp, world);   // c8 below still wins when it agrees
   if (g_curInfo && (g_curInfo->flags & SH_USES_C8) && all_set(8, 4)) {
     // The shader also gets the exact world matrix in c8-c11: use it when it agrees with the derived one.
     const D3DMATRIX exact = from_rows(&g_c[8]);
@@ -2631,6 +2663,9 @@ void log_frame(const wchar_t* why) {
        g_ffMode, g_ffMode == 0 ? L"off, vertex capture" : g_ffMode == 1 ? L"static RL scenery" : L"static RL scenery + far swaying foliage",
        g_logFrames ? static_cast<double>(g_ffDraws) / g_logFrames : 0.0,
        g_logFrames ? static_cast<double>(g_ffSwayFar) / g_logFrames : 0.0, g_ffSwayNear);
+  clog(L"  car %s: %.0f car draws per frame without their vertex shader", g_ffCar ? L"without vertex capture" : L"vertex-captured",
+       g_logFrames ? static_cast<double>(g_ffCarDraws) / g_logFrames : 0.0);
+  g_ffCarDraws = 0;
   clog(L"  opaque cut-outs %s: %.0f alpha-tested draws per frame drawn without alpha test (texture never below ALPHAREF)",
        g_opaqueAlpha ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_opaqueDraws) / g_logFrames : 0.0);
   clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",
@@ -3079,6 +3114,7 @@ void end_frame(IDirect3DDevice9* dev) {
              kDust = rbrrtx_key_pressed(RBRKEY_DUST), kGlass = rbrrtx_key_pressed(RBRKEY_WINDSCREEN),
              kSky = rbrrtx_key_pressed(RBRKEY_SKY), kDebugSun = rbrrtx_key_pressed(RBRKEY_DEBUG_SUN);
   const bool kBrighter = rbrrtx_key_pressed(RBRKEY_SUN_BRIGHTER), kDimmer = rbrrtx_key_pressed(RBRKEY_SUN_DIMMER);
+  const bool kFfCar = rbrrtx_key_pressed(RBRKEY_FF_CAR);
   const bool kFf = rbrrtx_key_pressed(RBRKEY_FF_SCENERY), kOpaque = rbrrtx_key_pressed(RBRKEY_OPAQUE_ALPHA);
   const bool kAlphaCut = rbrrtx_key_pressed(RBRKEY_ALPHACUT);
   const bool kRadNorm = rbrrtx_key_pressed(RBRKEY_FOLIAGE_NORMALS);
@@ -3099,6 +3135,11 @@ void end_frame(IDirect3DDevice9* dev) {
   if (kFf) {                                           // fixed-function scenery 0 -> 1 -> 2 -> 0
     g_ffMode = g_ffBase = (g_ffMode + 1) % 3;           // also what K steps return to
     swprintf_s(why, L"%s: fixed-function scenery mode %d", rbrrtx_key_name(RBRKEY_FF_SCENERY), g_ffMode);
+    log_frame(why);
+  }
+  if (kFfCar) {
+    g_ffCar = !g_ffCar;
+    swprintf_s(why, L"%s: car %s", rbrrtx_key_name(RBRKEY_FF_CAR), g_ffCar ? L"without vertex capture" : L"vertex-captured (as before)");
     log_frame(why);
   }
   if (kOpaque) {
@@ -5166,7 +5207,7 @@ struct GroundGeom { unsigned samples = 0, unreadable = 0; double area = 0, up = 
 std::unordered_map<unsigned long long, GroundGeom> g_groundGeom;
 unsigned g_groundGeomFrame = 0, g_groundGeomThisFrame = 0, g_groundNotGround = 0;
 
-bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area) {
+bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area, double minUp = 0.9) {
   if (!g_curInfo || !(g_curInfo->flags & SH_WORLDSPACE) || g_drawNumVert == 0 || g_drawNumVert > 60000) return false;
   int posOff = -1, uvOff = -1, uvType = -1;
   stream0_layout(dev, &posOff, &uvOff, &uvType);
@@ -5215,7 +5256,7 @@ bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area) {
     const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
     if (len < 1e-9) return;
     a += len;
-    if (std::fabs(n[1]) / len > 0.9) u += len;          // up or down: the winding does not matter
+    if (std::fabs(n[1]) / len > minUp) u += len;          // up or down: the winding does not matter
   };
   if (g_drawType == D3DPT_TRIANGLELIST) for (size_t i = 0; i + 2 < seq.size(); i += 3) tri(seq[i], seq[i + 1], seq[i + 2]);
   else if (g_drawType == D3DPT_TRIANGLESTRIP) for (size_t i = 0; i + 2 < seq.size(); ++i) tri(seq[i], seq[i + 1], seq[i + 2]);
@@ -5279,9 +5320,38 @@ void ground_note_draw(IDirect3DDevice9* dev, bool vsDriven) {
   if (!g_terrainConfSet.count(hx)) { ++g_gs.baseRuntime; g_groundDirty = true; }
 }
 
+// A base judged "not ground" can still be ground in this draw: a texture is one hash for everything drawn with it, and
+// Whaanga's far ground shares its atlas with the small grass bushes (user 2026-11-05: both light up on Alt+X hover). The first
+// three draws sampled were bushes (2-3 % up), so far ground lost its second layer and showed the flat atlas patch under it.
+// Such a base is judged again per draw, with slopes up to 45 degrees counted (the hills); walls and upright cards stay out.
+// A draw that cannot be read stays out: its texture already said no.
+struct DrawGround { signed char verdict = -1; };
+std::unordered_map<unsigned long long, DrawGround> g_groundDraws;
+unsigned g_groundDrawReads = 0, g_groundDrawsYes = 0;
+
+int ground_draw_verdict(IDirect3DDevice9* dev) {
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT off = 0, stride = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &off, &stride)) || !vb) return 0;
+  vb->lpVtbl->Release(vb);
+  unsigned long long k = reinterpret_cast<uintptr_t>(vb);
+  auto mix = [&k](unsigned long long v) { k = (k ^ v) * 0x100000001B3ull; };
+  mix(off); mix(g_drawFirstVert); mix(g_drawNumVert); mix(g_inDip ? g_dip.startIdx : 0xFFFFFFFFu); mix(g_pendingPrims);
+  DrawGround& d = g_groundDraws[k];
+  if (d.verdict >= 0) return d.verdict;
+  if (g_groundGeomFrame != g_frame) { g_groundGeomFrame = g_frame; g_groundGeomThisFrame = 0; }
+  if (g_groundGeomThisFrame >= 4) return -1;
+  ++g_groundGeomThisFrame;
+  ++g_groundDrawReads;
+  double up = 0, area = 0;
+  d.verdict = draw_up_area(dev, &up, &area, 0.7) && up >= 0.6 * area ? 1 : 0;
+  if (d.verdict) ++g_groundDrawsYes;
+  return d.verdict;
+}
+
 // The second layer (decal twin / bake layer) is only drawn over ground: its base t0 must have the "ground" verdict
-// (up-facing triangles). A base the verdict has not reached yet waits; a base not in the table (a decal-listed texture)
-// keeps the old behaviour. Facades and roofs got the same twin decal before (user 2026-11-02).
+// (up-facing triangles), or this draw its own. A base the verdict has not reached yet waits; a base not in the table (a
+// decal-listed texture) keeps the old behaviour. Facades and roofs got the same twin decal before (user 2026-11-02).
 bool ground_layer_allowed(IDirect3DDevice9* dev) {
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
@@ -5290,7 +5360,10 @@ bool ground_layer_allowed(IDirect3DDevice9* dev) {
   t0->lpVtbl->Release(t0);
   const auto it = g_groundGeom.find(hx);
   if (it == g_groundGeom.end() || it->second.verdict == 1) return true;
-  if (it->second.verdict == 0) ++g_gs.layerGated;
+  if (it->second.verdict != 0) return false;
+  const int own = ground_draw_verdict(dev);
+  if (own == 1) return true;
+  if (own == 0) ++g_gs.layerGated;
   return false;
 }
 
@@ -5350,11 +5423,11 @@ void ground_stage_line(const wchar_t* when) {
        g_groundNotGround, g_groundSent, g_groundFlushes);
   clog(L"ground blend paths [%s], per frame: %.1f RLDouble draws = %.1f fixed-function (vertex shader unbound: Remix reads the fixed-function stage state; %.1f of them had stage 0 on DISABLE, "
        L"the RLDoubleTextureSpecular facades and roads, and got texture x diffuse%s; %.1f ground bases drawn without pixel shader in BAKE mode) + %.1f vertex-shader driven (Remix takes the first textures); "
-       L"second layer %s: %.1f drawn per frame, %u skipped as not ground; terrain: %u rtx.conf catalog hashes judged not ground and left out of the list, %u run-time bases tagged; "
+       L"second layer %s: %.1f drawn per frame, %u skipped as not ground (bases judged not ground, read per draw: %u draws, %u of them ground after all); terrain: %u rtx.conf catalog hashes judged not ground and left out of the list, %u run-time bases tagged; "
        L"facades/roofs/signs take the plain normal-material path (first texture only)",
        when, double(g_gs.draws) / fr, double(g_gs.ffDraws) / fr, double(g_gs.stage0Fixed) / fr, g_stage0Fix ? L"" : L" (switched OFF in the menu: flat colour expected)",
        double(g_groundFFBases) / fr, double(g_gs.vsDriven) / fr,
-       g_layerMode == kLayerBake ? L"BAKE" : g_layerMode == kLayerDecal ? L"DECAL" : L"off", double(g_gs.layerDrawn) / fr, g_gs.layerGated,
+       g_layerMode == kLayerBake ? L"BAKE" : g_layerMode == kLayerDecal ? L"DECAL" : L"off", double(g_gs.layerDrawn) / fr, g_gs.layerGated, g_groundDrawReads, g_groundDrawsYes,
        g_gs.catalogRejected, g_gs.baseRuntime);
   g_groundPrinted = GetTickCount64();
   g_groundPrintedTags = g_gs.baseNew + g_gs.layerNew;
@@ -5381,6 +5454,8 @@ void ground_frame() {
       g_groundLayer.clear();
       g_groundDecalSkipped.clear();
       g_groundGeom.clear();
+      g_groundDraws.clear();
+      g_groundDrawReads = g_groundDrawsYes = 0;
       g_groundReject.clear();
       g_groundNotGround = 0;
       g_gs = GroundStats();
@@ -6426,7 +6501,14 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   // Fixed-function scenery (g_ffMode): unbind the VS for this draw, or give the game's VS back after FF draws.
   const int ffClass = g_curVS ? ff_scenery_class() : 0;
-  const bool ff = ffClass == 1 || (ffClass == 2 && ff_sway_far(dev));
+  bool carFf = false;
+  if (ffClass == 3) {
+    DWORD blendOn = 0;
+    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blendOn);
+    carFf = !blendOn;
+    if (carFf) ++g_ffCarDraws;
+  }
+  const bool ff = ffClass == 1 || carFf || (ffClass == 2 && ff_sway_far(dev));
   if (ff && ffClass == 2) ++g_ffSwayFar;
   if (ff && !g_vsUnbound) g_vsUnbound = SUCCEEDED(o.SetVertexShader(dev, nullptr));
   else if (!ff && g_vsUnbound && g_curVS) {
@@ -6435,7 +6517,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   const bool litOff = ff && g_lighting && SUCCEEDED(o.SetRenderState(dev, D3DRS_LIGHTING, FALSE));   // no normals
   if (ff) ++g_ffDraws;
-  IDirect3DVertexDeclaration9* nn = ff && !g_ffNormals && g_vin == kVinDecl && g_curDecl
+  IDirect3DVertexDeclaration9* nn = ff && !carFf && !g_ffNormals && g_vin == kVinDecl && g_curDecl
       ? no_normal(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl)) : nullptr;
   const bool normalsOff = nn && SUCCEEDED(o.SetVertexDeclaration(dev, nn));
   RbrAlphaCut ac = {};
@@ -6503,7 +6585,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   ground_base_end(dev, groundBase);
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
   if (litPrev) litPrev->lpVtbl->Release(litPrev);
-  if (SUCCEEDED(hr)) { RBR_ZONE(PZ_DRAW_EXTRA); if (ff) layer_draw(dev, draw); else dirt_draw(dev, draw); }
+  if (SUCCEEDED(hr)) { RBR_ZONE(PZ_DRAW_EXTRA); if (ff && !carFf) layer_draw(dev, draw); else dirt_draw(dev, draw); }
   stage0_fix_end(dev, stage0);
   if (normalsOff || radOn) o.SetVertexDeclaration(dev, static_cast<IDirect3DVertexDeclaration9*>(g_curDecl));
   if (radOn || radPrev) dev->lpVtbl->SetStreamSource(dev, kRadStream, radPrev, radPrevOff, radPrevStride);
@@ -6732,6 +6814,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     }
     g_clockOn = rbrrtx_env_flag(L"RBRRTX_CLOCK", true);
     g_ffNormals = rbrrtx_env_flag(L"RBRRTX_FF_NORMALS", false);
+    g_ffCar = rbrrtx_env_flag(L"RBRRTX_FF_CAR", true);
     g_uiTriggerOn = rbrrtx_env_flag(L"RBRRTX_UI_TRIGGER", true);
     g_skipOffscreen = !rbrrtx_env_flag(L"RBRRTX_OFFSCREEN", false);
     wchar_t fol[16];

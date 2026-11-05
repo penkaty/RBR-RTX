@@ -54,6 +54,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"api_world", kAlt | 'W', L"world through the Remix API: all -> foliage only -> off"},
   {L"lamp_mark", kAlt | VK_PRIOR, L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-02: Alt+PageUp (Alt+Insert before; user 2026-11-01 Alt+B quit the game)
   {L"menu", VK_F3, L"in-game menu: wetness, texture tags, info (a plain key; read from the window messages)"},   // user 2026-11-02: F3
+  {L"ff_car", kAlt | VK_OEM_PERIOD, L"car without vertex capture on/off (compare the prof log)"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
