@@ -547,7 +547,8 @@ int ff_scenery_class() {
   const unsigned f = g_curInfo->flags;
   // Car* shaders only transform (m4x4 c0; the rest is game lighting Remix does not use), so the car needs no vertex capture:
   // the mesh stays one BLAS moved by its instance transform instead of a capture and a refit per draw per frame. Glass stays
-  // captured for now, and so does a blended (ghost) car. 3 = keep the normals, draw the dirt twin (2026-11-05).
+  // captured for now. Blended draws too go this way: the alpha state does not depend on the VS (a blend test here left 93 of
+  // 129 car draws captured on Zlin, run 20261105-115544). 3 = keep the normals, draw the dirt twin (2026-11-05).
   if (g_ffCar && (f & SH_CAR) && !(f & (SH_GLASS | SH_ANIM))) return 3;
   const bool rl = (f & SH_SCENERY) && (f & SH_WORLDSPACE);   // RL* only (IO* = object space, interactive)
   if (!rl || (f & SH_ANIM)) return 0;
@@ -6501,13 +6502,8 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   // Fixed-function scenery (g_ffMode): unbind the VS for this draw, or give the game's VS back after FF draws.
   const int ffClass = g_curVS ? ff_scenery_class() : 0;
-  bool carFf = false;
-  if (ffClass == 3) {
-    DWORD blendOn = 0;
-    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blendOn);
-    carFf = !blendOn;
-    if (carFf) ++g_ffCarDraws;
-  }
+  const bool carFf = ffClass == 3;
+  if (carFf) ++g_ffCarDraws;
   const bool ff = ffClass == 1 || carFf || (ffClass == 2 && ff_sway_far(dev));
   if (ff && ffClass == 2) ++g_ffSwayFar;
   if (ff && !g_vsUnbound) g_vsUnbound = SUCCEEDED(o.SetVertexShader(dev, nullptr));
