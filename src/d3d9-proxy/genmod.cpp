@@ -59,8 +59,17 @@ void write_section_locked(const std::string& section, const wchar_t* why) {
   g_secDirty[section] = false;
   if (usda == old) return;
   CreateDirectoryW(dir.c_str(), nullptr);
-  std::ofstream out(file, std::ios::binary | std::ios::trunc);
-  out << usda;
+  // Written beside the file and moved over it, so Remix never parses half a file (2026-11-06: the car paint mod
+  // was rewritten while Remix loaded mods and failed to parse, so that run had no car paint).
+  const std::wstring tmp = file + L".tmp";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    out << usda;
+  }
+  if (!MoveFileExW(tmp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    glog(L"generated mod [%S]: could not replace %s (error %lu)", section.c_str(), file.c_str(), GetLastError());
+    return;
+  }
   ++g_writes;
   glog(L"generated mod [%S]: %s written (%zu bytes, %s)", section.c_str(), file.c_str(), usda.size(), why);
 }
