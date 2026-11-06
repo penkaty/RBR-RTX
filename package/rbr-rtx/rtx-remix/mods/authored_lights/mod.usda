@@ -1,6 +1,9 @@
 #usda 1.0
 (
-    doc = "Lights attached to game meshes, written by the Remix Lamps panel. Each mesh_ prim keeps the game's own mesh."
+    doc = "Lights and materials attached to game meshes, written by the Remix Lamps panel. Each mesh_ prim keeps the game's own mesh."
+    subLayers = [
+        @./library.usda@
+    ]
 )
 
 def Xform "RootNode"
