@@ -131,6 +131,11 @@ struct Settings {
   bool poseLog = false;                                // per-frame CSV rbrrtx_lamp_pose.csv in the run's logs
   // Lamp type (lamp_photometry): what the head lamps and brights are, for the log.
   std::wstring lampNote = L"custom (radiance keys)";
+  // Extra lamps (RSF carparts: bonnet pods, light bars, bumper lamps): a spot at each extra light node the car's live
+  // <car>_settings.ini switches on. extra = 0 off, 1 with the headlights, 2 with the brights only. Each lamp gets
+  // extraIntensity x a high beam's radiance in its own [LightN] colour; position lamps (posi, gab) get extraWeak x that.
+  int extra = 1;
+  float extraIntensity = 0.6f, extraCone = 20.0f, extraWeak = 0.04f;
 } g_cfg;
 bool g_haloStale = true;                               // load_settings ran: rebuild the halo twin on its next draw
 
@@ -384,6 +389,10 @@ void load_settings() {
     s.haloScale = std::clamp(ini_float(path, L"halo_scale", s.haloScale), 0.05f, 1.0f);
     s.haloFalloff = std::clamp(ini_float(path, L"halo_falloff", s.haloFalloff), 0.5f, 8.0f);
     s.gameLamps = ini_float(path, L"game_lamps", 1.0f) != 0.0f;
+    s.extra = std::clamp(static_cast<int>(ini_float(path, L"extra_lights", 1.0f)), 0, 2);
+    s.extraIntensity = std::clamp(ini_float(path, L"extra_intensity", s.extraIntensity), 0.0f, 10.0f);
+    s.extraCone = std::clamp(ini_float(path, L"extra_cone", s.extraCone), 1.0f, 89.0f);
+    s.extraWeak = std::clamp(ini_float(path, L"extra_weak", s.extraWeak), 0.0f, 1.0f);
     wchar_t lag[32] = {};
     ini_str(L"pose_lag", lag, 32, path);
     if (lag[0] && _wcsicmp(lag, L"auto")) s.poseLag = std::clamp(static_cast<float>(_wtof(lag)), -0.1f, 0.3f);
@@ -467,7 +476,83 @@ struct CarModel {
   bool kQuad = false;
   V3 kCam[4] = {};                                     // bottom left, bottom right, top left, top right (camera space)
   Placed glassNode = {};                               // model root -> e_window_f node local (its node chain)
+  // Extra lamps switched on in the live <car>_settings.ini (load_extra_lamps), in the root frame.
+  struct Extra { std::string name; V3 pos = {}; float rgb[3] = { 1, 1, 1 }; bool weak = false; bool brake = false; };
+  std::vector<Extra> extras;
 } g_car;
+constexpr size_t kMaxExtra = 16;
+
+// The value of "key = value" on a line of an ini block ("" if absent).
+std::string ini_field(const std::string& block, const char* key) {
+  const size_t klen = std::strlen(key);
+  size_t at = 0;
+  while ((at = block.find(key, at)) != std::string::npos) {
+    const bool lineStart = at == 0 || block[at - 1] == '\n';
+    size_t e = at + klen;
+    while (e < block.size() && (block[e] == ' ' || block[e] == '\t')) ++e;
+    if (lineStart && e < block.size() && block[e] == '=') {
+      size_t v = e + 1;
+      while (v < block.size() && (block[v] == ' ' || block[v] == '\t')) ++v;
+      const size_t end = block.find_first_of("\r\n", v);
+      std::string out = block.substr(v, end == std::string::npos ? std::string::npos : end - v);
+      while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+      return out;
+    }
+    at = e;
+  }
+  return std::string();
+}
+
+// RBR's [LightN] Id says what switches a lamp: 4 / 5 (6-11 on light bars) light with the headlights, 16-18 with the
+// brake, 21 / 22 are position lamps. Only active lamps that are not one of the stock ones (placed elsewhere) count.
+template <class NodeFn>
+void load_extra_lamps(const std::wstring& modelFile, NodeFn node) {
+  const size_t slash = modelFile.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return;
+  const std::wstring dir = modelFile.substr(0, slash + 1);
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW((dir + L"*_settings.ini").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  const std::wstring file = dir + fd.cFileName;
+  FindClose(h);
+  std::ifstream f(file, std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  auto lower = [](std::string x) {
+    for (char& c : x) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return x;
+  };
+  static const char* const kStock[] = { "point_light_lf", "point_light_rf", "point_light_lb", "point_light_rb",
+                                        "point_light_brake_lb", "point_light_brake_rb", "point_light_reverse_lb",
+                                        "point_light_reverse_rb" };
+  size_t at = 0;
+  while ((at = text.find('[', at)) != std::string::npos && g_car.extras.size() < kMaxExtra) {
+    const size_t next = text.find("\n[", at + 1);
+    const std::string block = text.substr(at, next == std::string::npos ? std::string::npos : next + 1 - at);
+    at = next == std::string::npos ? text.size() : next + 1;
+    const std::string part = ini_field(block, "Car Part"), lpart = lower(part);
+    if (part.empty() || lower(ini_field(block, "Active")) != "true") continue;
+    if (std::any_of(std::begin(kStock), std::end(kStock), [&](const char* k) { return lpart == k; })) continue;
+    const int id = std::atoi(ini_field(block, "Id").c_str());
+    CarModel::Extra e;
+    e.name = part;
+    e.weak = lpart.find("posi") != std::string::npos || lpart.find("gab") != std::string::npos;
+    e.brake = id >= 16 && id <= 18;
+    if (!e.weak && !e.brake && (id < 4 || id > 11)) continue;
+    if (std::any_of(g_car.extras.begin(), g_car.extras.end(), [&](const CarModel::Extra& o) { return o.name == part; })) continue;
+    if (!node(part.c_str(), e.pos)) continue;
+    const float r = static_cast<float>(std::atoi(ini_field(block, "Red").c_str()));
+    const float g = static_cast<float>(std::atoi(ini_field(block, "Green").c_str()));
+    const float b = static_cast<float>(std::atoi(ini_field(block, "Blue").c_str()));
+    const float m = (std::max)({ r, g, b });
+    if (m > 0.0f) { e.rgb[0] = r / m; e.rgb[1] = g / m; e.rgb[2] = b / m; }
+    else if (e.brake) { e.rgb[1] = e.rgb[2] = 0.0f; }
+    g_car.extras.push_back(e);
+  }
+  std::wstring names;
+  for (const CarModel::Extra& e : g_car.extras)
+    names += std::wstring(e.name.begin(), e.name.end()) + (e.brake ? L" (brake) " : e.weak ? L" (position) " : L" ");
+  hlog(L"headlights: extra lamps from %s: %zu %s", file.c_str(), g_car.extras.size(), names.empty() ? L"(none switched on)" : names.c_str());
+}
 
 // Model root -> node local (row vectors) from the node's chain to the root: p_local = R^-1 (p_root - t). A real
 // inverse: some nodes are scaled (fiesta_r2 e_body: x 1.048).
@@ -792,6 +877,7 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaust = true;
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
+  load_extra_lamps(file, lamp);
   load_windscreen(d, nodes, byName);
   load_cockpit_quad(d, file);
   for (const char* name : { "e_body", "i_body" }) {   // the frame most of the car is drawn in
@@ -1211,10 +1297,11 @@ unsigned g_lampFrame = 0;                              // last frame a car lamp 
 struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; float rad[3] = {};
               unsigned sent = ~0u; };                  // sent = frame it was last drawn
 // RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire), RBRRVLFT / RGT (reversing)
-Lamp g_lamps[10] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
+Lamp g_lamps[10 + kMaxExtra] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
                      { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
                      { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL }, { nullptr, 0x52425252'564C4654ULL },
                      { nullptr, 0x52425252'56524754ULL } };
+Lamp* const g_extraLamps = g_lamps + 10;               // RBRXL00.. (hashes set in rbrrtx_headlights_init)
 unsigned g_creates = 0;
 bool g_reversing = false;                              // reverse lamp lit (gear 0)
 unsigned g_reverseSwitches = 0;
@@ -1387,6 +1474,7 @@ bool in_stage(RbrStageInfo* si) {
 
 void rbrrtx_headlights_init(const remixapi_Interface* api) {
   g_api = api;
+  for (size_t i = 0; i < kMaxExtra; ++i) g_extraLamps[i].hash = 0x52425258'4C000000ULL + i;   // "RBRXL" + index
   load_settings();
   if (g_cfg.poseLag >= 0.0f) { g_lag = g_cfg.poseLag; g_lagKnown = true; }
 }
@@ -1624,6 +1712,28 @@ void send_lamps(const float C[16], const wchar_t* src) {
       const V3 bdir = aim(g_cfg.brightsPitch);
       draw_lamp(g_lamps[3], bl, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
       draw_lamp(g_lamps[4], br, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
+    }
+  }
+  if (g_cfg.extra && g_mode != kOff) {                // extra lamps of the headlight group
+    const V3 edir = aim(g_cfg.brightsPitch), wdir = aim(g_cfg.pitch);
+    for (size_t i = 0; i < g_car.extras.size(); ++i) {
+      const CarModel::Extra& e = g_car.extras[i];
+      if (e.brake || (!e.weak && g_cfg.extra == 2 && g_mode != kBrights)) continue;
+      const float k = g_cfg.extraIntensity * (e.weak ? g_cfg.extraWeak : 1.0f);
+      const float rad[3] = { g_cfg.brightsRadiance[0] * k * e.rgb[0], g_cfg.brightsRadiance[1] * k * e.rgb[1],
+                             g_cfg.brightsRadiance[2] * k * e.rgb[2] };
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + ahead), e.weak ? wdir : edir, e.weak ? g_cfg.cone : g_cfg.extraCone, rad,
+                e.weak ? g_cfg.softness : g_cfg.brightsSoftness);
+    }
+  }
+  if (g_cfg.extra && g_braking) {                      // extra brake lamps (centre and high brake lights)
+    const float pr = g_cfg.rearPitch * 0.0174533f;
+    const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
+    for (size_t i = 0; i < g_car.extras.size(); ++i) {
+      const CarModel::Extra& e = g_car.extras[i];
+      if (!e.brake) continue;
+      const float rad[3] = { g_cfg.brakeRadiance[0] * e.rgb[0], g_cfg.brakeRadiance[1] * e.rgb[1], g_cfg.brakeRadiance[2] * e.rgb[2] };
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + g_car.forward * -g_cfg.rearBack), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
     }
   }
   for (Lamp& l : g_lamps) if (l.h && l.sent != g_frameNo) destroy_lamp(l);

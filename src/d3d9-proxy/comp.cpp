@@ -4213,12 +4213,17 @@ void load_skip_textures() {
 // their original alpha, not all are always fully opaque").
 std::unordered_set<unsigned long long> g_glassTex;
 DWORD g_stickerRef = 240;
+// Alpha added to the clear glass (0-255): without it the glass is as clear as the game drew it, and its reflection is
+// scaled down by that alpha to almost nothing. Outside view and cabin view have their own.
+DWORD g_glassAlphaAdd = 48, g_glassAlphaAddCabin = 10;
 
 void load_glass_split() {
   wchar_t path[MAX_PATH * 2], v[4096] = {};
   rbrrtx_config_path(L"RBRRTX_MATERIALS", L"materials.ini", path, MAX_PATH * 2);
   g_glassSplit = GetPrivateProfileIntW(L"glass", L"split", 1, path) != 0;
   g_stickerRef = static_cast<DWORD>((std::min)(255, (std::max)(1, static_cast<int>(GetPrivateProfileIntW(L"glass", L"sticker_ref", 240, path)))));
+  g_glassAlphaAdd = (std::min)(255u, GetPrivateProfileIntW(L"glass", L"glass_alpha_add", 48, path));
+  g_glassAlphaAddCabin = (std::min)(255u, GetPrivateProfileIntW(L"glass", L"glass_alpha_add_cabin", 10, path));
   GetPrivateProfileStringW(L"glass", L"textures", L"", v, 4096, path);
   for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
     if (const unsigned long long h = _wcstoui64(t, nullptr, 16)) g_glassTex.insert(h);
@@ -4236,8 +4241,8 @@ void load_glass_split() {
       fclose(f);
     }
   }
-  clog(L"glass split %s: %zu glass texture(s) (%zu from the rbr_car_glass mod), stickers at alpha >= %lu",
-       g_glassSplit ? L"ON" : L"off", g_glassTex.size(), fromMod, g_stickerRef);
+  clog(L"glass split %s: %zu glass texture(s) (%zu from the rbr_car_glass mod), stickers at alpha >= %lu, clear glass alpha +%lu (cabin +%lu)",
+       g_glassSplit ? L"ON" : L"off", g_glassTex.size(), fromMod, g_stickerRef, g_glassAlphaAdd, g_glassAlphaAddCabin);
 }
 
 // The current draw is car glass to split: a blended car draw without depth write whose stage-0 texture is glass.
@@ -4271,7 +4276,27 @@ HRESULT glass_split_draw(IDirect3DDevice9* dev, Draw& draw) {
   o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, blend);
   o.SetRenderState(dev, D3DRS_ZWRITEENABLE, zw);
   o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_LESS);
-  if (SUCCEEDED(hr)) hr = draw();                      // the clear glass around them: blended as the game drew it
+  // The clear glass around them, blended, its alpha raised by the texture factor (stage 0 alpha = texture + factor;
+  // Remix applies the stage's alpha operation to the replacement material's opacity too).
+  const DWORD add = rbrrtx_camera_in_cabin() ? g_glassAlphaAddCabin : g_glassAlphaAdd;
+  DWORD aop = 0, a1 = 0, a2 = 0, tf = 0;
+  if (add) {
+    dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAOP, &aop);
+    dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, &a1);
+    dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, &a2);
+    dev->lpVtbl->GetRenderState(dev, D3DRS_TEXTUREFACTOR, &tf);
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_ADD);
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
+    o.SetRenderState(dev, D3DRS_TEXTUREFACTOR, (add << 24) | 0x00FFFFFFu);
+  }
+  if (SUCCEEDED(hr)) hr = draw();
+  if (add) {
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, aop);
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, a1);
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, a2);
+    o.SetRenderState(dev, D3DRS_TEXTUREFACTOR, tf);
+  }
   o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, at);
   o.SetRenderState(dev, D3DRS_ALPHAFUNC, func);
   o.SetRenderState(dev, D3DRS_ALPHAREF, ref);
