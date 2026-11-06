@@ -180,7 +180,7 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
 void rbrrtx_world_lights_reload();
 // rbrhud.cpp: the cockpit windscreen with RBRHUD's F4 opacity / threshold (rbrhud.ini [windscreen]); nullptr = unchanged.
-void* rbrrtx_rbrhud_windscreen_twin(void* device, void* baseTexture, unsigned long long srcHash);
+bool rbrrtx_rbrhud_windscreen(float* opacity, float* threshold, bool* regionsOnly);   // RBRHUD F4 windscreen settings, while opacity < 1
 // An F3 emissive prop that casts light (custom.cpp): a lamp kind for its texture; lumens <= 0 removes it. Lamps go and are
 // found again from the next draws.
 void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,

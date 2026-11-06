@@ -467,6 +467,7 @@ bool is_sky_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo-
 // RBRRTX_GLASS=0 skips it.
 bool g_glassOn = true;
 bool g_glassSplit = true;                              // materials.ini [glass] split (load_glass_split)
+unsigned g_glassHudDraws = 0;                         // of them, cockpit windscreen draws with RBRHUD's F4 opacity
 unsigned g_glassSplitDraws = 0;                       // car glass draws split into stickers + glass (load_glass_split) since the last log line
 
 bool is_glass_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_GLASS); }
@@ -2750,9 +2751,10 @@ void log_frame(const wchar_t* why) {
   clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",
        g_dirtOn ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_dirtDraws) / g_logFrames : 0.0, g_dirtUntagged);
   g_dirtDraws = g_dirtUntagged = 0;
-  clog(L"  glass split %s: %.0f car glass draws per frame drawn as solid stickers + blended glass", g_glassSplit ? L"ON" : L"off",
-       g_logFrames ? static_cast<double>(g_glassSplitDraws) / g_logFrames : 0.0);
-  g_glassSplitDraws = 0;
+  clog(L"  glass split %s: %.0f car glass draws per frame drawn as solid stickers + blended glass (%.0f cockpit windscreen with RBRHUD's opacity)",
+       g_glassSplit ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_glassSplitDraws) / g_logFrames : 0.0,
+       g_logFrames ? static_cast<double>(g_glassHudDraws) / g_logFrames : 0.0);
+  g_glassSplitDraws = g_glassHudDraws = 0;
   {
     unsigned held = 0, twins = 0;
     double mb = 0;
@@ -4245,53 +4247,83 @@ void load_glass_split() {
        g_glassSplit ? L"ON" : L"off", g_glassTex.size(), fromMod, g_stickerRef, g_glassAlphaAdd, g_glassAlphaAddCabin);
 }
 
-// The current draw is car glass to split: a blended car draw without depth write whose stage-0 texture is glass.
-bool glass_split_wanted(IDirect3DDevice9* dev) {
-  if (!g_glassSplit || g_glassTex.empty() || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & SH_CAR)) return false;
+// How the current glass draw is split. Car glass (texture in the glass list): stickers solid at alpha >= sticker_ref,
+// the rest blended with its alpha raised by glass_alpha_add. The cockpit windscreen while RBRHUD's F4 opacity is below 1
+// (rbrhud.cpp): RBRHUD's own rule, alpha = a >= threshold ? a : a * opacity (regions only), else a * opacity everywhere.
+// Texels at or above the threshold are drawn solid, the rest blended at a * opacity. A threshold below 0.5 counts as 0.5:
+// solid texels have no alpha left, so a low one would turn the whole windscreen opaque.
+struct GlassPlan {
+  bool stickers = true;                                // first pass: alpha-tested, solid
+  DWORD stickerRef = 240;
+  DWORD alphaOp = D3DTOP_ADD;                          // second pass: texture alpha op with the texture factor
+  DWORD alphaFactor = 0;
+  bool hud = false;
+};
+
+bool glass_split_plan(IDirect3DDevice9* dev, GlassPlan& plan) {
+  if (!g_glassSplit || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & (SH_CAR | SH_GLASS))) return false;
   DWORD blend = 0, zw = 0;
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
   dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
   if (!blend || zw) return false;
+  float opacity = 1.0f, threshold = 1.0f;
+  bool regionsOnly = true;
+  if ((g_curInfo->flags & SH_GLASS) && rbrrtx_rbrhud_windscreen(&opacity, &threshold, &regionsOnly)) {
+    plan.hud = true;
+    plan.stickers = regionsOnly;
+    plan.stickerRef = static_cast<DWORD>(std::clamp(static_cast<int>(std::lround(threshold * 255.0f)), 128, 255));
+    plan.alphaOp = D3DTOP_MODULATE;
+    plan.alphaFactor = static_cast<DWORD>(std::lround(std::clamp(opacity, 0.0f, 1.0f) * 255.0f));
+    return true;
+  }
+  if (g_glassTex.empty()) return false;
   IDirect3DBaseTexture9* t = nullptr;
   if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &t)) || !t) return false;
   const unsigned long long h = rbrrtx_texture_hash(t);
   t->lpVtbl->Release(t);
-  return g_glassTex.count(h) != 0;
+  if (!g_glassTex.count(h)) return false;
+  plan.stickerRef = g_stickerRef;
+  plan.alphaOp = D3DTOP_ADD;
+  plan.alphaFactor = rbrrtx_camera_in_cabin() ? g_glassAlphaAddCabin : g_glassAlphaAdd;
+  return true;
 }
 
 template <class Draw>
-HRESULT glass_split_draw(IDirect3DDevice9* dev, Draw& draw) {
+HRESULT glass_split_draw(IDirect3DDevice9* dev, const GlassPlan& plan, Draw& draw) {
   DWORD blend = 0, zw = 0, at = 0, func = 0, ref = 0;
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
   dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAFUNC, &func);
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAREF, &ref);
-  o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
-  o.SetRenderState(dev, D3DRS_ZWRITEENABLE, TRUE);
-  o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
-  o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
-  o.SetRenderState(dev, D3DRS_ALPHAREF, g_stickerRef);
-  HRESULT hr = draw();                                 // stickers, numbers, sun visor: opaque
-  o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, blend);
-  o.SetRenderState(dev, D3DRS_ZWRITEENABLE, zw);
-  o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_LESS);
-  // The clear glass around them, blended, its alpha raised by the texture factor (stage 0 alpha = texture + factor;
+  HRESULT hr = D3D_OK;
+  if (plan.stickers) {                                 // stickers, numbers, sun visor: opaque
+    o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
+    o.SetRenderState(dev, D3DRS_ZWRITEENABLE, TRUE);
+    o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
+    o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+    o.SetRenderState(dev, D3DRS_ALPHAREF, plan.stickerRef);
+    hr = draw();
+    o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, blend);
+    o.SetRenderState(dev, D3DRS_ZWRITEENABLE, zw);
+    o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_LESS);
+  }
+  // The clear glass around them, blended, its alpha changed by the texture factor (stage 0 alpha = texture op factor;
   // Remix applies the stage's alpha operation to the replacement material's opacity too).
-  const DWORD add = rbrrtx_camera_in_cabin() ? g_glassAlphaAddCabin : g_glassAlphaAdd;
+  const bool factor = plan.alphaOp == D3DTOP_MODULATE || plan.alphaFactor != 0;
   DWORD aop = 0, a1 = 0, a2 = 0, tf = 0;
-  if (add) {
+  if (factor) {
     dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAOP, &aop);
     dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, &a1);
     dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, &a2);
     dev->lpVtbl->GetRenderState(dev, D3DRS_TEXTUREFACTOR, &tf);
-    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_ADD);
+    o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, plan.alphaOp);
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
-    o.SetRenderState(dev, D3DRS_TEXTUREFACTOR, (add << 24) | 0x00FFFFFFu);
+    o.SetRenderState(dev, D3DRS_TEXTUREFACTOR, (plan.alphaFactor << 24) | 0x00FFFFFFu);
   }
   if (SUCCEEDED(hr)) hr = draw();
-  if (add) {
+  if (factor) {
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, aop);
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, a1);
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, a2);
@@ -4301,6 +4333,7 @@ HRESULT glass_split_draw(IDirect3DDevice9* dev, Draw& draw) {
   o.SetRenderState(dev, D3DRS_ALPHAFUNC, func);
   o.SetRenderState(dev, D3DRS_ALPHAREF, ref);
   ++g_glassSplitDraws;
+  if (plan.hud) ++g_glassHudDraws;
   return hr;
 }
 
@@ -6702,7 +6735,8 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"culling");
     return D3D_OK;
   }
-  const bool glassSplit = glass_split_wanted(dev);           // car glass: stickers solid, glass blended (before any twin swaps the texture)
+  GlassPlan glassPlan;
+  const bool glassSplit = glass_split_plan(dev, glassPlan);  // car glass: stickers solid, glass blended (before any twin swaps the texture)
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
   texture_probe_draw(dev);                                   // F3 texture picker: the same ray, every frame while the page asks
   void* lampGlow = nullptr;
@@ -6712,13 +6746,6 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &et)) && et) {
       lampGlow = rbrrtx_emit_twin(dev, rbrrtx_texture_hash(et), et, rbrrtx_world_lights_night_fraction(rbrrtx_sun_shown_elevation()));
       et->lpVtbl->Release(et);
-    }
-  }
-  if (!lampGlow && g_apiOk && is_glass_draw()) {             // RBRHUD's F4 windscreen opacity (rbrhud.cpp): the remapped twin
-    IDirect3DBaseTexture9* wt = nullptr;
-    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &wt)) && wt) {
-      lampGlow = rbrrtx_rbrhud_windscreen_twin(dev, wt, rbrrtx_texture_hash(wt));
-      wt->lpVtbl->Release(wt);
     }
   }
   g_primCap = UINT_MAX;
@@ -6871,7 +6898,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) {
     if (g_enabled && g_primaryRT) rbrrtx_hudglow_before(dev);
-    hr = glassSplit ? glass_split_draw(dev, draw) : draw();
+    hr = glassSplit ? glass_split_draw(dev, glassPlan, draw) : draw();
     rbrrtx_hudglow_after(dev);
   }
   ground_base_end(dev, groundBase);

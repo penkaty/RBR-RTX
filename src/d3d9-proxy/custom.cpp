@@ -112,15 +112,95 @@ float rand01(unsigned seed, unsigned i, unsigned salt) {
   return static_cast<float>(static_cast<double>(z >> 11) / 9007199254740992.0);
 }
 
+// Mip 0 of a saved DDS (DXT1, DXT3, DXT5 or 32-bit A8R8G8B8) as 0xAARRGGBB pixels. Returns false for other formats.
+bool read_dds_rgba(const std::wstring& path, std::vector<uint32_t>& out, unsigned& w, unsigned& h) {
+  FILE* fp = nullptr;
+  if (_wfopen_s(&fp, path.c_str(), L"rb") || !fp) return false;
+  uint32_t hdr[32] = {};
+  const bool okHdr = fread(hdr, sizeof(hdr), 1, fp) == 1 && hdr[0] == 0x20534444;
+  if (!okHdr) { fclose(fp); return false; }
+  h = hdr[3];
+  w = hdr[4];
+  const uint32_t fourcc = hdr[21], bits = hdr[22];
+  const int kind = fourcc == 0x31545844 ? 1 : fourcc == 0x33545844 ? 3 : fourcc == 0x35545844 ? 5 : (fourcc == 0 && bits == 32) ? 32 : 0;
+  if (!kind || w == 0 || h == 0 || w > 8192 || h > 8192) { fclose(fp); return false; }
+  const size_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+  const size_t bytes = kind == 32 ? static_cast<size_t>(w) * h * 4 : bw * bh * (kind == 1 ? 8 : 16);
+  std::vector<uint8_t> d(bytes);
+  const bool okData = fread(d.data(), 1, bytes, fp) == bytes;
+  fclose(fp);
+  if (!okData) return false;
+  out.assign(static_cast<size_t>(w) * h, 0);
+  if (kind == 32) {
+    std::memcpy(out.data(), d.data(), bytes);
+    return true;
+  }
+  auto c565 = [](uint16_t c, int ch) {
+    const int v = ch == 0 ? (c >> 11) & 31 : ch == 1 ? (c >> 5) & 63 : c & 31;
+    return ch == 1 ? (v * 255 + 31) / 63 : (v * 255 + 15) / 31;
+  };
+  for (size_t by = 0; by < bh; ++by) {
+    for (size_t bx = 0; bx < bw; ++bx) {
+      const uint8_t* b = d.data() + (by * bw + bx) * (kind == 1 ? 8 : 16);
+      const uint8_t* cb = kind == 1 ? b : b + 8;
+      const uint16_t c0 = static_cast<uint16_t>(cb[0] | (cb[1] << 8)), c1 = static_cast<uint16_t>(cb[2] | (cb[3] << 8));
+      int pal[4][3];
+      for (int ch = 0; ch < 3; ++ch) {
+        pal[0][ch] = c565(c0, ch);
+        pal[1][ch] = c565(c1, ch);
+        if (kind != 1 || c0 > c1) {
+          pal[2][ch] = (2 * pal[0][ch] + pal[1][ch]) / 3;
+          pal[3][ch] = (pal[0][ch] + 2 * pal[1][ch]) / 3;
+        } else {
+          pal[2][ch] = (pal[0][ch] + pal[1][ch]) / 2;
+          pal[3][ch] = 0;
+        }
+      }
+      const uint32_t idx = cb[4] | (cb[5] << 8) | (cb[6] << 16) | (static_cast<uint32_t>(cb[7]) << 24);
+      int alphas[8] = {};
+      uint64_t aidx = 0;
+      if (kind == 5) {
+        alphas[0] = b[0];
+        alphas[1] = b[1];
+        for (int i = 2; i < 8; ++i)
+          alphas[i] = alphas[0] > alphas[1] ? ((8 - i) * alphas[0] + (i - 1) * alphas[1]) / 7
+                    : i < 6 ? ((6 - i) * alphas[0] + (i - 1) * alphas[1]) / 5 : (i == 6 ? 0 : 255);
+        for (int i = 0; i < 6; ++i) aidx |= static_cast<uint64_t>(b[2 + i]) << (8 * i);
+      }
+      for (int py = 0; py < 4; ++py) {
+        for (int px = 0; px < 4; ++px) {
+          const size_t x = bx * 4 + px, y = by * 4 + py;
+          if (x >= w || y >= h) continue;
+          const int i = py * 4 + px;
+          const int ci = (idx >> (2 * i)) & 3;
+          int a = 255;
+          if (kind == 1) a = (c0 <= c1 && ci == 3) ? 0 : 255;
+          else if (kind == 3) a = ((b[i / 2] >> (4 * (i & 1))) & 15) * 17;
+          else a = alphas[(aidx >> (3 * i)) & 7];
+          out[y * w + x] = (static_cast<uint32_t>(a) << 24) | (pal[ci][0] << 16) | (pal[ci][1] << 8) | pal[ci][2];
+        }
+      }
+    }
+  }
+  return true;
+}
+
 // The emissive mask: white where the texture glows (props), or the lit panes with their brightness (windows). Named by its
 // content (Remix does not reload a file it has open). Returns the path ("" = failed).
-std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned th) {
+// With the saved texture readable, each glowing texel takes the texture's own colour, weighted by its brightness
+// (user 2026-11-06: emissive lamps came out plain white, windows flat): dark parts of a lamp housing or a window frame
+// stay dark, bright glass glows in its own colour.
+std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned th, const std::wstring& texDds) {
   const std::wstring dir = emit_dir();
   if (dir.empty()) return std::wstring();
   const unsigned W = std::clamp(tw / 2, 256u, 2048u), H = std::clamp(th / 2, 128u, 2048u);
   uint32_t key = 2166136261u;
   auto mix = [&](uint32_t v) { key ^= v; key *= 16777619u; };
+  std::vector<uint32_t> tex;
+  unsigned texW = 0, texH = 0;
+  const bool textured = read_dds_rgba(texDds, tex, texW, texH);
   mix(W); mix(H); mix(e.windows); mix(e.seed); mix(static_cast<uint32_t>(e.litPercent)); mix(static_cast<uint32_t>(e.nrects));
+  mix(textured ? 2u : 1u);
   for (int i = 0; i < e.nrects; ++i) for (float f : e.rects[i]) mix(static_cast<uint32_t>(std::lround(f * 4096.0f)));
   wchar_t tail[40];
   swprintf_s(tail, L"_mask_%08X.dds", key);
@@ -138,6 +218,22 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
     const int y0 = std::clamp(static_cast<int>(std::floor(r[1] * H)), 0, static_cast<int>(H) - 1), y1 = std::clamp(static_cast<int>(std::ceil(r[3] * H)), 1, static_cast<int>(H));
     const uint32_t c = 0xFF000000u | (v << 16) | (v << 8) | v;
     for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) px[static_cast<size_t>(y) * W + x] = c;
+  }
+  if (textured) {
+    for (unsigned y = 0; y < H; ++y) {
+      for (unsigned x = 0; x < W; ++x) {
+        uint32_t& m = px[static_cast<size_t>(y) * W + x];
+        const float v = static_cast<float>(m & 0xFF) / 255.0f;
+        if (v <= 0.0f) continue;
+        const uint32_t t = tex[static_cast<size_t>(y * texH / H) * texW + x * texW / W];
+        const float r = ((t >> 16) & 0xFF) / 255.0f, g = ((t >> 8) & 0xFF) / 255.0f, b = (t & 0xFF) / 255.0f;
+        const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        const float k = v * std::clamp((lum - 0.15f) / 0.7f, 0.0f, 1.0f);
+        const float sk = k * k * (3.0f - 2.0f * k);   // smoothstep: housings and frames dark, lit glass full
+        auto ch = [&](float c) { return static_cast<uint32_t>(std::lround(std::clamp(c * sk / (std::max)(lum, 0.05f) * 0.75f, 0.0f, 1.0f) * 255.0f)); };
+        m = 0xFF000000u | (ch(r) << 16) | (ch(g) << 8) | ch(b);
+      }
+    }
   }
   DWORD hdr[32] = {};
   hdr[0] = 0x20534444; hdr[1] = 124;
@@ -331,7 +427,7 @@ void rbrrtx_emit_set(const RbrEmit& e) {
   g_emit[e.tex] = e;
   EmitState& st = g_state[e.tex];
   if (st.ok) {                                         // the mask follows the edit; the twin comes back after the mod reloads
-    const std::wstring m = write_mask(e.tex, e, st.w, st.h);
+    const std::wstring m = write_mask(e.tex, e, st.w, st.h, st.dds);
     if (!m.empty()) { st.mask = m; st.readyAt = GetTickCount64() + kSettle; }
   }
   publish();
@@ -384,7 +480,7 @@ void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture,
     if (bt && SUCCEEDED(bt->lpVtbl->GetLevelDesc(bt, 0, &desc))) { st.w = desc.Width; st.h = desc.Height; }
     const bool have = GetFileAttributesW(st.dds.c_str()) != INVALID_FILE_ATTRIBUTES;
     if (!dir.empty() && st.w && (have || rbrrtx_save_texture_dds_mips(baseTexture, st.dds.c_str()))) {
-      st.mask = write_mask(hash, e, st.w, st.h);
+      st.mask = write_mask(hash, e, st.w, st.h, st.dds);
       st.ok = !st.mask.empty();
     }
     st.readyAt = GetTickCount64() + kSettle;
