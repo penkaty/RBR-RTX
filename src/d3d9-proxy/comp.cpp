@@ -466,6 +466,8 @@ bool is_sky_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo-
 // samples) + glossy glass materials (tools/pbr/make_car_glass_mod.py) -> windscreen drawn by default again;
 // RBRRTX_GLASS=0 skips it.
 bool g_glassOn = true;
+bool g_glassSplit = true;                              // materials.ini [glass] split (load_glass_split)
+unsigned g_glassSplitDraws = 0;                       // car glass draws split into stickers + glass (load_glass_split) since the last log line
 
 bool is_glass_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_GLASS); }
 
@@ -2748,6 +2750,9 @@ void log_frame(const wchar_t* why) {
   clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",
        g_dirtOn ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_dirtDraws) / g_logFrames : 0.0, g_dirtUntagged);
   g_dirtDraws = g_dirtUntagged = 0;
+  clog(L"  glass split %s: %.0f car glass draws per frame drawn as solid stickers + blended glass", g_glassSplit ? L"ON" : L"off",
+       g_logFrames ? static_cast<double>(g_glassSplitDraws) / g_logFrames : 0.0);
+  g_glassSplitDraws = 0;
   {
     unsigned held = 0, twins = 0;
     double mb = 0;
@@ -4193,6 +4198,85 @@ void load_skip_textures() {
   g_flareSkip = GetPrivateProfileIntW(L"skip_draws", L"lens_flare", 1, path) != 0;
   clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws]); lens flare (screen-space additive draws after the sun query) %s",
        g_skipTex.size(), g_flareSkip ? L"skipped" : L"left alone");
+}
+
+// Car glass with stickers (user 2026-11-06: "distinguishable glass surface with stickers on top as the same texture";
+// D2D966AD666A5A05 Fabia, the Evo's heated rear-glass lines). One texture holds the clear glass (low alpha) and the
+// stickers, numbers and sun visor (high alpha); drawn blended, Remix shades all of it as one see-through layer, and
+// stochastic alpha blend plus the denoiser smear the stickers. Real translucent glass failed on 10-16
+// (make_car_glass_mod.py history). Here every glass draw is made twice with the same texture: the stickers opaque and
+// alpha-tested (alpha >= sticker_ref, depth written), then the glass blended with the inverted test (alpha < sticker_ref).
+// No texel is in both, so no coplanar surfaces fight, and both keep the texture's hash (the glass mod's roughness applies).
+// Glass textures: every material of the rbr_car_glass mod (<DEFAULT_MODS_DIR>\rbr_car_glass\mod.usda) plus
+// materials.ini [glass] textures. materials.ini [glass] split = 0 turns it off, sticker_ref = 1..255 (default 240). Only texels at or above it become solid;
+// semi-transparent stickers and the sun visor gradient stay in the blended pass at their own alpha (user: "controlled by
+// their original alpha, not all are always fully opaque").
+std::unordered_set<unsigned long long> g_glassTex;
+DWORD g_stickerRef = 240;
+
+void load_glass_split() {
+  wchar_t path[MAX_PATH * 2], v[4096] = {};
+  rbrrtx_config_path(L"RBRRTX_MATERIALS", L"materials.ini", path, MAX_PATH * 2);
+  g_glassSplit = GetPrivateProfileIntW(L"glass", L"split", 1, path) != 0;
+  g_stickerRef = static_cast<DWORD>((std::min)(255, (std::max)(1, static_cast<int>(GetPrivateProfileIntW(L"glass", L"sticker_ref", 240, path)))));
+  GetPrivateProfileStringW(L"glass", L"textures", L"", v, 4096, path);
+  for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
+    if (const unsigned long long h = _wcstoui64(t, nullptr, 16)) g_glassTex.insert(h);
+  wchar_t mods[MAX_PATH * 2] = {};
+  size_t fromMod = 0;
+  if (GetEnvironmentVariableW(L"DEFAULT_MODS_DIR", mods, MAX_PATH * 2)) {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, (std::wstring(mods) + L"\\rbr_car_glass\\mod.usda").c_str(), L"rb") == 0 && f) {
+      char line[512];
+      while (fgets(line, sizeof line, f)) {
+        const char* m = strstr(line, "Material \"mat_");
+        if (!m) continue;
+        if (const unsigned long long h = _strtoui64(m + 14, nullptr, 16)) { g_glassTex.insert(h); ++fromMod; }
+      }
+      fclose(f);
+    }
+  }
+  clog(L"glass split %s: %zu glass texture(s) (%zu from the rbr_car_glass mod), stickers at alpha >= %lu",
+       g_glassSplit ? L"ON" : L"off", g_glassTex.size(), fromMod, g_stickerRef);
+}
+
+// The current draw is car glass to split: a blended car draw without depth write whose stage-0 texture is glass.
+bool glass_split_wanted(IDirect3DDevice9* dev) {
+  if (!g_glassSplit || g_glassTex.empty() || !g_enabled || !g_primaryRT || !g_curInfo || !(g_curInfo->flags & SH_CAR)) return false;
+  DWORD blend = 0, zw = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
+  if (!blend || zw) return false;
+  IDirect3DBaseTexture9* t = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &t)) || !t) return false;
+  const unsigned long long h = rbrrtx_texture_hash(t);
+  t->lpVtbl->Release(t);
+  return g_glassTex.count(h) != 0;
+}
+
+template <class Draw>
+HRESULT glass_split_draw(IDirect3DDevice9* dev, Draw& draw) {
+  DWORD blend = 0, zw = 0, at = 0, func = 0, ref = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAFUNC, &func);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAREF, &ref);
+  o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
+  o.SetRenderState(dev, D3DRS_ZWRITEENABLE, TRUE);
+  o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
+  o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+  o.SetRenderState(dev, D3DRS_ALPHAREF, g_stickerRef);
+  HRESULT hr = draw();                                 // stickers, numbers, sun visor: opaque
+  o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, blend);
+  o.SetRenderState(dev, D3DRS_ZWRITEENABLE, zw);
+  o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_LESS);
+  if (SUCCEEDED(hr)) hr = draw();                      // the clear glass around them: blended as the game drew it
+  o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, at);
+  o.SetRenderState(dev, D3DRS_ALPHAFUNC, func);
+  o.SetRenderState(dev, D3DRS_ALPHAREF, ref);
+  ++g_glassSplitDraws;
+  return hr;
 }
 
 // The game's lens flare, structurally (user 2026-11-02: not one hash, the whole family): fixed-function screen-space
@@ -6593,6 +6677,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"culling");
     return D3D_OK;
   }
+  const bool glassSplit = glass_split_wanted(dev);           // car glass: stickers solid, glass blended (before any twin swaps the texture)
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
   texture_probe_draw(dev);                                   // F3 texture picker: the same ray, every frame while the page asks
   void* lampGlow = nullptr;
@@ -6761,7 +6846,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) {
     if (g_enabled && g_primaryRT) rbrrtx_hudglow_before(dev);
-    hr = draw();
+    hr = glassSplit ? glass_split_draw(dev, draw) : draw();
     rbrrtx_hudglow_after(dev);
   }
   ground_base_end(dev, groundBase);
@@ -6941,6 +7026,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   rbrrtx_apiworld_init(g_apiOk && g_remixPlus ? rbrrtx_api_ext() : nullptr);
   rbrrtx_hudglow_init(dev, g_apiOk && g_remixPlus && rbrrtx_api_ext() && rbrrtx_api_ext()->createRetained);
   load_skip_textures();
+  load_glass_split();
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_windscreen_init(g_apiOk ? &g_api : nullptr);
   f3_install(dev);                                     // F3 menu (RBRRTX_MENU=0 leaves it out)
