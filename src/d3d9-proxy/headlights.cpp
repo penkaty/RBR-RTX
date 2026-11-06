@@ -92,6 +92,8 @@ struct Settings {
   float brightsRadiance[3] = { 45441.0f, 43169.0f, 38625.0f };   // per high beam (user tuning 2026-10-23, +10 %, then -15 %)
   float brightsCone = 15.0f, brightsSoftness = 0.01f, brightsPitch = -0.5f;
   float brightsInset = 0.25f;                          // metres toward the car's middle from each lamp node
+  // Four round lamps (BMW M3 E30): the inner pair at brights_inset is lit as low beams too and becomes the brights.
+  bool quadLamps = false;
   float brightsForward = 0.15f;                        // extra metres ahead (user 2026-10-23: the Quattro's big front
                                                        // lamps hid the high beams inside the car model)
   float pitch = 0.0f;                                  // beam aimed this many degrees below the car's forward axis (+ = down)
@@ -353,6 +355,7 @@ void load_settings() {
     s.brightsSoftness = std::clamp(ini_float(path, L"brights_softness", s.brightsSoftness), 0.0f, 1.0f);
     s.brightsPitch = std::clamp(ini_float(path, L"brights_pitch", s.brightsPitch), -30.0f, 30.0f);
     s.brightsInset = std::clamp(ini_float(path, L"brights_inset", s.brightsInset), -1.0f, 1.0f);
+    s.quadLamps = ini_float(path, L"quad_lamps", 0.0f) != 0.0f;
     s.brightsForward = std::clamp(ini_float(path, L"brights_forward", s.brightsForward), -1.0f, 1.0f);
     s.radius = std::clamp(ini_float(path, L"radius", s.radius), 0.005f, 1.0f);
     s.cone = std::clamp(ini_float(path, L"cone", s.cone), 1.0f, 89.0f);
@@ -1329,7 +1332,7 @@ void set_mode(int m, const wchar_t* why) {
   // Only the lamps the new mode does not use (send_lamps also destroys every lamp it did not draw). Destroying all of
   // them here re-created the low beams under the same hash in the same frame, and on Remix Plus the destroy won: OFF ->
   // BRIGHTS showed the high beams alone until the car moved (run 20261030-072711, Gabiria marks 1-3).
-  if (m != kBrights) { destroy_lamp(g_lamps[3]); destroy_lamp(g_lamps[4]); }
+  if (m != kBrights && !(g_cfg.quadLamps && m == kPair)) { destroy_lamp(g_lamps[3]); destroy_lamp(g_lamps[4]); }
   if (m == kOff) { destroy_lamp(g_lamps[1]); destroy_lamp(g_lamps[2]); }
   g_creates = 0;                                       // log the first lamps of each switch
   hlog(L"headlights: %s (%s)", mode_name(m), why);
@@ -1704,14 +1707,17 @@ void send_lamps(const float C[16], const wchar_t* src) {
     const V3 dir = aim(g_cfg.pitch);
     draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
     draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
-    if (g_mode == kBrights) {                          // high beams: each lamp node moved toward the car's middle
+    if (g_mode == kBrights || g_cfg.quadLamps) {       // high beams: each lamp node moved toward the car's middle
       const float in = g_cfg.brightsInset;
       const V3 bahead = ahead + g_car.forward * g_cfg.brightsForward;
       const V3 bl = to_world(C, lf + bahead + V3{ lf.x > rf.x ? -in : in, 0, 0 });
       const V3 br = to_world(C, rf + bahead + V3{ lf.x > rf.x ? in : -in, 0, 0 });
-      const V3 bdir = aim(g_cfg.brightsPitch);
-      draw_lamp(g_lamps[3], bl, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
-      draw_lamp(g_lamps[4], br, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
+      const bool high = g_mode == kBrights;            // quad_lamps: the inner pair is a low beam until brights
+      const V3 bdir = aim(high ? g_cfg.brightsPitch : g_cfg.pitch);
+      draw_lamp(g_lamps[3], bl, bdir, high ? g_cfg.brightsCone : g_cfg.cone, high ? g_cfg.brightsRadiance : g_cfg.radiance,
+                high ? g_cfg.brightsSoftness : g_cfg.softness);
+      draw_lamp(g_lamps[4], br, bdir, high ? g_cfg.brightsCone : g_cfg.cone, high ? g_cfg.brightsRadiance : g_cfg.radiance,
+                high ? g_cfg.brightsSoftness : g_cfg.softness);
     }
   }
   if (g_cfg.extra && g_mode != kOff) {                // extra lamps of the headlight group
@@ -2054,6 +2060,21 @@ void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& g
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   cockpit_glass_find();                                  // cockpit: the windscreen as drawn this frame
   ++g_frameNo;
+  // headlights.ini saved while driving (F3 > Headlights > Save, or an editor) applies within a second (user 2026-11-07).
+  if (g_frameNo % 60 == 0) {
+    static FILETIME s_seen = {};
+    wchar_t path[MAX_PATH * 2] = {};
+    rbrrtx_config_path(L"RBRRTX_HEADLIGHTS", L"headlights.ini", path, MAX_PATH * 2);
+    WIN32_FILE_ATTRIBUTE_DATA fa = {};
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+      const bool first = s_seen.dwLowDateTime == 0 && s_seen.dwHighDateTime == 0;
+      if (!first && CompareFileTime(&fa.ftLastWriteTime, &s_seen) != 0) {
+        load_settings();
+        hlog(L"headlights: headlights.ini changed, settings read again");
+      }
+      s_seen = fa.ftLastWriteTime;
+    }
+  }
   g_rootThisFrame = g_predThisFrame = false;            // windscreen drops: placed from the next frame's draws
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
   // Remix Plus keeps a created light drawn every frame until it is destroyed: a frame that lit the lamps but sent none (no
@@ -2124,6 +2145,9 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   {                                                    // steps of 0.02: no lamp update every frame
     const float t = std::clamp((sunElevation - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
     g_dayK = std::round((1.0f + (g_cfg.dayIntensity - 1.0f) * t) * 50.0f) / 50.0f;
+    // day_intensity dims the automatic day running lights only: lamps switched on with the key are at full strength
+    // (user 2026-11-07: with day_intensity 0 the L key did nothing by day).
+    if (g_manual) g_dayK = 1.0f;
   }
   const int want = auto_mode_for(sunElevation);
   if (!g_manual && want != g_autoWant) {

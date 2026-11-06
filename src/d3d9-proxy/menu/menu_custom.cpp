@@ -540,9 +540,11 @@ void page_ini(IniDoc& d, int scope = 0) {
     } else {
       char b[1024];
       std::snprintf(b, sizeof(b), "%s", l.val.c_str());
-      if (l.dirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+      // The first edit sets dirty inside InputText: pop only what was pushed (user 2026-11-07 crash, ImGui assert).
+      const bool tinted = l.dirty;
+      if (tinted) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
       if (ImGui::InputText(l.key.c_str(), b, sizeof(b))) { l.val = b; l.dirty = true; }
-      if (l.dirty) ImGui::PopStyleColor();
+      if (tinted) ImGui::PopStyleColor();
     }
     if (!l.help.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", l.help.c_str());
     ImGui::PopID();
