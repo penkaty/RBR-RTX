@@ -464,9 +464,16 @@ bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d) {
       bl.srcAlphaBlendFactor = 1; bl.dstAlphaBlendFactor = 0; bl.alphaBlendOp = 0;
       bl.writeMask = 0xF;
       bl.isVertexColorBakedLighting = 1;               // rtx.vertexColorIsBakedLighting (default, not in rtx.conf)
+      // Own picking value per instance, so Alt+X world clicks find this draw's texture. Without it every API
+      // instance writes 0 and Remix maps 0 to whichever texture registered last (user 2026-11-06: hashes not
+      // selectable). 0x40000000+: D3D9 draw IDs count up from 0 each frame, the runtime's own range is 0x80000000+.
+      remixapi_InstanceInfoObjectPickingEXT pk = {};
+      pk.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_OBJECT_PICKING_EXT;
+      pk.pNext = &bl;
+      pk.objectPickingValue = 0x40000000u | static_cast<uint32_t>(g_meshSerial & 0x3FFFFFFFu);
       remixapi_InstanceInfo ii = {};
       ii.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
-      ii.pNext = &bl;
+      ii.pNext = &pk;
       ii.transform = identity();
       ii.doubleSided = cull == D3DCULL_NONE ? 1 : 0;
       if (g_createMesh(&mi, &e.mesh) != REMIXAPI_ERROR_CODE_SUCCESS || !e.mesh) { e.mesh = nullptr; why = 5; }
