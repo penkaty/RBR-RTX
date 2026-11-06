@@ -737,6 +737,10 @@ void remix_set(const char* key, const char* value);
 float g_numosAzOffset = 0.0f, g_numosAzSign = 1.0f;
 float g_numosSunIntensity = 1.09f, g_numosLightScale = 1.0f;   // the conf's rtx.atmosphere.sunIntensity / directionalLightRadianceScale
 float g_numosSunWeather = 1.0f;                        // atmosphere.ini "sun" factors (per-stage softer sun)
+// How far NUMOS's sun takes the colour of the game's own sun (its scattering shader's c62): 0 = NUMOS's colour from
+// the sun's height alone, 1 = the game's hue. atmosphere.ini [atmosphere] game_sun_colour.
+float g_gameSunTint = 0.5f;
+float g_numosSentTint[3] = { -1.0f, -1.0f, -1.0f };
 float g_numosSentEl = -1000.0f, g_numosSentAz = -1000.0f, g_numosSentI = -1.0f, g_numosSentL = -1.0f;
 // NUMOS ground level (run 20261029-045150, marks on Witoszow and Peklo, sweep on Legazpi: a grey wall over the whole
 // view, the dashboard included, on forest stages; open Gestel was fine). NUMOS's automatic ground level comes from
@@ -863,6 +867,28 @@ void numos_sun(const float d[3], float elev) {
     sprintf_s(v, "%.4f", k);
     remix_set("rtx.atmosphere.sunIntensity", v);
     g_numosSentI = k;
+  }
+  // The game's sun colour as a hue at NUMOS's brightness (each channel over the colour's luminance), mixed in by
+  // g_gameSunTint. User 2026-11-06: Rally School's morning sun at 23 degrees is deep gold in the game (c62 1 : 0.55 : 0.24)
+  // and near white in NUMOS, which reddens the sun only by its height.
+  float tint[3] = { 1.0f, 1.0f, 1.0f };
+  if (g_gameSunTint > 0.0f && g_cset[62] && !g_inMenu) {
+    const float* c = g_c[62];
+    const float lum = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+    if (lum > 1e-3f)
+      for (int i = 0; i < 3; ++i) tint[i] = 1.0f + g_gameSunTint * (std::clamp(c[i] / lum, 0.2f, 3.0f) - 1.0f);
+  }
+  if (std::fabs(tint[0] - g_numosSentTint[0]) > 0.01f || std::fabs(tint[1] - g_numosSentTint[1]) > 0.01f ||
+      std::fabs(tint[2] - g_numosSentTint[2]) > 0.01f) {
+    float il[3];
+    conf_vec3("rtx.atmosphere.sunIlluminance", il, 15.0f);
+    char iv[96];
+    sprintf_s(iv, "%.4f, %.4f, %.4f", il[0] * tint[0], il[1] * tint[1], il[2] * tint[2]);
+    remix_set("rtx.atmosphere.sunIlluminance", iv);
+    if (g_numosSentTint[0] < 0.0f || std::fabs(tint[0] - 1.0f) > 0.05f)
+      clog(L"NUMOS sun colour: game sun %.0f %.0f %.0f -> NUMOS sun x %.2f %.2f %.2f (game_sun_colour %.2f)", g_c[62][0], g_c[62][1],
+           g_c[62][2], tint[0], tint[1], tint[2], g_gameSunTint);
+    std::memcpy(g_numosSentTint, tint, sizeof(tint));
   }
   const float l = g_sunOn ? g_numosLightScale : 0.0f;  // sun key: NUMOS's sun and moon light off, the sky stays
   if (l != g_numosSentL) {
@@ -1217,6 +1243,8 @@ void atmo_load() {
     wchar_t v[32] = {};
     GetPrivateProfileStringW(L"atmosphere", L"menu_sun_azimuth", L"28.0", v, 32, path);
     g_menuSunOn = swscanf_s(v, L"%f", &g_menuSunAz) == 1;
+    GetPrivateProfileStringW(L"atmosphere", L"game_sun_colour", L"0.5", v, 32, path);
+    g_gameSunTint = std::clamp(static_cast<float>(_wtof(v)), 0.0f, 1.0f);
     GetPrivateProfileStringW(L"atmosphere", L"night_ev_min", L"3.0", v, 32, path);
     g_nightEvMin = static_cast<float>(_wtof(v));
     GetPrivateProfileStringW(L"atmosphere", L"night_sun", L"-5, 5", v, 32, path);
