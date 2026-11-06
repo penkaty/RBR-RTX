@@ -389,6 +389,7 @@ bool g_devValid[3] = {}, g_gameSet[3] = {};
 
 bool g_enabled = true;
 unsigned g_frame = 0, g_detailFrames = 0;
+unsigned g_rasterKeepRestoreFrame = 0;   // key 0: frame at which the raised rtx.numFramesToKeep* limits go back
 
 remixapi_Interface g_api = {};
 bool g_apiOk = false, g_sunWanted = true, g_sunOn = true, g_sunDrawn = false;
@@ -3162,11 +3163,31 @@ void end_frame(IDirect3DDevice9* dev) {
     log_frame(w);
     cull_log_settings(L"key");
   }
+  if (g_rasterKeepRestoreFrame && g_frame >= g_rasterKeepRestoreFrame) {   // key 0: back to the conf's keep limits
+    g_rasterKeepRestoreFrame = 0;
+    char v[32];
+    snprintf(v, sizeof v, "%d", static_cast<int>(conf_float("rtx.numFramesToKeepInstances", 1.0f)));
+    remix_set("rtx.numFramesToKeepInstances", v);
+    snprintf(v, sizeof v, "%d", static_cast<int>(conf_float("rtx.numFramesToKeepBLAS", 1.0f)));
+    remix_set("rtx.numFramesToKeepBLAS", v);
+    log_frame(L"key 0: keep limits back to the conf values");
+  }
   if (rbrrtx_key_pressed(RBRKEY_RAYTRACING)) {             // raster comparison: Remix draws the game as plain DXVK
     // Raster draws need the game's own draws back: FF scenery (road, terrain) and the comp layer's matrices are made for
     // Remix's ray tracing and rasterised as missing/flat parts (user screenshot 2026-10-17). Culling too.
     static bool rtOn = true, compWas = true, cullWas = false;
     rtOn = !rtOn;
+    // Key 0 lost the device (runs 153644 and others): while ray tracing is off the runtime skips injectRTX and with it
+    // garbage collection, so on the first frame back every instance and BLAS was past rtx.numFramesToKeep* = 1, freed
+    // and rebuilt at once (172 builds, a 2.8 s GPU stall, TDR). Raster mode keeps them alive instead; the limits go back
+    // a few seconds after ray tracing returns (raster_keep_restore below), when everything has been touched again.
+    if (!rtOn) {
+      remix_set("rtx.numFramesToKeepInstances", "1000000");
+      remix_set("rtx.numFramesToKeepBLAS", "1000000");
+      g_rasterKeepRestoreFrame = 0;
+    } else {
+      g_rasterKeepRestoreFrame = g_frame + 300;
+    }
     remix_set("rtx.enableRaytracing", rtOn ? "True" : "False");
     if (!rtOn) {
       compWas = g_enabled;
