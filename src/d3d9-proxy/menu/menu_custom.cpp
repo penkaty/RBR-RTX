@@ -185,17 +185,44 @@ void pitch_yaw_dir(float pitch, float yaw, float out[3]) {
   out[2] = std::cos(p) * std::cos(y);
 }
 
+// ---- Lamp presets (the old Alt+X lamp creator's, rtx_light_authoring.cpp, user 2026-11-07: "presets in F3") ------------
+// Sodium lamps orange, LED / metal halide white. Lumens as the sphere/spot light's output; cone 0 = every way.
+struct LampPreset { const char* name; float rgb[3]; float lumens, cone, softness, intensity; };
+constexpr LampPreset kLampPresets[] = {
+  { "Streetlamp (sodium)",         { 1.0f, 0.62f, 0.25f }, 8000.0f,   70.0f, 0.30f, 6.0f },
+  { "Strong streetlamp (sodium)",  { 1.0f, 0.62f, 0.25f }, 20000.0f,  70.0f, 0.30f, 8.0f },
+  { "Modern streetlamp (LED)",     { 1.0f, 0.95f, 0.88f }, 10000.0f,  60.0f, 0.25f, 8.0f },
+  { "Modern strong streetlamp",    { 0.95f, 0.97f, 1.0f }, 25000.0f,  60.0f, 0.25f, 10.0f },
+  { "Floodlight",                  { 1.0f, 0.96f, 0.90f }, 40000.0f,  35.0f, 0.15f, 12.0f },
+  { "Stadium light",               { 0.95f, 0.97f, 1.0f }, 150000.0f, 40.0f, 0.15f, 20.0f },
+  { "Coloured spot",               { 1.0f, 0.2f, 0.1f },   20000.0f,  25.0f, 0.10f, 8.0f },
+  { "Point light (every way)",     { 1.0f, 0.9f, 0.8f },   5000.0f,   0.0f,  0.0f,  5.0f },
+};
+
 // ---- Emissive (props) ------------------------------------------------------------------------------------------------
 void page_emissive(void*) {
-  ImGui::TextWrapped("Make the texture of a prop glow. Aim the middle of the screen at it; the yellow box is the part of the texture "
-                     "around the hit point. Whole texture or just that part, a colour, an intensity, at night (fading in with the street "
-                     "lamps) or always. Every draw with that texture glows. Window facades: use the Windows page.");
+  ImGui::TextWrapped("Aim the middle of the screen at a lamp head; the yellow box is the part of the texture around the hit point. "
+                     "With \"only the highlighted part\" the glow AND the lamps go only where that part of the texture is drawn, so "
+                     "other objects sharing the texture stay dark. Every lamp head drawn with that part gets one lamp at its centre "
+                     "(move it with the offset in the list). Window facades: Windows page.");
   static bool freeze = false, island_only = true;
-  static float rgb[3] = { 1.0f, 0.75f, 0.45f }, intensity = 6.0f, kelvin = 3000.0f;
-  static int mode = 0;
-  // Light the prop casts (user 2026-11-05: stadium floodlights); every mesh with the texture gets one at its centre.
-  static bool cast = false;
-  static float lumens = 40000.0f, cone = 30.0f, softness = 0.2f, pitch = 90.0f, yaw = 0.0f;
+  static float rgb[3] = { 1.0f, 0.62f, 0.25f }, intensity = 6.0f, kelvin = 3000.0f;
+  static int mode = 0, preset = 0;
+  // Light the prop casts (user 2026-11-05: stadium floodlights): a lamp at every place the picked part is drawn.
+  static bool cast = true;
+  static float lumens = 8000.0f, cone = 70.0f, softness = 0.3f, pitch = 90.0f, yaw = 0.0f;
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
+  if (ImGui::BeginCombo("preset", kLampPresets[preset].name)) {
+    for (int p = 0; p < static_cast<int>(std::size(kLampPresets)); ++p)
+      if (ImGui::Selectable(kLampPresets[p].name, p == preset)) {
+        preset = p;
+        const LampPreset& lp = kLampPresets[p];
+        std::memcpy(rgb, lp.rgb, sizeof(rgb));
+        lumens = lp.lumens; cone = lp.cone; softness = lp.softness; intensity = lp.intensity;
+        cast = true;
+      }
+    ImGui::EndCombo();
+  }
   ImGui::Checkbox("Freeze (keep the last hit)", &freeze);
   rbrrtx_menu_pick pick = {};
   rbrrtx_menu_probe(&pick, freeze ? 0 : 1);
@@ -211,7 +238,7 @@ void page_emissive(void*) {
     ImGui::RadioButton("at night", &mode, 0);
     ImGui::SameLine();
     ImGui::RadioButton("always", &mode, 1);
-    ImGui::Checkbox("also cast light (a lamp at every mesh with this texture)", &cast);
+    ImGui::Checkbox(island_only ? "also cast light (a lamp wherever this part is drawn)" : "also cast light (a lamp at EVERY mesh with this texture)", &cast);
     if (cast) {
       ImGui::SliderFloat("lumens", &lumens, 1000.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
       ImGui::SliderFloat("cone half angle (0 = every way)", &cone, 0.0f, 90.0f, "%.0f deg");
@@ -221,7 +248,7 @@ void page_emissive(void*) {
       ImGui::TextDisabled("Or aim every lamp of it at a point: make it emissive, look at the point, press Aim here in the list.");
     }
     ImGui::BeginDisabled(!pick.hash[0]);
-    if (ImGui::Button("Make emissive")) {
+    if (ImGui::Button(cast ? "Make this a lamp" : "Make emissive")) {
       RbrEmit store = {};
       RbrEmit e = {};
       if (find_emit(pick.hash[0], &store) && !store.windows) e = store;     // another part of the same texture: more rectangles
@@ -294,6 +321,12 @@ void page_emissive(void*) {
     ImGui::PopID();
     if (remove == i) { rbrrtx_emit_remove(e.tex); break; }
   }
+}
+
+// ---- Lamps: the two pages above in one ------------------------------------------------------------------------------
+void page_lamps(void*) {
+  if (ImGui::CollapsingHeader("Lamp heads: glow + light from a part of a texture", ImGuiTreeNodeFlags_DefaultOpen)) page_emissive(nullptr);
+  if (ImGui::CollapsingHeader("Free lights at a point (flares, crowd, doorway)")) page_lights(nullptr);
 }
 
 // ---- Windows ----------------------------------------------------------------------------------------------------------
@@ -592,7 +625,8 @@ extern "C" void rbrrtx_menu_register_custom_pages(void) {
   rbrrtx_menu_add_page("Atmosphere", page_atmo, nullptr);
   rbrrtx_menu_add_page("Per stage", page_atmo_stage, nullptr);
   rbrrtx_menu_add_page("Headlights", page_head, nullptr);
-  rbrrtx_menu_add_page("Lights", page_lights, nullptr);
-  rbrrtx_menu_add_page("Emissive", page_emissive, nullptr);
+  // One page for lamps (user 2026-11-07: "combine lights and emissives into one in F3"): lamp heads (emissive part +
+  // its lamps, with presets) first, free-standing lights below.
+  rbrrtx_menu_add_page("Lamps", page_lamps, nullptr);
   rbrrtx_menu_add_page("Windows", page_windows, nullptr);
 }
