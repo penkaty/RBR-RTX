@@ -566,7 +566,8 @@ void rbrrtx_world_lights_reset() {
 // The lamp kinds read again (after the lamp_mark key wrote lights-marked.ini): the lamps go (they point at their kind) and
 // are found again from the next draws.
 void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
-                                  const float dir[3], int aim, const float aimAt[3], int always, const float offset[3]) {
+                                  const float dir[3], int aim, const float aimAt[3], int always, const float offset[3],
+                                  const float (*rects)[4], int nrects) {
   if (lumens <= 0.0f) {
     if (!g_custom.erase(tex)) return;
   } else {
@@ -587,6 +588,10 @@ void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], fl
     std::copy(aimAt, aimAt + 3, k.aimAt);
     k.alwaysOn = always != 0;
     if (offset) std::copy(offset, offset + 3, k.offset);
+    // Rectangles of the texture (the part the user picked): lamps at the vertex groups drawn with them (comp.cpp
+    // uv_lamp_points), at their centre. None = the whole texture: one lamp at each draw's centre, as before.
+    for (int i = 0; rects && i < nrects && k.uvs.size() < kMaxRects; ++i)
+      k.uvs.push_back({ rects[i][0], rects[i][1], rects[i][2], rects[i][3] });
     g_custom[tex] = k;
   }
   rbrrtx_world_lights_reload();

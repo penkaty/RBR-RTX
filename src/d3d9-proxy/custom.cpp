@@ -442,7 +442,10 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on) {
 // ---- emissives
 // The emissive's light (worldlights.cpp lamp kind keyed by its texture), or none.
 void push_light(const RbrEmit& e, bool remove = false) {
-  rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1, e.offset);
+  // The emissive's rectangles go along: a lamp only on the vertex groups drawn with that part of the texture, not one at
+  // the centre of every mesh sharing the texture (run 20261107-051117: a lamppost's light under every barrier post).
+  rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1, e.offset,
+                               e.windows ? nullptr : e.rects, e.windows ? 0 : e.nrects);
 }
 
 int rbrrtx_emit_count() { return static_cast<int>(g_emit.size()); }
