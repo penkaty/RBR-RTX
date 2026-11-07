@@ -2843,8 +2843,8 @@ void log_frame(const wchar_t* why) {
 // options live (SetConfigVariable, user layer, applied at frame end) and/or hides draws whose shader file name
 // contains a listed part ("skip = Sway" = swaying foliage), waits settle_seconds, then averages the frame time over
 // measure_seconds. Baseline first and last (drift check); the log gets one line per step and a summary. K again =
-// abort. Afterwards every option is back at its [baseline] value. Options touched here land in the same layer as the
-// Alt+X user settings (see remix_set): rbr-remix.ps1 strips them from a saved user.conf after the run.
+// abort. Afterwards every option is back at the player's value. Options go into the runtime's not-saved override layer
+// (see exp_set); on runtimes without it they land in the Alt+X user layer and rbr-remix.ps1 strips them after the run.
 // Distance culling (defined further down, before comp_draw).
 void cull_set(const std::wstring& k, const std::wstring& v);
 void cull_load();
@@ -3002,12 +3002,36 @@ void exp_load(bool sweep) {
        g_expSettle, g_expMeasure, g_expBase.size());
 }
 
+// Options set by K / Alt+K go into the runtime's "Host Overrides (not saved)" layer ("override:" key prefix, RBR-RTX
+// Remix Plus runtime 2026-11-07): it wins over user.conf and the quality preset and is never saved, so steps of options
+// the player has in user.conf (DLSS mode, SHaRC, clouds...) are measured too (until then they silently kept the user's
+// value). The run's end removes every override ("unoverride:"), which brings back the player's own values. Runtimes
+// without the layer refuse the prefix: the run then falls back to remix_set (user layer) and says so once.
+std::vector<std::string> g_expOverridden;                     // options this run put in the override layer
+int g_expOverrideOk = -1;                                     // -1 = not tried yet, 0 = runtime has no override layer
+
 void exp_set(const std::string& k, const std::string& v) {
   if (k.rfind("cull.", 0) == 0) {                          // proxy culling setting, e.g. cull.offscreen_far_m = 100
     cull_set(std::wstring(k.begin() + 5, k.end()), std::wstring(v.begin(), v.end()));
     return;
   }
+  if (g_expOverrideOk != 0 && remix_set_raw(("override:" + k).c_str(), v.c_str())) {
+    g_expOverrideOk = 1;
+    if (std::find(g_expOverridden.begin(), g_expOverridden.end(), k) == g_expOverridden.end()) g_expOverridden.push_back(k);
+    return;
+  }
+  if (g_expOverrideOk == -1 && g_apiOk) {
+    g_expOverrideOk = 0;
+    clog(L"experiments: this Remix runtime has no override layer: options the player has in user.conf keep the player's "
+         L"value in every step (those steps measure nothing)");
+  }
   remix_set(k.c_str(), v.c_str());
+}
+
+void exp_clear_overrides() {
+  for (const auto& k : g_expOverridden) remix_set_raw(("unoverride:" + k).c_str(), "");
+  if (!g_expOverridden.empty()) clog(L"experiments: %zu overridden options handed back to the player's settings", g_expOverridden.size());
+  g_expOverridden.clear();
 }
 
 // Every step starts from the baseline: the options the previous step changed go back to their [baseline] values (all
@@ -3062,6 +3086,7 @@ void sweep_end(const wchar_t* why);
 
 void exp_finish(const wchar_t* why) {
   exp_apply(-1);
+  exp_clear_overrides();
   atmo_reset();                                              // stage atmosphere is sent again on the next check
   if (g_sweep) sweep_end(why);
   else MessageBeep(MB_ICONASTERISK);                         // done signal, same as the sweep's (sweep_end beeps)
