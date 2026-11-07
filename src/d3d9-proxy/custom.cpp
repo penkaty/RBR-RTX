@@ -185,6 +185,34 @@ bool read_dds_rgba(const std::wstring& path, std::vector<uint32_t>& out, unsigne
   return true;
 }
 
+bool write_rgba_dds(const std::wstring& path, unsigned W, unsigned H, const std::vector<uint32_t>& px) {
+  DWORD hdr[32] = {};
+  hdr[0] = 0x20534444; hdr[1] = 124;
+  hdr[2] = 0x1 | 0x2 | 0x4 | 0x8 | 0x1000;
+  hdr[3] = H; hdr[4] = W; hdr[5] = W * 4; hdr[7] = 1;
+  hdr[19] = 32; hdr[20] = 0x41; hdr[22] = 32;
+  hdr[23] = 0xFF0000; hdr[24] = 0xFF00; hdr[25] = 0xFF; hdr[26] = 0xFF000000u;
+  hdr[27] = 0x1000;
+  FILE* fp = nullptr;
+  if (_wfopen_s(&fp, path.c_str(), L"wb") || !fp) return false;
+  fwrite(hdr, sizeof(hdr), 1, fp);
+  fwrite(px.data(), 4, px.size(), fp);
+  fclose(fp);
+  return true;
+}
+
+// The solid copy of a mask's texture (same name with _solid_ for _mask_): the saved texture with full alpha wherever the
+// mask glows. The material's albedo is this copy: with the game's own texture, the draw's alpha test cut glowing parts away
+// where the texture's alpha is low (user 2026-11-07: an emissive lamppost lost its top; the alpha there is ~0, the game
+// does not use it as opacity).
+std::wstring solid_path(const std::wstring& mask) {
+  std::wstring s = mask;
+  const size_t at = s.rfind(L"_mask_");
+  if (at == std::wstring::npos) return std::wstring();
+  s.replace(at, 6, L"_solid_");
+  return s;
+}
+
 // The emissive mask: white where the texture glows (props), or the lit panes with their brightness (windows). Named by its
 // content (Remix does not reload a file it has open). Returns the path ("" = failed).
 // With the saved texture readable, each glowing texel takes the texture's own colour, weighted by its brightness
@@ -205,7 +233,8 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
   wchar_t tail[40];
   swprintf_s(tail, L"_mask_%08X.dds", key);
   const std::wstring path = dir + L"\\" + hex16(hash) + tail;
-  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return path;
+  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES &&
+      (!textured || GetFileAttributesW(solid_path(path).c_str()) != INVALID_FILE_ATTRIBUTES)) return path;
   std::vector<uint32_t> px(static_cast<size_t>(W) * H, e.nrects == 0 && !e.windows ? 0xFFFFFFFFu : 0xFF000000u);
   for (int i = 0; i < e.nrects; ++i) {
     unsigned v = 255;
@@ -239,18 +268,16 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
       }
     }
   }
-  DWORD hdr[32] = {};
-  hdr[0] = 0x20534444; hdr[1] = 124;
-  hdr[2] = 0x1 | 0x2 | 0x4 | 0x8 | 0x1000;
-  hdr[3] = H; hdr[4] = W; hdr[5] = W * 4; hdr[7] = 1;
-  hdr[19] = 32; hdr[20] = 0x41; hdr[22] = 32;
-  hdr[23] = 0xFF0000; hdr[24] = 0xFF00; hdr[25] = 0xFF; hdr[26] = 0xFF000000u;
-  hdr[27] = 0x1000;
-  FILE* fp = nullptr;
-  if (_wfopen_s(&fp, path.c_str(), L"wb") || !fp) return std::wstring();
-  fwrite(hdr, sizeof(hdr), 1, fp);
-  fwrite(px.data(), 4, px.size(), fp);
-  fclose(fp);
+  if (textured && texW && texH) {
+    std::vector<uint32_t> solid = tex;
+    for (unsigned y = 0; y < texH; ++y) {
+      for (unsigned x = 0; x < texW; ++x) {
+        if (px[static_cast<size_t>(y * H / texH) * W + x * W / texW] & 0x00FFFFFFu) solid[static_cast<size_t>(y) * texW + x] |= 0xFF000000u;
+      }
+    }
+    write_rgba_dds(solid_path(path), texW, texH, solid);
+  }
+  if (!write_rgba_dds(path, W, H, px)) return std::wstring();
   return path;
 }
 
@@ -261,7 +288,9 @@ void publish() {
     const auto s = g_state.find(kv.first);
     if (s == g_state.end() || !s->second.ok) continue;
     const RbrEmit& e = kv.second;
-    const std::string dds = rbrrtx_genmod_asset(s->second.dds), mask = rbrrtx_genmod_asset(s->second.mask);
+    const std::wstring solid = solid_path(s->second.mask);
+    const bool haveSolid = !solid.empty() && GetFileAttributesW(solid.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const std::string dds = rbrrtx_genmod_asset(haveSolid ? solid : s->second.dds), mask = rbrrtx_genmod_asset(s->second.mask);
     for (int lv = 1; lv <= kLevels; ++lv) {
       uint32_t px[256];
       const uint64_t th = twin_pixels(kv.first, lv, px);
@@ -413,7 +442,7 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on) {
 // ---- emissives
 // The emissive's light (worldlights.cpp lamp kind keyed by its texture), or none.
 void push_light(const RbrEmit& e, bool remove = false) {
-  rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1);
+  rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1, e.offset);
 }
 
 int rbrrtx_emit_count() { return static_cast<int>(g_emit.size()); }
@@ -613,8 +642,8 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
     e.softness = 0.2f;
     e.dir[1] = -1.0f;
     if (const char* lp = std::strstr(value, "| light=")) {
-      sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
-               &e.aimAt[0], &e.aimAt[1], &e.aimAt[2]);
+      sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f , %f", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
+               &e.aimAt[0], &e.aimAt[1], &e.aimAt[2], &e.offset[0], &e.offset[1], &e.offset[2]);   // offset: since 2026-11-07, older lines lack it
     }
     g_emit[e.tex] = e;
     g_state[e.tex];
@@ -652,8 +681,8 @@ int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* use
       for (int i = 0; i < e.nrects && len < static_cast<int>(sizeof(b)) - 80; ++i)
         len += snprintf(b + len, sizeof(b) - len, "%.5f %.5f %.5f %.5f; ", e.rects[i][0], e.rects[i][1], e.rects[i][2], e.rects[i][3]);
       if (e.lumens > 0.0f && len < static_cast<int>(sizeof(b)) - 160)
-        snprintf(b + len, sizeof(b) - len, "| light=%.0f, %.1f, %.2f, %.4f, %.4f, %.4f, %d, %.2f, %.2f, %.2f", e.lumens, e.cone, e.softness, e.dir[0], e.dir[1],
-                 e.dir[2], e.aim, e.aimAt[0], e.aimAt[1], e.aimAt[2]);
+        snprintf(b + len, sizeof(b) - len, "| light=%.0f, %.1f, %.2f, %.4f, %.4f, %.4f, %d, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f", e.lumens, e.cone, e.softness, e.dir[0], e.dir[1],
+                 e.dir[2], e.aim, e.aimAt[0], e.aimAt[1], e.aimAt[2], e.offset[0], e.offset[1], e.offset[2]);
       emit(b, user);
       ++items;
     }

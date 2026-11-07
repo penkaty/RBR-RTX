@@ -184,7 +184,7 @@ bool rbrrtx_rbrhud_windscreen(float* opacity, float* threshold, bool* regionsOnl
 // An F3 emissive prop that casts light (custom.cpp): a lamp kind for its texture; lumens <= 0 removes it. Lamps go and are
 // found again from the next draws.
 void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
-                                  const float dir[3], int aim, const float aimAt[3], int always);                              // lights*.ini read again (after the lamp_mark key; lamps go)
+                                  const float dir[3], int aim, const float aimAt[3], int always, const float offset[3]);                              // lights*.ini read again (after the lamp_mark key; lamps go)
 float rbrrtx_world_lights_mark_glow();                         // lights.ini [lights] mark_glow: the glow a new lamp mark gets
 void rbrrtx_world_lights_startup();                             // before the backend loads, after rbrrtx_genmod_init: glowing lamp materials of earlier runs
 // A draw with a marked lamp texture (kind with glow > 0) while the lamps are on: the twin texture to bind (its generated

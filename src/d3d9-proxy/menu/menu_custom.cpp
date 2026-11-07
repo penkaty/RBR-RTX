@@ -66,6 +66,8 @@ void add_preset(const float pos[3], int preset) {
   add_light(pos, rgb, preset == 2 ? 1800.0f : 4000.0f, preset == 2 ? 0.25f : 0.1f, preset == 2 ? 0.15f : 0.0f, 0);
 }
 
+RbrEmit* find_emit(unsigned long long tex, RbrEmit* store);
+
 void page_lights(void*) {
   ImGui::TextWrapped("Sphere lights at world positions, kept per stage (%s in menu.ini). Aim the middle of the screen at a surface "
                      "and add one at the hit point (nudged back toward you), or place one in front of the camera. For crowd lights, "
@@ -124,6 +126,22 @@ void page_lights(void*) {
       if (ImGui::Button("Move to crosshair") && pick.found) { for (int k = 0; k < 3; ++k) l.pos[k] = pick.point[k]; ch = true; }
       ImGui::SameLine();
       if (ImGui::Button("Delete")) remove = l.id;
+      // The lamp's own mesh glows too: aim at the lamp head (its glass, or the whole mesh) and press.
+      ImGui::BeginDisabled(!pick.found || !pick.hash[0]);
+      if (ImGui::Button("Make the part at the crosshair glow in this colour")) {
+        RbrEmit e = {};
+        if (!find_emit(pick.hash[0], &e) || e.windows) { e = {}; e.intensity = 6.0f; e.dir[1] = -1.0f; e.softness = 0.2f; }
+        e.tex = pick.hash[0];
+        e.windows = 0;
+        e.mode = l.mode;
+        std::memcpy(e.rgb, l.rgb, sizeof(e.rgb));
+        if (pick.has_island && e.nrects < kEmitMaxRects) std::memcpy(e.rects[e.nrects++], pick.uv_rect, sizeof(float) * 4);
+        rbrrtx_emit_set(e);
+        status("the part glows once the generated mod has reloaded (about 10 s); Emissive props lists it, Save keeps it");
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The highlighted part (or the whole texture when nothing is highlighted) gets an emissive in the light's colour. The light itself stays this one.");
       if (ch) rbrrtx_custom_light_set(l);
     }
     ImGui::PopID();
@@ -257,6 +275,10 @@ void page_emissive(void*) {
       if (ImGui::SmallButton("Down")) { e.aim = 0; e.dir[0] = 0.0f; e.dir[1] = -1.0f; e.dir[2] = 0.0f; edit = true; }
       ImGui::SameLine();
       if (ImGui::SmallButton("No light")) { e.lumens = 0.0f; edit = true; }
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
+      ImGui::DragFloat3("light offset x / y / z (m)", e.offset, 0.02f, -20.0f, 20.0f, "%.2f");
+      edit |= ImGui::IsItemDeactivatedAfterEdit();
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Moves every lamp of this texture by this much (world axes, y = up), e.g. out of the lamp head so the mesh does not block it.");
       if (e.aim) ImGui::TextDisabled("  aimed at (%.1f %.1f %.1f)", e.aimAt[0], e.aimAt[1], e.aimAt[2]);
       if (edit) {
         rbrrtx_emit_set_light(e);
