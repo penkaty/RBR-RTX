@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -114,6 +115,9 @@ void build(std::wstring car, Params p, int gen) {
     do DeleteFileW((texDir + L"\\" + fd.cFileName).c_str()); while (FindNextFileW(fh, &fd));
     FindClose(fh);
   }
+  // The same paint file can sit in several folders of a car (same content, same hash). USD rejects a second prim of
+  // the same name, so the whole mod failed to load (user's BMW M3 E30, 2026-11-07).
+  std::unordered_set<unsigned long long> done;
   if (p.on) {
     std::vector<std::wstring> stack = { car };
     while (!stack.empty()) {
@@ -137,6 +141,7 @@ void build(std::wstring car, Params p, int gen) {
           rbrrtx_log_to(L"rbrrtx_comp.log", L"car paint: %s: format not read (DXT3/DXT5/A8R8G8B8 only)", full.c_str());
           continue;
         }
+        if (!done.insert(hash).second) continue;
         for (unsigned char& v : a) v = static_cast<unsigned char>(255.0f * (p.dull + (p.shiny - p.dull) * (v / 255.0f)) + 0.5f);
         wchar_t name[64];
         swprintf_s(name, L"\\%016llX_%d.dds", hash, gen);

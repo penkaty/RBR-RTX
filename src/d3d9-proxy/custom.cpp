@@ -200,7 +200,7 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
   unsigned texW = 0, texH = 0;
   const bool textured = read_dds_rgba(texDds, tex, texW, texH);
   mix(W); mix(H); mix(e.windows); mix(e.seed); mix(static_cast<uint32_t>(e.litPercent)); mix(static_cast<uint32_t>(e.nrects));
-  mix(textured ? 2u : 1u);
+  mix(textured ? 3u : 1u);
   for (int i = 0; i < e.nrects; ++i) for (float f : e.rects[i]) mix(static_cast<uint32_t>(std::lround(f * 4096.0f)));
   wchar_t tail[40];
   swprintf_s(tail, L"_mask_%08X.dds", key);
@@ -228,9 +228,13 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
         const uint32_t t = tex[static_cast<size_t>(y * texH / H) * texW + x * texW / W];
         const float r = ((t >> 16) & 0xFF) / 255.0f, g = ((t >> 8) & 0xFF) / 255.0f, b = (t & 0xFF) / 255.0f;
         const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-        const float k = v * std::clamp((lum - 0.15f) / 0.7f, 0.0f, 1.0f);
-        const float sk = k * k * (3.0f - 2.0f * k);   // smoothstep: housings and frames dark, lit glass full
-        auto ch = [&](float c) { return static_cast<uint32_t>(std::lround(std::clamp(c * sk / (std::max)(lum, 0.05f) * 0.75f, 0.0f, 1.0f) * 255.0f)); };
+        // Hue from the texture at full strength; brightness 0.35 .. 1 by the texel's own brightness, so frames and
+        // housings stay a little darker. User 2026-11-07: the stricter curve (dark texels near 0) took most of the glow
+        // away from lamp textures, which are dark overall.
+        const float k = std::clamp((lum - 0.05f) / 0.45f, 0.0f, 1.0f);
+        const float level = v * (0.35f + 0.65f * k * k * (3.0f - 2.0f * k));
+        const float peak = (std::max)({ r, g, b, 0.05f });
+        auto ch = [&](float c) { return static_cast<uint32_t>(std::lround(std::clamp(c / peak * level, 0.0f, 1.0f) * 255.0f)); };
         m = 0xFF000000u | (ch(r) << 16) | (ch(g) << 8) | ch(b);
       }
     }
