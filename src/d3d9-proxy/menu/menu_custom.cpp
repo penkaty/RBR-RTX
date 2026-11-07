@@ -229,9 +229,46 @@ void page_emissive(void*) {
   if (!pick.found) { ImGui::TextDisabled("nothing under the crosshair"); }
   else {
     ImGui::Text("%s, %s, %.1f m", pick.kind, pick.shader, pick.distance);
-    draw_thumb(pick, ImGui::GetTextLineHeight() * 8.0f, {});
+    // The part (cyan): starts as the island around the hit (yellow), which on an atlas can be far bigger than the lamp
+    // head (run 20261107-055329: a seventh of the atlas, lamps mid-pole and on ground posts). Drag on the picture to draw
+    // the part yourself, or fine-tune it with the numbers.
+    static float part[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    static unsigned long long partTex = 0;
+    static bool dragging = false;
+    static float dragFrom[2] = {};
+    if (pick.hash[0] != partTex && !dragging) {
+      partTex = pick.hash[0];
+      if (pick.has_island) std::memcpy(part, pick.uv_rect, sizeof(part));
+      else { part[0] = part[1] = 0.0f; part[2] = part[3] = 1.0f; }
+    }
+    const Thumb th = draw_thumb(pick, ImGui::GetTextLineHeight() * 14.0f, { { part[0], part[1], part[2], part[3] } });
+    if (th.max.x > th.min.x) {
+      const ImVec2 m = ImGui::GetIO().MousePos;
+      const float mu = std::clamp((m.x - th.min.x) / (th.max.x - th.min.x), 0.0f, 1.0f);
+      const float mv = std::clamp((m.y - th.min.y) / (th.max.y - th.min.y), 0.0f, 1.0f);
+      if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) { dragging = true; dragFrom[0] = mu; dragFrom[1] = mv; }
+      if (dragging) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          part[0] = (std::min)(dragFrom[0], mu); part[1] = (std::min)(dragFrom[1], mv);
+          part[2] = (std::max)(dragFrom[0], mu); part[3] = (std::max)(dragFrom[1], mv);
+        } else {
+          dragging = false;
+        }
+      }
+    }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
+    ImGui::DragFloat4("part u0 v0 u1 v1", part, 0.001f, 0.0f, 1.0f, "%.3f");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset to island") && pick.has_island) std::memcpy(part, pick.uv_rect, sizeof(part));
+    ImGui::TextDisabled("Drag on the picture to draw the lamp head's part (cyan); yellow = the island the crosshair hit.");
     if (pick.hash[0]) ImGui::Text("texture 0x%016llX", pick.hash[0]);
-    ImGui::Checkbox("only the highlighted part", &island_only);
+    ImGui::Checkbox("only the part (cyan)", &island_only);
+    static int anchor = 0;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+    ImGui::Combo("lamp sits at the part's", &anchor, "top\0centre\0bottom\0");
+    static bool addPart = false;
+    ImGui::SameLine();
+    ImGui::Checkbox("add to the texture's other parts", &addPart);
     ImGui::ColorEdit3("colour", rgb, ImGuiColorEditFlags_Float);
     if (ImGui::SliderFloat("or temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
     ImGui::SliderFloat("intensity", &intensity, 0.2f, 60.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
@@ -257,8 +294,10 @@ void page_emissive(void*) {
       e.mode = mode;
       e.intensity = intensity;
       std::memcpy(e.rgb, rgb, sizeof(e.rgb));
-      if (island_only && pick.has_island) {
-        if (e.nrects < kEmitMaxRects) std::memcpy(e.rects[e.nrects++], pick.uv_rect, sizeof(float) * 4);
+      e.anchor = anchor;
+      if (island_only && part[2] > part[0] && part[3] > part[1]) {
+        if (!addPart) e.nrects = 0;                      // a new part replaces the old ones unless asked to add
+        if (e.nrects < kEmitMaxRects) std::memcpy(e.rects[e.nrects++], part, sizeof(float) * 4);
       } else {
         e.nrects = 0;                                    // the whole texture
       }

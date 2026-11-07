@@ -567,7 +567,7 @@ void rbrrtx_world_lights_reset() {
 // are found again from the next draws.
 void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
                                   const float dir[3], int aim, const float aimAt[3], int always, const float offset[3],
-                                  const float (*rects)[4], int nrects) {
+                                  const float (*rects)[4], int nrects, int anchor) {
   if (lumens <= 0.0f) {
     if (!g_custom.erase(tex)) return;
   } else {
@@ -592,6 +592,7 @@ void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], fl
     // uv_lamp_points), at their centre. None = the whole texture: one lamp at each draw's centre, as before.
     for (int i = 0; rects && i < nrects && k.uvs.size() < kMaxRects; ++i)
       k.uvs.push_back({ rects[i][0], rects[i][1], rects[i][2], rects[i][3] });
+    if (!k.uvs.empty()) k.anchor = std::clamp(anchor, 0, 2);   // top of a lamppost part = its head
     g_custom[tex] = k;
   }
   rbrrtx_world_lights_reload();

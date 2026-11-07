@@ -37,6 +37,7 @@ struct RbrEmit {
   int aim;
   float aimAt[3];
   float offset[3];                                     // metres added to every lamp of the texture (F3 sliders)
+  int anchor;                                          // where in the picked part the lamp sits: 0 top, 1 centre, 2 bottom
 };
 
 int rbrrtx_custom_light_count();                       // lights of the current stage

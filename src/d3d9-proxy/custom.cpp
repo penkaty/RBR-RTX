@@ -445,7 +445,7 @@ void push_light(const RbrEmit& e, bool remove = false) {
   // The emissive's rectangles go along: a lamp only on the vertex groups drawn with that part of the texture, not one at
   // the centre of every mesh sharing the texture (run 20261107-051117: a lamppost's light under every barrier post).
   rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1, e.offset,
-                               e.windows ? nullptr : e.rects, e.windows ? 0 : e.nrects);
+                               e.windows ? nullptr : e.rects, e.windows ? 0 : e.nrects, e.anchor);
 }
 
 int rbrrtx_emit_count() { return static_cast<int>(g_emit.size()); }
@@ -485,6 +485,8 @@ void rbrrtx_emit_set_light(const RbrEmit& e) {
   std::memcpy(d.dir, e.dir, sizeof(d.dir));
   d.aim = e.aim;
   std::memcpy(d.aimAt, e.aimAt, sizeof(d.aimAt));
+  std::memcpy(d.offset, e.offset, sizeof(d.offset));   // the list's offset sliders were dropped here before 2026-11-07
+  d.anchor = e.anchor;
   push_light(d, d.lumens <= 0.0f);
   clog2(L"emissive %016llX light: %.0f lm, cone %.0f deg, %s", e.tex, d.lumens, d.cone, d.aim ? L"aimed at a point" : L"along a direction");
 }
@@ -645,8 +647,8 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
     e.softness = 0.2f;
     e.dir[1] = -1.0f;
     if (const char* lp = std::strstr(value, "| light=")) {
-      sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f , %f", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
-               &e.aimAt[0], &e.aimAt[1], &e.aimAt[2], &e.offset[0], &e.offset[1], &e.offset[2]);   // offset: since 2026-11-07, older lines lack it
+      sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f , %f , %d", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
+               &e.aimAt[0], &e.aimAt[1], &e.aimAt[2], &e.offset[0], &e.offset[1], &e.offset[2], &e.anchor);   // offset, anchor: since 2026-11-07, older lines lack them
     }
     g_emit[e.tex] = e;
     g_state[e.tex];
@@ -684,8 +686,8 @@ int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* use
       for (int i = 0; i < e.nrects && len < static_cast<int>(sizeof(b)) - 80; ++i)
         len += snprintf(b + len, sizeof(b) - len, "%.5f %.5f %.5f %.5f; ", e.rects[i][0], e.rects[i][1], e.rects[i][2], e.rects[i][3]);
       if (e.lumens > 0.0f && len < static_cast<int>(sizeof(b)) - 160)
-        snprintf(b + len, sizeof(b) - len, "| light=%.0f, %.1f, %.2f, %.4f, %.4f, %.4f, %d, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f", e.lumens, e.cone, e.softness, e.dir[0], e.dir[1],
-                 e.dir[2], e.aim, e.aimAt[0], e.aimAt[1], e.aimAt[2], e.offset[0], e.offset[1], e.offset[2]);
+        snprintf(b + len, sizeof(b) - len, "| light=%.0f, %.1f, %.2f, %.4f, %.4f, %.4f, %d, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %d", e.lumens, e.cone, e.softness, e.dir[0], e.dir[1],
+                 e.dir[2], e.aim, e.aimAt[0], e.aimAt[1], e.aimAt[2], e.offset[0], e.offset[1], e.offset[2], e.anchor);
       emit(b, user);
       ++items;
     }
