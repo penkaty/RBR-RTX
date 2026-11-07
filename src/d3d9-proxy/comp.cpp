@@ -1445,6 +1445,8 @@ bool g_mwOn = false;
 const MenuWx* g_mwTo = nullptr;
 std::string g_mwFromId = "Menu, RBR";
 float g_mwFromFog = 0.0f, g_mwFromRain = 0.0f, g_mwSeconds = 120.0f, g_mwBad = 0.1f;
+float g_mwToFog = 0.0f;                                      // menu_wx_fog(g_mwTo), read once per weather change
+float g_mwSentBlend = -1.0f, g_mwSentFog = -1.0f;            // last values sent (each send makes Remix re-resolve the sky)
 ULONGLONG g_mwStart = 0;
 
 float menu_wx_fog(const MenuWx* w) {
@@ -1466,6 +1468,8 @@ void menu_wx_next() {
   const MenuWx* pick = g_mwTo;
   for (int tries = 0; tries < 8 && pick == g_mwTo; ++tries) pick = &list[std::rand() % n];
   g_mwTo = pick;
+  g_mwToFog = menu_wx_fog(g_mwTo);
+  g_mwSentBlend = g_mwSentFog = -1.0f;
   g_mwStart = GetTickCount64();
   remix_set("rtx.weather.gameWeatherOutgoing", g_mwFromId.c_str());
   remix_set("rtx.weather.gameWeatherBlend", "0");
@@ -1473,16 +1477,24 @@ void menu_wx_next() {
   clog(L"atmosphere: menu weather: %S -> %S over %.0f s", g_mwFromId.c_str(), g_mwTo->id, g_mwSeconds);
 }
 
-// Called a few times a second. Steps this small on a two-minute blend are not visible.
+// Called every frame. Sends only steps of 2 % blend / 3 % fog (user 2026-11-07: a steady frame-time tick came with the
+// drift's sends every 0.4 s and its atmosphere.ini read per call); steps this small on a two-minute blend are not visible.
 void menu_wx_frame() {
   if (!g_mwOn) return;
   float t = static_cast<float>(GetTickCount64() - g_mwStart) / (g_mwSeconds * 1000.0f);
   if (t >= 1.0f) { menu_wx_next(); t = 0.0f; }
   const float s = t * t * (3.0f - 2.0f * t);
-  remix_set("rtx.weather.gameWeatherBlend", fmt1(s).c_str());
-  const float toFog = menu_wx_fog(g_mwTo);                        // visibilities blend as extinction, 0 = no fog
+  if (g_mwSentBlend < 0.0f || std::fabs(s - g_mwSentBlend) >= 0.02f || (s >= 1.0f && g_mwSentBlend < 1.0f)) {
+    remix_set("rtx.weather.gameWeatherBlend", fmt1(s).c_str());
+    g_mwSentBlend = s;
+  }
+  const float toFog = g_mwToFog;                                  // visibilities blend as extinction, 0 = no fog
   const float e = (g_mwFromFog > 0.0f ? 1.0f / g_mwFromFog : 0.0f) * (1.0f - s) + (toFog > 0.0f ? 1.0f / toFog : 0.0f) * s;
-  atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(e > 0.0f ? 1.0f / e : 0.0f), "");
+  const float fog = e > 0.0f ? 1.0f / e : 0.0f;
+  if (g_mwSentFog < 0.0f || std::fabs(fog - g_mwSentFog) > 0.03f * (std::max)(g_mwSentFog, 1.0f)) {
+    atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(fog), "");
+    g_mwSentFog = fog;
+  }
   rbrrtx_particles_menu_rain(s < 0.5f ? g_mwFromRain : g_mwTo->rain);
 }
 
