@@ -427,18 +427,6 @@ def Xform "RootNode"
                 token outputs:out
             }
         }
-        def Material "mat_8A2ABB487C246BBB"  # bmw_m3_e30/e_p206_internal_kwindscreen.dds 1024x512 (added by hand 2026-11-08: the generator misses this name)
-        {
-            def Shader "Shader"
-            {
-                uniform token info:implementationSource = "sourceAsset"
-                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
-                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
-                float inputs:reflection_roughness_constant = 0.01
-                float inputs:metallic_constant = 0
-                token outputs:out
-            }
-        }
         def Material "mat_868ECCA74E50ADBD"  # bmw_m3_e30/BMW_M3_E30_internal_transparent.dds 1024x512
         {
             def Shader "Shader"
