@@ -4470,10 +4470,13 @@ const std::vector<std::array<float, 3>>* uv_lamp_points(IDirect3DDevice9* dev, c
   IDirect3DVertexBuffer9* vb = nullptr;
   UINT offset = 0, stride = 0;
   if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) return nullptr;
+  uint64_t rectMix = 14695981039346656037ull;          // the parts too (user 2026-11-08: a lamp re-made on another part of the
+  for (int r = 0; r < nRects; ++r)                     // texture kept the old part's places, so its rectangular head got no cone)
+    for (int c = 0; c < 4; ++c) { rectMix ^= static_cast<uint64_t>(std::lround(rects[r][c] * 4096.0f)); rectMix *= 1099511628211ull; }
   const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) * 0x9E3779B97F4A7C15ull) ^
                        (static_cast<uint64_t>(g_vbGen[vb]) << 56) ^ (static_cast<uint64_t>(offset) << 40) ^
                        (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert ^ (tex * 0xC2B2AE3D27D4EB4Full) ^
-                       (static_cast<uint64_t>(anchor + 1) * 0x94D049BB133111EBull);
+                       (static_cast<uint64_t>(anchor + 1) * 0x94D049BB133111EBull) ^ rectMix;
   auto it = g_uvLampCache.find(key);
   if (it != g_uvLampCache.end()) { vb->lpVtbl->Release(vb); return &it->second; }
   std::vector<std::array<float, 3>>& out = g_uvLampCache[key];
