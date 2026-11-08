@@ -50,6 +50,11 @@ $conf = [IO.File]::ReadAllText($rtxConf) -replace '(?m)^rtx\.weather\.presetDire
 if ($conf -notmatch '(?m)^rtx\.weather\.presetDirectory = rbr-rtx/config/weather') { throw 'rtx.conf has no weather preset folder' }
 if ($conf -match '[A-Za-z]:[\\/](RichardRust|rbr-dev|Users)') { throw 'rtx.conf still has a path of this PC' }
 [IO.File]::WriteAllText($rtxConf, $conf, (New-Object Text.UTF8Encoding $false))
+# The release uses the user's own F3 lamps, texture tags and kept suns (user 2026-11-08): what dev runs load is what players get.
+$devCfg = Join-Path $here '..\remix\config'
+Copy-Item (Join-Path $devCfg 'menu.ini') (Join-Path $cfg 'menu.ini') -Force
+Copy-Item (Join-Path $devCfg 'sun-saved-remixplus.ini') (Join-Path $cfg 'sun-saved.ini') -Force
+if (-not (Test-Path (Join-Path $dist 'rbr-rtx\rtx-remix\mods\rbr_car_glass\mod.usda'))) { throw 'package has no rbr_car_glass mod: car glass would render without its materials' }
 # No generated PBR in 0.4.0 (user 2026-11-08): class materials stay out of the release.
 foreach ($n in 'a_rbrrtx_classmat', 'authored_lights') { Remove-Item (Join-Path $dist "rbr-rtx\rtx-remix\mods\$n") -Recurse -Force }
 # Dev runs write into the runtime folder (crash dumps, logs, ReShade injected into NvRemixBridge.exe): never ship those.
