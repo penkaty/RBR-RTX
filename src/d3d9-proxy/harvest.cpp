@@ -104,6 +104,22 @@ void held_release(Held& h) {
   h = {};
 }
 
+// Pixel copies of small block-compressed textures, for the F3 emissive save. A DEFAULT-pool texture cannot be read back:
+// LockRect "succeeds" under the bridge with memory that never held the texture, so the emissive textures came out as
+// noise (user 2026-11-08, marks 12:46 and 13:00). The game's SYSTEMMEM source can be reused for a later upload, so the
+// bytes are copied at UpdateTexture. Bounded for the 32-bit process.
+struct PixelCopy { D3DFORMAT fmt = D3DFMT_UNKNOWN; UINT w = 0, h = 0, levels = 0; std::string data; int track = 0; DWORD tick = 0; };
+std::unordered_map<void*, PixelCopy> g_copies;           // DEFAULT texture -> all its mips, tight
+size_t g_copyBytes = 0;
+constexpr size_t kCopyMax = 64u << 20;
+
+void copy_erase(void* t) {
+  auto it = g_copies.find(t);
+  if (it == g_copies.end()) return;
+  g_copyBytes -= it->second.data.size();
+  g_copies.erase(it);
+}
+
 template <class F>
 void patch(F* slot, F hook, F& orig) {
   DWORD old = 0;
@@ -292,6 +308,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
       g_texAvg.erase(t);
       auto h = g_held.find(t);
       if (h != g_held.end()) { held_release(h->second); g_held.erase(h); }
+      copy_erase(t);
     }
     patch(&t->lpVtbl->LockRect, &hk_TexLock, ho.TexLock);
     patch(&t->lpVtbl->UnlockRect, &hk_TexUnlock, ho.TexUnlock);
@@ -305,13 +322,51 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
   return hr;
 }
 
+// All mips of a lockable texture, tight rows, largest first. Not under g_mx: UnlockRect goes through hk_TexUnlock.
+bool read_levels(IDirect3DTexture9* t, std::string& data, UINT& levels) {
+  levels = (std::max)(1u, static_cast<UINT>(t->lpVtbl->GetLevelCount(t)));
+  data.clear();
+  for (UINT l = 0; l < levels; ++l) {
+    D3DSURFACE_DESC ld = {};
+    UINT rowBytes = 0, rows = 0;
+    const char* fmt = "?";
+    if (FAILED(t->lpVtbl->GetLevelDesc(t, l, &ld)) || !layout(ld.Format, ld.Width, ld.Height, rowBytes, rows, fmt)) return false;
+    D3DLOCKED_RECT lr = {};
+    if (FAILED(t->lpVtbl->LockRect(t, l, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits) return false;
+    const size_t at = data.size();
+    data.resize(at + static_cast<size_t>(rowBytes) * rows);
+    for (UINT r = 0; r < rows; ++r)
+      memcpy(&data[at + static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
+    t->lpVtbl->UnlockRect(t, l);
+  }
+  return true;
+}
+
 // SYSTEMMEM -> DEFAULT copy: the destination is what draws bind. Only whole-texture copies count (a dirty-rect update
 // of part of mip 0 would make the destination a mix; RBR copies whole textures).
 HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* src, IDirect3DBaseTexture9* dst) {
   const HRESULT hr = ho.UpdateTexture(dev, src, dst);
   if (SUCCEEDED(hr) && src && dst && src != dst) {
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_update(src, dst);
+    PixelCopy copy;
+    bool copied = false;
+    if (src->lpVtbl->GetType(src) == D3DRTYPE_TEXTURE && dst->lpVtbl->GetType(dst) == D3DRTYPE_TEXTURE && g_copyBytes < kCopyMax) {
+      IDirect3DTexture9* s = reinterpret_cast<IDirect3DTexture9*>(src);
+      D3DSURFACE_DESC cd = {};
+      if (SUCCEEDED(s->lpVtbl->GetLevelDesc(s, 0, &cd)) && cd.Pool == D3DPOOL_SYSTEMMEM && cd.Width < 512 &&
+          (cd.Format == D3DFMT_DXT1 || cd.Format == D3DFMT_DXT3 || cd.Format == D3DFMT_DXT5)) {
+        copied = read_levels(s, copy.data, copy.levels);
+        copy.fmt = cd.Format; copy.w = cd.Width; copy.h = cd.Height;
+      }
+    }
     std::lock_guard<std::mutex> g(g_mx);
+    if (copied) {
+      copy.track = read_int(0x01660804);
+      copy.tick = GetTickCount();
+      copy_erase(dst);
+      g_copyBytes += copy.data.size();
+      g_copies[dst] = std::move(copy);
+    }
     ++g_updates;
     auto h = g_texHash.find(src);
     auto a = g_texMinAlpha.find(src);
@@ -402,26 +457,60 @@ bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path) {
   return true;
 }
 
+// A saved DDS whose mip 0 is the texture with this hash (files saved before 2026-11-08 can be noise, see PixelCopy).
+bool rbrrtx_dds_is_texture(const wchar_t* path, unsigned long long hash) {
+  FILE* fp = nullptr;
+  if (_wfopen_s(&fp, path, L"rb") || !fp) return false;
+  DWORD hdr[32] = {};
+  bool ok = fread(hdr, sizeof(hdr), 1, fp) == 1 && hdr[0] == 0x20534444;
+  UINT rowBytes = 0, rows = 0;
+  const char* fmt = "?";
+  ok = ok && (hdr[20] & 0x4) && layout(static_cast<D3DFORMAT>(hdr[21]), hdr[4], hdr[3], rowBytes, rows, fmt);
+  std::string data;
+  if (ok) {
+    data.resize(static_cast<size_t>(rowBytes) * rows);
+    ok = fread(&data[0], 1, data.size(), fp) == data.size();
+  }
+  fclose(fp);
+  return ok && XXH3_64bits(data.data(), data.size()) == hash;
+}
+
 bool rbrrtx_save_texture_dds_mips(void* base_texture, const wchar_t* path) {
   IDirect3DBaseTexture9* bt = static_cast<IDirect3DBaseTexture9*>(base_texture);
   if (!bt || bt->lpVtbl->GetType(bt) != D3DRTYPE_TEXTURE) return false;
   IDirect3DTexture9* t = reinterpret_cast<IDirect3DTexture9*>(bt);
   D3DSURFACE_DESC d = {};
   if (FAILED(t->lpVtbl->GetLevelDesc(t, 0, &d))) return false;
-  const UINT levels = (std::max)(1u, static_cast<UINT>(t->lpVtbl->GetLevelCount(t)));
   std::string data;
-  for (UINT l = 0; l < levels; ++l) {
-    D3DSURFACE_DESC ld = {};
-    UINT rowBytes = 0, rows = 0;
-    const char* fmt = "?";
-    if (FAILED(t->lpVtbl->GetLevelDesc(t, l, &ld)) || !layout(ld.Format, ld.Width, ld.Height, rowBytes, rows, fmt)) return false;
-    D3DLOCKED_RECT lr = {};
-    if (FAILED(t->lpVtbl->LockRect(t, l, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits) return false;
-    const size_t at = data.size();
-    data.resize(at + static_cast<size_t>(rowBytes) * rows);
-    for (UINT r = 0; r < rows; ++r)
-      memcpy(&data[at + static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
-    t->lpVtbl->UnlockRect(t, l);
+  UINT levels = 0;
+  if (d.Pool == D3DPOOL_DEFAULT) {                     // not readable: the bytes kept at upload, else the held source
+    IDirect3DTexture9* src = nullptr;
+    {
+      std::lock_guard<std::mutex> g(g_mx);
+      auto c = g_copies.find(base_texture);
+      if (c != g_copies.end()) { data = c->second.data; levels = c->second.levels; }
+      else {
+        auto h = g_held.find(base_texture);
+        if (h != g_held.end() && h->second.src) { src = h->second.src; src->lpVtbl->AddRef(src); }
+      }
+    }
+    if (src) {
+      const bool ok = read_levels(src, data, levels);
+      src->lpVtbl->Release(src);
+      if (!ok) return false;
+    }
+    if (data.empty()) return false;
+  } else if (!read_levels(t, data, levels)) {
+    return false;
+  }
+  // Mip 0 must be what the game uploaded (the hash Remix sees); anything else would be saved as a broken texture for good.
+  UINT rowBytes = 0, rows = 0;
+  const char* fmt = "?";
+  if (!layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt) || data.size() < static_cast<size_t>(rowBytes) * rows) return false;
+  const unsigned long long expected = rbrrtx_texture_hash(base_texture);
+  if (expected && XXH3_64bits(data.data(), static_cast<size_t>(rowBytes) * rows) != expected) {
+    hlog(L"texture save: %016llX read back as other pixels, not saved", expected);
+    return false;
   }
   write_dds(path, d.Format, d.Width, d.Height, data, levels);
   return true;
@@ -524,6 +613,10 @@ void rbrrtx_layer_release_other(int track) {
   std::lock_guard<std::mutex> g(g_mx);
   const DWORD now = GetTickCount();
   unsigned n = 0;
+  for (auto it = g_copies.begin(); it != g_copies.end();) {
+    if (it->second.track != track && now - it->second.tick > 60000) { g_copyBytes -= it->second.data.size(); it = g_copies.erase(it); }
+    else ++it;
+  }
   for (auto it = g_held.begin(); it != g_held.end();) {
     if (it->second.track != track && now - it->second.tick > 60000) { held_release(it->second); it = g_held.erase(it); ++n; }
     else ++it;

@@ -45,6 +45,7 @@ bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]);
 // harvest.cpp: writes mip 0 of a 2D texture to a .dds through a READONLY lock (frame dump; through the Remix bridge
 // that is the client's copy, the bytes it sent). False if the type or format is not handled or the lock fails.
 bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path);
+bool rbrrtx_dds_is_texture(const wchar_t* path, unsigned long long hash);       // saved DDS (DXT) really holds that texture's mip 0
 bool rbrrtx_save_texture_dds_mips(void* base_texture, const wchar_t* path);   // ... the whole mip chain (a replacement file)
 
 // gaugeprobe.cpp: RBRHUD gauge / display probe (dev tool; RBRRTX_GAUGE_PROBE=1 / launcher -GaugeProbe). Every call site

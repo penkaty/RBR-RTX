@@ -229,6 +229,7 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
   const bool textured = read_dds_rgba(texDds, tex, texW, texH);
   mix(W); mix(H); mix(e.windows); mix(e.seed); mix(static_cast<uint32_t>(e.litPercent)); mix(static_cast<uint32_t>(e.nrects));
   mix(textured ? 3u : 1u);
+  mix(2u);                                             // file version: masks made from a noise texture (before 2026-11-08) are not reused
   for (int i = 0; i < e.nrects; ++i) for (float f : e.rects[i]) mix(static_cast<uint32_t>(std::lround(f * 4096.0f)));
   wchar_t tail[40];
   swprintf_s(tail, L"_mask_%08X.dds", key);
@@ -516,7 +517,7 @@ void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture,
     D3DSURFACE_DESC desc = {};
     IDirect3DTexture9* bt = static_cast<IDirect3DTexture9*>(baseTexture);
     if (bt && SUCCEEDED(bt->lpVtbl->GetLevelDesc(bt, 0, &desc))) { st.w = desc.Width; st.h = desc.Height; }
-    const bool have = GetFileAttributesW(st.dds.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool have = rbrrtx_dds_is_texture(st.dds.c_str(), hash);   // false too for a noise file of an older build: saved anew
     if (!dir.empty() && st.w && (have || rbrrtx_save_texture_dds_mips(baseTexture, st.dds.c_str()))) {
       st.mask = write_mask(hash, e, st.w, st.h, st.dds);
       st.ok = !st.mask.empty();
@@ -561,7 +562,7 @@ int rbrrtx_emit_auto_windows(unsigned long long tex, void* texture, const float 
   if (dir.empty() || !texture) return 0;
   CreateDirectoryW(dir.c_str(), nullptr);
   const std::wstring dds = dir + L"\\" + hex16(tex) + L".dds";
-  if (GetFileAttributesW(dds.c_str()) == INVALID_FILE_ATTRIBUTES && !rbrrtx_save_texture_dds_mips(texture, dds.c_str())) {
+  if (!rbrrtx_dds_is_texture(dds.c_str(), tex) && !rbrrtx_save_texture_dds_mips(texture, dds.c_str())) {
     clog2(L"auto windows %016llX: could not save the texture", tex);
     return 0;
   }

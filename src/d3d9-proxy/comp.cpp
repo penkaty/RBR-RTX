@@ -3257,6 +3257,9 @@ void end_frame(IDirect3DDevice9* dev) {
       remix_set("rtx.numFramesToKeepInstances", "1000000");
       remix_set("rtx.numFramesToKeepBLAS", "1000000");
       g_rasterKeepRestoreFrame = 0;
+      // The car lamps are created anew when ray tracing returns (user 2026-11-08: lights came back only after a camera
+      // change or a long time). Here and not on the way back: a destroy and a create of one hash in one frame ends destroyed.
+      rbrrtx_headlights_destroy();
     } else {
       g_rasterKeepRestoreFrame = g_frame + 300;
     }

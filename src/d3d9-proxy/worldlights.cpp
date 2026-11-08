@@ -395,7 +395,7 @@ void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* base
     const std::wstring dir = glow_dir();
     if (!dir.empty()) CreateDirectoryW(dir.c_str(), nullptr);
     g.dds = dir + L"\\" + hex16(hash) + L".dds";
-    const bool have = GetFileAttributesW(g.dds.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool have = rbrrtx_dds_is_texture(g.dds.c_str(), hash);
     if (!dir.empty() && (have || rbrrtx_save_texture_dds_mips(baseTexture, g.dds.c_str()))) {
       g.mask = glow_write_mask(hash, k);
       g.ok = !g.mask.empty();

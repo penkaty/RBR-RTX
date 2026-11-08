@@ -313,22 +313,29 @@ void page_emissive(void*) {
   ImGui::SeparatorText("Emissive props");
   int remove = -1;
   RbrEmit e = {};
+  // rbrrtx_emit_get refills e every frame, which threw a drag away (user 2026-11-08: the sliders went back to the value
+  // the lamp was made with). The row being dragged keeps its own copy until the release applies it.
+  static RbrEmit s_drag = {};
+  static unsigned long long s_dragTex = 0;
   for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i) {
     if (!rbrrtx_emit_get(i, &e) || e.windows) continue;
+    if (e.tex == s_dragTex) e = s_drag;
     ImGui::PushID(i);
     ImGui::Text("0x%016llX  %s  intensity %.1f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
     ImGui::SameLine();
     if (ImGui::SmallButton("Remove")) remove = static_cast<int>(i);
     if (e.lumens > 0.0f) {
       // Edits apply on release: each one reloads the lamps (and the drag would otherwise do it every frame).
-      bool edit = false;
+      bool edit = false, held = false;
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.0f);
       ImGui::SliderFloat("lm", &e.lumens, 1000.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
       edit |= ImGui::IsItemDeactivatedAfterEdit();
+      held |= ImGui::IsItemActive();
       ImGui::SameLine();
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
       ImGui::SliderFloat("cone", &e.cone, 0.0f, 90.0f, "%.0f deg");
       edit |= ImGui::IsItemDeactivatedAfterEdit();
+      held |= ImGui::IsItemActive();
       ImGui::SameLine();
       ImGui::BeginDisabled(!pick.found);
       if (ImGui::SmallButton("Aim here")) {             // every lamp of it points at what the crosshair hits now
@@ -344,8 +351,11 @@ void page_emissive(void*) {
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
       ImGui::DragFloat3("light offset x / y / z (m)", e.offset, 0.02f, -20.0f, 20.0f, "%.2f");
       edit |= ImGui::IsItemDeactivatedAfterEdit();
+      held |= ImGui::IsItemActive();
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Moves every lamp of this texture by this much (world axes, y = up), e.g. out of the lamp head so the mesh does not block it.");
       if (e.aim) ImGui::TextDisabled("  aimed at (%.1f %.1f %.1f)", e.aimAt[0], e.aimAt[1], e.aimAt[2]);
+      if (held) { s_drag = e; s_dragTex = e.tex; }
+      else if (s_dragTex == e.tex) s_dragTex = 0;
       if (edit) {
         rbrrtx_emit_set_light(e);
         status("light changed (Save keeps it)");
