@@ -1620,6 +1620,7 @@ void rbrrtx_particles_raster(bool raster) {
 void rbrrtx_particles_init(const remixapi_Interface* api) {
   g_api = api;
   g_probe = rbrrtx_env_flag(L"RBRRTX_EMIT_PROBE", false);
+  rbrrtx_effects_census_init();
   g_test = rbrrtx_env_flag(L"RBRRTX_PARTICLE_TEST", true);   // on in a release; the env var 0 turns it off (user 2026-10-25: release had no particles)
   rbrrtx_config_path(L"RBRRTX_PARTICLES", L"particles.ini", g_cfgPath, MAX_PATH * 2);
   load_cfg();
@@ -1658,6 +1659,7 @@ void rbrrtx_particles_toggle() {
 void rbrrtx_particles_frame_end() {
   if (g_active) { check_cfg(); surface_frame(); }
   if (g_probe) probe_report();
+  rbrrtx_effects_census_report();
   if (g_rainHooked) rain_cut_frame();
   if (g_rainProbe) rain_report();
   if (g_precip && !g_active) check_cfg();             // particles.ini read again on save (dust does it otherwise)
