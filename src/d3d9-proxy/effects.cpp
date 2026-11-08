@@ -1559,23 +1559,23 @@ Row row_defaults(int i) {
   switch (i) {
     //                        rate  max   life       start size   end size     rise cone drag grav    colour
     case R_GRAVEL:       r.c = row_cfg(40, 300, 0.5f, 1.0f, 0.03f, 0.06f, 0.03f, 0.06f, 3.0f, 45, 0.2f, -9.81f, 0.32f, 0.28f, 0.22f, 1.0f); r.merge = 1.0f; r.maxDist = 80; r.hideCockpit = true; break;
-    case R_WET:          r.c = row_cfg(25, 300, 0.6f, 1.4f, 0.15f, 0.30f, 0.8f, 1.6f, 1.5f, 40, 1.0f, -2.0f, 0.82f, 0.84f, 0.86f, 0.25f, 0.5f); r.merge = 1.0f; r.maxDist = 100; r.hideCockpit = true; break;
+    case R_WET:          r.c = row_cfg(15, 150, 0.5f, 1.0f, 0.15f, 0.30f, 0.5f, 1.0f, 1.5f, 40, 1.0f, -2.0f, 0.82f, 0.84f, 0.86f, 0.25f, 0.5f); r.merge = 1.0f; r.maxDist = 100; r.hideCockpit = true; break;
     case R_GRASS:        r.c = row_cfg(12, 120, 0.8f, 1.5f, 0.04f, 0.08f, 0.04f, 0.08f, 2.0f, 50, 1.5f, -4.0f, 0.22f, 0.32f, 0.10f, 1.0f); r.merge = 1.0f; r.maxDist = 80; r.hideCockpit = true; break;
     case R_DEBRIS:       r.c = row_cfg(30, 200, 0.6f, 1.5f, 0.05f, 0.12f, 0.05f, 0.12f, 4.0f, 70, 0.2f, -9.81f, 0.30f, 0.27f, 0.23f, 1.0f); r.holdMs = 120; r.maxDist = 100; break;
-    case R_DEBRIS_SMOKE: r.c = row_cfg(15, 150, 1.0f, 3.0f, 0.3f, 0.5f, 1.5f, 2.5f, 1.0f, 50, 0.9f, 0.1f, 0.55f, 0.52f, 0.48f, 0.35f, 1.0f); r.holdMs = 150; r.maxDist = 120; break;
+    case R_DEBRIS_SMOKE: r.c = row_cfg(8, 60, 0.8f, 2.0f, 0.3f, 0.5f, 1.0f, 1.8f, 1.0f, 50, 0.9f, 0.1f, 0.55f, 0.52f, 0.48f, 0.35f, 1.0f); r.holdMs = 150; r.maxDist = 120; break;
     case R_SPLASH:       r.c = row_cfg(120, 600, 0.4f, 1.0f, 0.12f, 0.25f, 0.3f, 0.6f, 5.0f, 35, 0.3f, -9.81f, 0.86f, 0.90f, 0.95f, 0.55f); r.maxDist = 120; break;
-    case R_SPLASH_SMOKE: r.c = row_cfg(25, 200, 0.8f, 2.0f, 0.5f, 0.8f, 2.0f, 3.0f, 1.0f, 50, 1.0f, -0.3f, 0.88f, 0.90f, 0.93f, 0.25f, 0.8f); r.maxDist = 120; break;
+    case R_SPLASH_SMOKE: r.c = row_cfg(12, 60, 0.6f, 1.4f, 0.4f, 0.7f, 1.2f, 2.0f, 1.0f, 50, 1.0f, -0.3f, 0.88f, 0.90f, 0.93f, 0.25f, 0.8f); r.maxDist = 120; break;
     case R_CARWATER:     r.c = row_cfg(15, 60, 0.3f, 0.7f, 0.05f, 0.1f, 0.1f, 0.2f, 1.0f, 40, 0.5f, -6.0f, 0.86f, 0.90f, 0.95f, 0.2f); r.merge = 3.0f; r.maxDist = 60; r.hideCockpit = true; break;
     case R_EXHAUST:      r.c = row_cfg(12, 40, 0.4f, 1.0f, 0.05f, 0.1f, 0.3f, 0.5f, 0.6f, 25, 1.2f, 0.3f, 0.55f, 0.55f, 0.55f, 0.12f, 0.8f); r.merge = 0.5f; r.holdMs = 250; r.maxDist = 60; r.hideCockpit = true; break;
     case R_POP:          r.c = row_cfg(60, 20, 0.05f, 0.12f, 0.1f, 0.15f, 0.2f, 0.3f, 0.5f, 30, 0.0f, 0.0f, 1.0f, 0.55f, 0.15f, 0.9f, 0.0f, 8.0f); r.merge = 0.5f; r.holdMs = 80; r.maxDist = 80; r.hideCockpit = true; break;
     case R_FIRE:         r.c = row_cfg(20, 40, 0.3f, 0.7f, 0.2f, 0.3f, 0.4f, 0.6f, 2.0f, 20, 0.5f, 1.0f, 1.0f, 0.45f, 0.1f, 0.8f, 1.0f, 6.0f); r.holdMs = 250; r.maxDist = 120; break;
-    case R_FIRE_SMOKE:   r.c = row_cfg(15, 60, 1.5f, 3.0f, 0.4f, 0.6f, 2.0f, 3.0f, 1.5f, 25, 0.7f, 0.6f, 0.08f, 0.08f, 0.08f, 0.5f, 1.2f); r.holdMs = 250; r.maxDist = 150; break;
+    case R_FIRE_SMOKE:   r.c = row_cfg(10, 40, 1.2f, 2.5f, 0.4f, 0.6f, 1.5f, 2.2f, 1.5f, 25, 0.7f, 0.6f, 0.08f, 0.08f, 0.08f, 0.5f, 1.2f); r.holdMs = 250; r.maxDist = 150; break;
     case R_STEAM:        r.c = row_cfg(12, 40, 0.6f, 1.4f, 0.2f, 0.3f, 0.8f, 1.2f, 1.0f, 25, 1.0f, 0.5f, 0.86f, 0.86f, 0.86f, 0.2f, 1.0f); r.merge = 3.0f; r.holdMs = 250; r.maxDist = 80; r.hideCockpit = true; break;
     case R_SPARKS:       r.c = row_cfg(80, 60, 0.15f, 0.4f, 0.01f, 0.02f, 0.01f, 0.02f, 4.0f, 90, 0.1f, -9.81f, 1.0f, 0.7f, 0.3f, 1.0f, 0.0f, 20.0f); r.c.trail = 0.5f; r.c.align = true; r.holdMs = 80; r.maxDist = 80; break;
     case R_GLASS:        r.c = row_cfg(40, 60, 0.5f, 1.0f, 0.01f, 0.03f, 0.01f, 0.03f, 2.5f, 80, 0.2f, -9.81f, 0.85f, 0.92f, 0.95f, 0.8f); r.holdMs = 120; r.maxDist = 60; break;
     case R_SNOWWALL:     r.c = row_cfg(40, 200, 0.5f, 1.2f, 0.1f, 0.2f, 0.3f, 0.5f, 3.0f, 45, 0.6f, -6.0f, 0.95f, 0.96f, 0.98f, 0.8f); r.maxDist = 120; break;
-    case R_SNOWWALL_SMOKE: r.c = row_cfg(20, 150, 0.8f, 2.0f, 0.4f, 0.7f, 1.8f, 2.6f, 1.0f, 50, 1.0f, -0.3f, 0.95f, 0.96f, 0.98f, 0.3f, 0.8f); r.maxDist = 120; break;
-    case R_STAGE_SMOKE:  r.c = row_cfg(8, 200, 4.0f, 8.0f, 1.0f, 1.5f, 5.0f, 7.0f, 1.0f, 20, 0.5f, 0.3f, 0.55f, 0.55f, 0.56f, 0.25f, 0.6f); r.holdMs = 400; r.merge = 3.0f; r.maxDist = 300; break;
+    case R_SNOWWALL_SMOKE: r.c = row_cfg(10, 60, 0.6f, 1.4f, 0.4f, 0.7f, 1.2f, 1.8f, 1.0f, 50, 1.0f, -0.3f, 0.95f, 0.96f, 0.98f, 0.3f, 0.8f); r.maxDist = 120; break;
+    case R_STAGE_SMOKE:  r.c = row_cfg(5, 60, 3.0f, 6.0f, 0.8f, 1.2f, 3.0f, 5.0f, 1.0f, 20, 0.5f, 0.3f, 0.55f, 0.55f, 0.56f, 0.25f, 0.6f); r.holdMs = 400; r.merge = 3.0f; r.maxDist = 300; break;
     default: break;
   }
   return r;
