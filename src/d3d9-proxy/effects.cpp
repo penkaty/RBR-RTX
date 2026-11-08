@@ -1028,7 +1028,7 @@ constexpr uintptr_t kRainVtSlot = 0x0074D1B0, kRainThunk = 0x005DA8B0, kWeather 
 constexpr ULONGLONG kLiveMs = 250;                     // an emitter whose camera signal came this recently is alive
 float g_camPos[3] = {}, g_camFwd[3] = {};             // from the rain emitters' camera signal (physics space)
 unsigned g_camSigs = 0;
-struct GameRain { void* em = nullptr; ULONGLONG t = 0; uint32_t pool = 0; int kind = 0; char name[32] = {}; };
+struct GameRain { void* em = nullptr; ULONGLONG t = 0; uint32_t pool = 0; int kind = 0; bool cut = false; char name[32] = {}; };
 GameRain g_em[4];                                      // kind: 1 rain, 2 snow, 0 unknown
 struct DrawStat { unsigned long long hash = 0; unsigned draws = 0, prims = 0; bool ff = false; };
 DrawStat g_rainDraws[12];
@@ -1066,6 +1066,7 @@ void __fastcall rain_cam_invoke(void* conn, void* /*edx*/, const uint8_t* sig) {
   const ULONGLONG now = GetTickCount64();
   GameRain* slot = nullptr;
   for (GameRain& g : g_em) if (g.em == em) { slot = &g; break; }
+  if (slot && now - slot->t > 1000) { slot->pool = 0; slot->cut = false; }   // same address, a new stage's emitter
   if (!slot) {                                         // new emitter (new stage): the oldest slot
     slot = &g_em[0];
     for (GameRain& g : g_em) if (g.t < slot->t) slot = &g;
@@ -1111,15 +1112,15 @@ float weather_intensity() {
   return rdf(w + 0x2C) + rdf(w + 0x34) * rdf(w + 0x30);
 }
 
-// Pools 0 while replaced, the stage's own sizes back when not. Only live emitters are written (a stage being left
-// frees them; a signal within kLiveMs means the stage still runs).
+// Pools 0 while replaced, the stage's own sizes back when not. Touched once per change: reading a live-looking emitter every
+// frame hit freed memory when a stage was left (guarded, but each one wrote a dump).
 void rain_cut_frame() {
   for (GameRain& g : g_em) {
     if (!em_live(g)) continue;
     uint32_t* pool = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(g.em) + 0x30);
     __try {
-      if (g_replace && *pool) { g.pool = *pool; *pool = 0; }
-      else if (!g_replace && g.pool && !*pool) { *pool = g.pool; g.pool = 0; }
+      if (g_replace && !g.cut) { g.pool = *pool; *pool = 0; g.cut = true; }
+      else if (!g_replace && g.cut) { *pool = g.pool; g.pool = 0; g.cut = false; }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
   }
 }

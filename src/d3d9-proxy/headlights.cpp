@@ -77,6 +77,7 @@ struct Settings {
   float brightsBelow = 4.0f;
   float autoBelow = 10.0f;                             // sun elevation (degrees) below which the lights come on; -90 = never
   int autoMode = 2;                                    // mode the automatic switch uses
+  bool autoBadWeather = true;                          // day_running = 0: also on in rain, snow or fog, whatever the sun
   // user 2026-10-23: x27 of the first build, +50 %, -20 %, then -15 %
   float radiance[3] = { 11016.0f, 10465.0f, 9364.0f };  // per lamp
   float radius = 0.05f;                                // sphere light radius (m)
@@ -341,6 +342,7 @@ void load_settings() {
     else if (v[0]) s.autoBelow = static_cast<float>(_wtof(v));
     s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 2, 3);   // 1 (centre light) is gone
     s.dayRunning = ini_float(path, L"day_running", 1.0f) != 0.0f;
+    s.autoBadWeather = ini_float(path, L"auto_bad_weather", 1.0f) != 0.0f;
     ini_str(L"brights_below_sun", v, 32, path);
     if (!_wcsicmp(v, L"none")) s.brightsBelow = -90.0f;
     else if (v[0]) s.brightsBelow = static_cast<float>(_wtof(v));
@@ -1282,10 +1284,11 @@ int g_mode = kOff;
 bool g_manual = false;                                 // the key was used on this stage: no automatic switching
 float g_dayK = 1.0f;                                   // daylight dimming of the lamps (day_intensity)
 int g_autoWant = -1;                                   // the automatic switch's mode last frame (-1 = none yet)
+bool g_badWeather = false;                             // this stage's sky is rain, snow or fog
 // The mode the automatic switch wants at this sun height.
 int auto_mode_for(float sunEl) {
   if (g_cfg.dayRunning) return sunEl < g_cfg.brightsBelow ? kBrights : kPair;
-  return sunEl < g_cfg.autoBelow ? g_cfg.autoMode : kOff;
+  return sunEl < g_cfg.autoBelow || (g_cfg.autoBadWeather && g_badWeather) ? g_cfg.autoMode : kOff;
 }
 int g_track = -1;
 bool g_emitted = false;                                // first BeginScene of this frame seen (lamp states read)
@@ -1326,9 +1329,14 @@ const wchar_t* mode_name(int m) {
   return m == kPair ? L"ON (two lamps)" : m == kBrights ? L"BRIGHTS (four lamps)" : L"OFF";
 }
 
+// A lamp is only sent when it changes, so one lost while a stage loads stayed lost on the start line until the car moved or
+// L re-created it (user 2026-11-08: no beam from the cockpit at first). Sent every frame for a few seconds after any change.
+int g_lampResend = 0;
+
 void set_mode(int m, const wchar_t* why) {
   if (m == g_mode) return;
   g_mode = m;
+  g_lampResend = 300;
   // Only the lamps the new mode does not use (send_lamps also destroys every lamp it did not draw). Destroying all of
   // them here re-created the low beams under the same hash in the same frame, and on Remix Plus the destroy won: OFF ->
   // BRIGHTS showed the high beams alone until the car moved (run 20261030-072711, Gabiria marks 1-3).
@@ -1345,7 +1353,7 @@ void set_mode(int m, const wchar_t* why) {
 void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float radIn[3], float softness, float radius = 0.0f) {
   const float k = &l == &g_lamps[7] ? 1.0f : g_dayK;     // daylight dimming; the backfire flash stays
   const float rad[3] = { radIn[0] * k, radIn[1] * k, radIn[2] * k };
-  const bool moved = !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone ||
+  const bool moved = g_lampResend > 0 || !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone ||
                      rad[0] != l.rad[0] || rad[1] != l.rad[1] || rad[2] != l.rad[2];
   if (moved) {
     // Remix Plus: the same hash again UPDATES the live lamp and keeps its RTXDI/denoiser history (remixplus_api.cpp
@@ -2117,6 +2125,7 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     g_track = si.trackId;
     g_carSlot = si.carId;
     g_manual = false;
+    g_lampResend = 300;
     g_autoWant = -1;
     g_solved = g_failed = 0;
     g_off = Offset();
@@ -2149,11 +2158,16 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     // (user 2026-11-07: with day_intensity 0 the L key did nothing by day).
     if (g_manual) g_dayK = 1.0f;
   }
+  if (g_lampResend > 0) --g_lampResend;
+  {
+    const wchar_t* sky = rbrrtx_sky_name(si.skyType);
+    g_badWeather = (wcsstr(sky, L"Rain") || wcsstr(sky, L"Snow") || wcsstr(sky, L"Fog")) && wcsncmp(sky, L"No", 2) != 0;
+  }
   const int want = auto_mode_for(sunElevation);
   if (!g_manual && want != g_autoWant) {
     wchar_t why[96];
     if (g_cfg.dayRunning) swprintf_s(why, L"day running lights; sun %.1f deg, brights below %.0f", sunElevation, g_cfg.brightsBelow);
-    else swprintf_s(why, L"sun %.1f deg, lamps below %.0f", sunElevation, g_cfg.autoBelow);
+    else swprintf_s(why, L"sun %.1f deg, lamps below %.0f%s", sunElevation, g_cfg.autoBelow, g_badWeather && g_cfg.autoBadWeather ? L", bad weather" : L"");
     set_mode(want, why);
   }
   g_autoWant = want;
