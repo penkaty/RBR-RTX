@@ -38,9 +38,12 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sk
 
 | | |
 |---|---|
+| **System** | Windows 10 or 11 |
 | **GPU** | NVIDIA RTX card (20-series or newer) with a current driver |
-| **Game** | Richard Burns Rally with the RallySimFans launcher, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
+| **Game** | Richard Burns Rally with a current RallySimFans install, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
 | **Must NOT be installed** | **ReShade** and the **RBR Lights Plugin**. With either one in the game, Remix will not run properly. |
+
+Expect about 60 fps on a clear day and 35 to 50 fps at night in rain, measured on an RTX 2080 Ti at 1080p with the default settings.
 
 ## Installation
 
@@ -60,7 +63,7 @@ You need none of these to drive. [All keys](docs/keybinds.md) can be changed in 
 | **F3** | In-game menu |
 | **Alt+X** | Remix's own menu |
 | **L** | Headlights: off, two lamps, brights |
-| **0** | Ray tracing on/off, to compare with the original picture |
+| **0** | Ray tracing on/off, to compare with the original picture and the game's own rain and snow |
 | **9** | Mark a problem while driving |
 | **Alt+K** | Stage sweep for bug reports: hold still until the beep |
 
@@ -73,6 +76,8 @@ RBR bakes each stage's light into the scenery, so the path-traced sun and weathe
 - **A bug:** run **Alt+K** on the spot and send the report, see [Troubleshooting](docs/troubleshooting.md).
 
 **Work in progress:** unusual weather, rare stages and Bob's Track Builder stages can look wrong. See [Known issues](docs/known-issues.md).
+
+**Car lamps:** beams and rear lights work on every car. Glowing lamp lenses depend on how the car was built, and some cars, such as the Ford Focus WRC, show beams only for now.
 
 ## Documentation
 
@@ -89,6 +94,8 @@ RBR bakes each stage's light into the scenery, so the path-traced sun and weathe
 | [Changelog](CHANGELOG.md) | What changed in each version, and why |
 | [Contributing](CONTRIBUTING.md) | Reports, sun fixes, code, building from source |
 
+**A separate project, still in progress:** physically based materials for the stages. They are not part of this release.
+
 <details>
 <summary><b>Credits</b></summary>
 
@@ -96,8 +103,7 @@ RBR bakes each stage's light into the scenery, so the path-traced sun and weathe
   the [NUMOS](https://github.com/Kim2091/numos-sky) sky, clouds, weather and fog, and the runtime branch this mod's renderer is
   built on ([Kim2091/dxvk-remix](https://github.com/Kim2091/dxvk-remix) `fnv/main`: 32-bit bridge API forwarding, retained
   instances, terrain layers, D3D9 texture import), shown working in [New Vegas RTX](https://github.com/Kim2091/New-Vegas-RTX).
-  Much of what this mod does depends on Kim's work. Also [PBRify_Remix](https://github.com/Kim2091/PBRify_Remix) (our PBR maps)
-  and [Remix-Wrappers](https://github.com/Kim2091/Remix-Wrappers).
+  Much of what this mod does depends on Kim's work. Also [Remix-Wrappers](https://github.com/Kim2091/Remix-Wrappers).
 - [NVIDIA RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix): [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix)
   runtime and Remix API header, [bridge-remix](https://github.com/NVIDIAGameWorks/bridge-remix).
 - [xoxor4d](https://github.com/xoxor4d): the wetness and CardNormals work in our runtime; their compatibility mods are the blueprint for this one:

@@ -23,7 +23,7 @@ param([string]$Remix = '', [switch]$SkipProxy, [switch]$Diagnostics)
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $dist = Join-Path $here 'dist\RBR-RTX'
-if (-not $Remix) { $Remix = Join-Path $here '..\remix\runtime\RemixPlus-main\game folder' }   # 0.4.0: Remix Plus, our rbr-main build
+if (-not $Remix) { $Remix = Join-Path $here '..\remix\runtime\RemixPlus-meshmat\game folder' }   # 0.4.0: Remix Plus, feat/20261106-mesh-materials
 if (-not $Remix -or -not (Test-Path (Join-Path $Remix '.trex\NvRemixBridge.exe'))) {
   throw 'Runtime not found. Pass -Remix <runtime folder with d3d9.dll and .trex\>.'
 }
@@ -39,6 +39,19 @@ Get-ChildItem $Remix -Force | Where-Object { $_.Name -notin 'NvRemixLauncher32.e
   Copy-Item -Destination $remixDst -Recurse -Force
 Get-ChildItem (Join-Path $here 'package') -Force | Copy-Item -Destination $dist -Recurse -Force
 Copy-Item (Join-Path $here 'LICENSE'), (Join-Path $here 'THIRD-PARTY.md') (Join-Path $dist 'rbr-rtx') -Force
+# 0.4.0: the installed proxy reads rbr-rtx\config; the Remix Plus settings replace the 1.5.2 ones of the same name.
+$cfg = Join-Path $dist 'rbr-rtx\config'
+$plus = Join-Path $dist 'rbr-rtx\config-remixplus'
+foreach ($n in 'pbr-material.conf', 'legacy-material-no-pbr.conf', 'material-classes.ini', 'bridge.conf') { Remove-Item (Join-Path $plus $n) -Force }   # dev only; the runtime brings its bridge.conf
+Get-ChildItem $plus -Force | Copy-Item -Destination $cfg -Recurse -Force
+Remove-Item $plus -Recurse -Force
+$rtxConf = Join-Path $cfg 'rtx.conf'
+$conf = [IO.File]::ReadAllText($rtxConf) -replace '(?m)^rtx\.weather\.presetDirectory[ \t]*=[^\r\n]*', 'rtx.weather.presetDirectory = rbr-rtx/config/weather'
+if ($conf -notmatch '(?m)^rtx\.weather\.presetDirectory = rbr-rtx/config/weather') { throw 'rtx.conf has no weather preset folder' }
+if ($conf -match '[A-Za-z]:[\\/](RichardRust|rbr-dev|Users)') { throw 'rtx.conf still has a path of this PC' }
+[IO.File]::WriteAllText($rtxConf, $conf, (New-Object Text.UTF8Encoding $false))
+# No generated PBR in 0.4.0 (user 2026-11-08): class materials stay out of the release.
+foreach ($n in 'a_rbrrtx_classmat', 'authored_lights') { Remove-Item (Join-Path $dist "rbr-rtx\rtx-remix\mods\$n") -Recurse -Force }
 # Dev runs write into the runtime folder (crash dumps, logs, ReShade injected into NvRemixBridge.exe): never ship those.
 $leftovers = '*.pdb', '*.dmp', '*.log', 'ReShade*', 'nrc_session_log.txt', 'user.conf', 'imgui.ini'
 Get-ChildItem $remixDst -Recurse -Force -File | Where-Object { $n = $_.Name; $leftovers | Where-Object { $n -like $_ } } |
@@ -55,7 +68,7 @@ if ($Diagnostics) {
 }
 $rev = (git -C $here describe --always --dirty 2>$null)
 if ($Diagnostics) { $rev += ' (diagnostics)' }
-@("RBR-RTX $rev, built $(Get-Date -Format 'yyyy-MM-dd HH:mm')", "RTX Remix runtime: $(Split-Path $Remix -Leaf)") |
+@("RBR-RTX $rev, built $(Get-Date -Format 'yyyy-MM-dd HH:mm')", "RTX Remix runtime: $(Split-Path (Split-Path $Remix -Parent) -Leaf)") |
   Set-Content -Encoding UTF8 (Join-Path $dist 'rbr-rtx\version.txt')
 # files.txt: every file the add-on brings, plus the proxy's hash so uninstall never deletes another d3d9.dll.
 $base = (Resolve-Path $dist).Path.TrimEnd('\')

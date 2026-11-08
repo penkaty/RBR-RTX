@@ -9,7 +9,7 @@ Change any key in `rbr-rtx\config\keys.ini` (restart the game); write `none` to 
 | Key | Action |
 |---|---|
 | **Alt+K** | **Stage sweep for bug reports:** stop the car, leave the camera, wait about 25 seconds for the beep. Output in `rbr-rtx\logs\sweep-<date-time>\`. It presses Pause itself at the end for a Remix scene capture, so keep Pause free. Pressing it again aborts. |
-| **0** | **Ray tracing on/off:** the original picture of the same scene, to compare |
+| **0** | **Ray tracing on/off:** the original picture of the same scene with the game's own rain and snow, to compare |
 | 6 | Sky: Remix sky or no sky |
 | 7 | Dust and tyre smoke (Remix particles) on/off |
 | 8 | Record everything drawn in the next frame (test builds with `diagnostics.txt`) |

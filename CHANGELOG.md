@@ -7,6 +7,16 @@ RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing wit
 
 The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. The reasoning and findings are in the [technical notes](docs/release-0.4.0.md). Items marked *not yet seen* were built but not confirmed in game.
 
+### What you will see
+- A new sky: real clouds, fog and haze that follow each stage's weather and time of day.
+- Wet roads with puddles, ripples and raindrop rings on damp and wet stages.
+- Rain and snow as real particles, lit by the sun, the sky and your headlights.
+- Dust that takes the colour of the ground, and tarmac smoke under a slide.
+- Street lamps at night, which you can place and tune yourself in the **F3** menu: temperature, brightness, cone and position.
+- Headlights by car year, brake and reversing lights, hot brake discs and backfire flashes.
+- Trees and distant ground no longer blink out, and the picture is sharper, with clearer road textures.
+- Key **0** now compares against the original picture with the game's own rain and snow.
+
 ### Licence
 From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT.
 

@@ -2,8 +2,8 @@ RBR-RTX - RTX Remix path tracing for Richard Burns Rally (RSF), as a removable a
 Full documentation, changelog and updates: https://github.com/penkaty/RBR-RTX
 
 REQUIREMENTS (read this first)
-  - NVIDIA RTX GPU with driver 572.18 OR NEWER (the minimum RTX Remix 1.5.2
-    itself checks for). Older drivers are not supported.
+  - Windows 10 or 11, NVIDIA RTX GPU with driver 572.18 OR NEWER. Older drivers are not supported.
+    About 60 fps on a clear day, 35 to 50 fps at night in rain (RTX 2080 Ti, 1080p, default settings).
   - RSF launcher: Graphics mode = Normal (Vulkan/dgVoodoo/VR modes use their own d3d9.dll).
   - ReShade and the RBR Lights Plugin must NOT be installed. With either one in the game, Remix does not run
     properly. Remove them first (for ReShade also its Vulkan layer and shader folders). RBR-RTX has its own
@@ -21,7 +21,7 @@ Install
   2. From the unpacked RBR-RTX folder, in PowerShell:  .\rbr-rtx\install.ps1 -Game "<your RBR folder>"
      (or copy d3d9.dll and rbr-rtx\ into the game folder by hand).
   3. Start the game as usual. The first start compiles shaders and takes longer. Alt+X opens the Remix menu.
-  Updating from 0.2 or older: unpack over the old files, then delete user.conf in the RBR folder (and an edited
+  Updating from 0.3 or older: unpack over the old files, then delete user.conf in the RBR folder (and an edited
   rbr-rtx\config\keys.ini): old saved settings override the new defaults.
 
 Recommended game settings (RSF launcher / in-game options)
