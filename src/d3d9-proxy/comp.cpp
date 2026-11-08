@@ -425,6 +425,7 @@ struct Stats {
   unsigned btbRebuilt, btbCamRejected;                 // merged instance buffers built this frame; camera candidates refused
   float worldErr, rlDev, recErr;
   float worldDerivErr;                                 // c8 vs the derived W (grows with distance from the map origin)
+  float carSolveErr;                                   // metres between world_from_c0 and c8 on car draws: what CarTexture(NoDirt), which have no c8, get
   unsigned c8Used, c8Refused;                          // car draws given RBR's exact world matrix / refused it
   float skyErr, skyCamOff;                              // sky VP split error; sky camera distance from the dome centre
 } g_st = {};
@@ -2750,6 +2751,10 @@ bool before_draw(IDirect3DDevice9* dev) {
     if (!btbFrame) {
       g_st.worldErr = (std::max)(g_st.worldErr, err);
       g_st.worldDerivErr = (std::max)(g_st.worldDerivErr, max_diff(world, exact));
+      if (g_curInfo->flags & SH_CAR) {
+        const float dx = world._41 - exact._41, dy = world._42 - exact._42, dz = world._43 - exact._43;
+        g_st.carSolveErr = (std::max)(g_st.carSolveErr, std::sqrt(dx * dx + dy * dy + dz * dz));
+      }
     }
     if (err < 2e-3f || btbFrame) { world = exact; ++g_st.c8Used; }   // 2e-3 NDC: about a pixel at 1080p
     else ++g_st.c8Refused;
@@ -2787,10 +2792,10 @@ void log_frame(const wchar_t* why) {
   const bool okInv = g_haveCam && inverse(g_V, vinv);
   const float fovY = g_haveCam && g_P._22 != 0 ? 2.0f * std::atan(1.0f / std::fabs(g_P._22)) * 57.29578f : 0.0f;
   clog(L"frame %u (%s): draws %u [known %u, unknown %u, fixed-function %u, offscreen %u, BTB %u (%u untransformed, %u instanced = %u copies merged, %u rebuilt, %u camera candidates refused, shift (%.1f %.1f %.1f))], transformed %u, no-camera %u, "
-       L"scenes %u, world-check (c8 x VP vs c0 on screen) max err %.5f, c8 used %u / refused %u, derived W err %.3f, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
+       L"scenes %u, world-check (c8 x VP vs c0 on screen) max err %.5f, c8 used %u / refused %u, derived W err %.3f, car c0 solve err %.3f m, world-space dev %.5f, VP split err %.6f, comp %s, sky mode %d (%u sky draws, split err %.5f, camera off-centre %.2f), windscreen %s (%u skipped), %u screen-space, "
        L"UI trigger %s at draw %u (occlusion queries open then %u, now %d), %s",
        g_frame, why, g_st.draws, g_st.known, g_st.unknown, g_st.ff, g_st.offscreen, g_st.btb, g_st.btbSkipped, g_st.btbInstanced, g_st.btbCopies, g_st.btbRebuilt, g_st.btbCamRejected, g_btbShift[0], g_btbShift[1], g_btbShift[2], g_st.xformed, g_st.noCamera,
-       g_st.scenes, g_st.worldErr, g_st.c8Used, g_st.c8Refused, g_st.worldDerivErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
+       g_st.scenes, g_st.worldErr, g_st.c8Used, g_st.c8Refused, g_st.worldDerivErr, g_st.carSolveErr, g_st.rlDev, g_st.recErr, g_enabled ? L"ON" : L"OFF", g_skyMode,
        g_st.skyDraws, g_st.skyErr, g_st.skyCamOff, g_glassOn ? L"on" : L"off", g_st.glassSkipped, g_st.screenSpace, g_uiTriggerOn ? L"on" : L"off",
        g_st.uiTriggerAt, g_st.oqAtUi, g_oqActive, kTestModes[g_testMode]);
   clog(L"  foliage mode %d (cut-out ALPHAREF %lu): %u draws with lowered ALPHAREF, %u soft passes skipped; %u mid-scene screen quads skipped; off-screen scenery %s (%.0f draws skipped per frame) since last line",
