@@ -247,9 +247,8 @@ void rbrrtx_particles_menu_rain(float percent);                // rain in the ma
 void rbrrtx_particles_emit(bool sweeping);                     // once per frame at the first BeginScene; none during a sweep
 void rbrrtx_particles_frame_end();                            // per Present: key, probe report
 void rbrrtx_particles_destroy();
-// effects.cpp: the census of every game particle spawn (RBRRTX_EMIT_PROBE=1); changes nothing the game does.
-void rbrrtx_effects_census_init();
-void rbrrtx_effects_census_report();                          // per Present; writes a line every 10 s
+// effects.cpp: the camera for the distance cull of the game-emitter rows.
+void rbrrtx_particles_camera(const float camToWorld[16]);       // comp.cpp: this frame's camera (distance cull)
 bool rbrrtx_particles_active();                               // Remix dust in this run: the dust key toggles it
 // Ground lookup for a wheel's new surface (particles.cpp asks, comp.cpp answers during the next draws). The flag is
 // false almost always: then the draw hooks do nothing for it.

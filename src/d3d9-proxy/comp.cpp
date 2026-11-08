@@ -2544,6 +2544,7 @@ void frame_camera(const D3DMATRIX& wvp) {
   g_st.recErr = static_cast<float>(rec);
   D3DMATRIX vi;                                        // windscreen drops in cockpit views ride on the camera
   if (g_enabled && g_apiOk && g_primaryRT && inverse(g_V, vi) && g_P._22 > 1e-4f) {
+    rbrrtx_particles_camera(&vi._11);
     rbrrtx_headlights_camera(&vi._11);                 // cockpit or not: is the camera in the cabin
     rbrrtx_windscreen_camera(&vi._11, 2.0f * std::atan(1.0f / g_P._22) * 57.29578f);
   }
