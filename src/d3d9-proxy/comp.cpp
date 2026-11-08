@@ -1116,6 +1116,29 @@ bool config_option_owned_by_user(const char* key) {
   return false;
 }
 
+// Fresh start (user 2026-11-08: Alt+X showed "unsaved changes" and "Migrate 2 Developer Settings" at every launch).
+// With Ray Reconstruction on and the Custom graphics preset, Remix's path tracer preset (RtxOptions::updatePathTracerPreset) writes
+// over these options in the user layer at startup, so the values in user.conf never ran. They are sent again from user.conf.
+// SHaRC's two update options are developer options above which the SHaRC quality preset sits: sent as host overrides (not saved, no
+// migrate prompt), from user.conf if it names them, else rtx.conf. Also called after a sweep, which hands its overrides back.
+void reapply_start_options() {
+  static const char* const kUser[] = { "rtx.di.stealBoundaryPixelSamplesWhenOutsideOfScreen", "rtx.di.permutationSamplingNthFrame",
+    "rtx.di.enableDenoiserConfidence", "rtx.di.enableBestLightSampling", "rtx.di.initialSampleCount", "rtx.di.spatialSamples",
+    "rtx.di.disocclusionSamples", "rtx.di.enableSampleStealing", "rtx.minOpaqueDiffuseLobeSamplingProbability",
+    "rtx.minOpaqueSpecularLobeSamplingProbability", "rtx.enableFirstBounceLobeProbabilityDithering", "rtx.russianRouletteMode",
+    "rtx.neeCache.enableModeAfterFirstBounce", "rtx.demodulate.enableDirectLightBoilingFilter" };
+  unsigned n = 0;
+  for (const char* k : kUser)
+    if (const std::string* v = user_conf_lookup(k)) n += remix_set_raw(k, v->c_str()) ? 1 : 0;
+  static const char* const kOver[] = { "rtx.sharc.updateTileSize", "rtx.sharc.updatePrimaryVertex" };
+  for (const char* k : kOver) {
+    const std::string* v = user_conf_lookup(k);
+    if (!v) v = conf_lookup(k);
+    if (v) n += remix_set_raw((std::string("override:") + k).c_str(), v->c_str()) ? 1 : 0;
+  }
+  rbrrtx_log_to(L"rbrrtx_api_options.log", L"start options: %u re-applied from user.conf / rtx.conf", n);
+}
+
 void remix_set(const char* key, const char* value) {
   if (key && config_option_owned_by_user(key)) return;
   if (key && rbrrtx_menu_pinned(key, nullptr, 0)) {
@@ -3043,7 +3066,7 @@ void exp_set(const std::string& k, const std::string& v) {
 
 void exp_clear_overrides() {
   for (const auto& k : g_expOverridden) remix_set_raw(("unoverride:" + k).c_str(), "");
-  if (!g_expOverridden.empty()) clog(L"experiments: %zu overridden options handed back to the player's settings", g_expOverridden.size());
+  if (!g_expOverridden.empty()) { clog(L"experiments: %zu overridden options handed back to the player's settings", g_expOverridden.size()); reapply_start_options(); }
   g_expOverridden.clear();
 }
 
@@ -3218,6 +3241,8 @@ void exp_frame() {
 }
 
 void end_frame(IDirect3DDevice9* dev) {
+  static bool startOptionsDone = false;
+  if (!startOptionsDone && g_apiOk && g_frame > 120) { startOptionsDone = true; reapply_start_options(); }
   if (g_enabled && g_apiOk) rbrrtx_headlights_refine();   // no UI trigger this frame: lamps before Present
   if (g_apiOk) {                                            // generated mod: lit car parts, foliage (Remix reloads it)
     { RBR_ZONE(PZ_EF_LITPARTS); rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps()); }
