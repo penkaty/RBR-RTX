@@ -237,6 +237,12 @@ std::wstring glow_write_mask(uint64_t hash, const Kind& k) {
   uint32_t crc = 2166136261u;                          // FNV-1a over the rectangles in 1/1024 steps
   for (const auto& r : k.uvs)
     for (float f : r) { crc ^= static_cast<uint32_t>(std::lround(f * 1024.0f)); crc *= 16777619u; }
+  // The lamp's colour is in the mask: with a mask set, Remix ignores a USD material's emissive_color_constant.
+  float rgb[3];
+  kelvin_rgb(k.kelvin, rgb);
+  auto byte = [](float c) { return static_cast<uint32_t>(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f)); };
+  const uint32_t lit = 0xFF000000u | (byte(rgb[0]) << 16) | (byte(rgb[1]) << 8) | byte(rgb[2]);
+  crc ^= lit; crc *= 16777619u;
   wchar_t tail[40];
   swprintf_s(tail, L"_mask_%08X.dds", crc);
   const std::wstring path = dir + L"\\" + hex16(hash) + tail;
@@ -252,7 +258,7 @@ std::wstring glow_write_mask(uint64_t hash, const Kind& k) {
     for (int x = 0; x < N; ++x) {
       const float u = (x + 0.5f) / N, v = (y + 0.5f) / N;
       for (const auto& r : k.uvs)
-        if (inside(u, r[0], r[2]) && inside(v, r[1], r[3])) { px[y * N + x] = 0xFFFFFFFFu; break; }
+        if (inside(u, r[0], r[2]) && inside(v, r[1], r[3])) { px[y * N + x] = lit; break; }
     }
   DWORD hdr[32] = {};
   hdr[0] = 0x20534444; hdr[1] = 124;

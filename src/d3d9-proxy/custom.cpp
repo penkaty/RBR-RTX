@@ -231,6 +231,7 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
   const bool textured = read_dds_rgba(texDds, tex, texW, texH);
   mix(W); mix(H); mix(e.windows); mix(e.seed); mix(static_cast<uint32_t>(e.litPercent)); mix(static_cast<uint32_t>(e.nrects));
   mix(textured ? 3u : 1u);
+  for (float f : e.rgb) mix(static_cast<uint32_t>(std::lround(f * 1023.0f)));   // the colour is in the mask (below)
   mix(3u);                                             // file version: older masks (noise textures, the old brightness curve) are not reused
   for (int i = 0; i < e.nrects; ++i) for (float f : e.rects[i]) mix(static_cast<uint32_t>(std::lround(f * 4096.0f)));
   wchar_t tail[40];
@@ -280,6 +281,14 @@ std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned t
         m = 0xFF000000u | (ch(r) << 16) | (ch(g) << 8) | ch(b);
       }
     }
+  }
+  // With a mask set, a USD material's emissive colour is the mask's own: Remix ignores emissive_color_constant (only its API
+  // materials can ask for a tint). So the chosen colour goes into the mask; white keeps the texture's hue as before.
+  for (uint32_t& m : px) {
+    auto tint = [&](int shift, float c) {
+      return static_cast<uint32_t>(std::lround(std::clamp(static_cast<float>((m >> shift) & 0xFF) * c, 0.0f, 255.0f))) << shift;
+    };
+    m = 0xFF000000u | tint(16, e.rgb[0]) | tint(8, e.rgb[1]) | tint(0, e.rgb[2]);
   }
   if (!write_rgba_dds(path, W, H, px)) return std::wstring();
   return path;
