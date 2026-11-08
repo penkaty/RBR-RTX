@@ -1118,25 +1118,19 @@ bool config_option_owned_by_user(const char* key) {
 
 // Fresh start (user 2026-11-08: Alt+X showed "unsaved changes" and "Migrate 2 Developer Settings" at every launch).
 // With Ray Reconstruction on and the Custom graphics preset, Remix's path tracer preset (RtxOptions::updatePathTracerPreset) writes
-// over these options in the user layer at startup, so the values in user.conf never ran. They are sent again from user.conf.
-// SHaRC's two update options are developer options above which the SHaRC quality preset sits: sent as host overrides (not saved, no
-// migrate prompt), from user.conf if it names them, else rtx.conf. Also called after a sweep, which hands its overrides back.
+// its own values into the user layer at startup, so a different value in user.conf never runs and is listed as unsaved. user.conf
+// therefore holds the preset's values (nothing to list), and the values the game really runs with are in start-options.ini,
+// sent as host overrides: they win over user.conf and the presets and are never saved. Also called after a sweep, which hands
+// its overrides back.
 void reapply_start_options() {
-  static const char* const kUser[] = { "rtx.di.stealBoundaryPixelSamplesWhenOutsideOfScreen", "rtx.di.permutationSamplingNthFrame",
-    "rtx.di.enableDenoiserConfidence", "rtx.di.enableBestLightSampling", "rtx.di.initialSampleCount", "rtx.di.spatialSamples",
-    "rtx.di.disocclusionSamples", "rtx.di.enableSampleStealing", "rtx.minOpaqueDiffuseLobeSamplingProbability",
-    "rtx.minOpaqueSpecularLobeSamplingProbability", "rtx.enableFirstBounceLobeProbabilityDithering", "rtx.russianRouletteMode",
-    "rtx.neeCache.enableModeAfterFirstBounce", "rtx.demodulate.enableDirectLightBoilingFilter" };
+  wchar_t path[MAX_PATH * 2];
+  rbrrtx_config_path(L"RBRRTX_START_OPTIONS", L"start-options.ini", path, MAX_PATH * 2);
+  static ConfFile opts;
+  conf_refresh(opts, path);
   unsigned n = 0;
-  for (const char* k : kUser)
-    if (const std::string* v = user_conf_lookup(k)) n += remix_set_raw(k, v->c_str()) ? 1 : 0;
-  static const char* const kOver[] = { "rtx.sharc.updateTileSize", "rtx.sharc.updatePrimaryVertex" };
-  for (const char* k : kOver) {
-    const std::string* v = user_conf_lookup(k);
-    if (!v) v = conf_lookup(k);
-    if (v) n += remix_set_raw((std::string("override:") + k).c_str(), v->c_str()) ? 1 : 0;
-  }
-  rbrrtx_log_to(L"rbrrtx_api_options.log", L"start options: %u re-applied from user.conf / rtx.conf", n);
+  for (const auto& kv : opts.v)
+    n += remix_set_raw(("override:" + kv.first).c_str(), kv.second.c_str()) ? 1 : 0;
+  rbrrtx_log_to(L"rbrrtx_api_options.log", L"start options: %u of %zu sent from %s", n, opts.v.size(), path);
 }
 
 void remix_set(const char* key, const char* value) {
