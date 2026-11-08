@@ -1603,6 +1603,20 @@ void rbrrtx_rain_toggle() {
   rbrrtx_report_event(ev);
 }
 
+// Key 0 (user 2026-11-08): raster shows the game's own rain and snow, ray tracing ours, for comparison. New Remix systems
+// when ray tracing returns (the epoch makes draw_precip replace them), as the old ones came back with far too many particles.
+void rbrrtx_particles_raster(bool raster) {
+  static bool replaceWas = false;
+  if (raster) {
+    replaceWas = g_replace;
+    g_replace = false;
+    ++g_precipEpoch;
+  } else {
+    g_replace = replaceWas;
+  }
+  plog(L"rain: key 0: %s", g_replace ? L"Remix rain/snow, game's cut" : L"game's own rain/snow");
+}
+
 void rbrrtx_particles_init(const remixapi_Interface* api) {
   g_api = api;
   g_probe = rbrrtx_env_flag(L"RBRRTX_EMIT_PROBE", false);

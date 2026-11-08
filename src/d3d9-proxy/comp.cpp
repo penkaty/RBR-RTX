@@ -3264,6 +3264,7 @@ void end_frame(IDirect3DDevice9* dev) {
       g_rasterKeepRestoreFrame = g_frame + 300;
     }
     remix_set("rtx.enableRaytracing", rtOn ? "True" : "False");
+    rbrrtx_particles_raster(!rtOn);
     if (!rtOn) {
       compWas = g_enabled;
       if (g_enabled) { g_enabled = false; for (int i = 0; i < 3; ++i) set_game_xf(dev, i); destroy_sun(L"raster"); }

@@ -258,6 +258,7 @@ void rbrrtx_particles_toggle();
 bool rbrrtx_rain_probe_on();
 void rbrrtx_rain_note_draw(unsigned long long hash, unsigned prims, bool ff);
 void rbrrtx_rain_toggle();
+void rbrrtx_particles_raster(bool raster);                   // key 0: raster = the game's own rain/snow, back = Remix's
 bool rbrrtx_rain_cutting();                                  // Remix rain/snow replaces the game's (its emitters live)
 bool rbrrtx_rain_skip_texture(unsigned long long hash);       // a game rain/snow texture: skip the draw
 int rbrrtx_precip_state(float* intensity);                    // 1 rain, 2 snow, 0 none; intensity in percent
