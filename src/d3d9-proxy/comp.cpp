@@ -6243,11 +6243,20 @@ int f3_lamp_mark(char* msg, size_t n) {
   return ok ? 1 : 0;
 }
 
+// The list shows the loaded stage's marks only (user 2026-11-08): row i -> index in g_f3Lamps, -1 = no such row.
+int f3_lamp_real(int i) {
+  int row = -1;
+  for (size_t m = 0; m < g_f3Lamps.size(); ++m)
+    if (rbrrtx_texture_on_stage(g_f3Lamps[m].tex) && ++row == i) return static_cast<int>(m);
+  return -1;
+}
+
 int f3_lamp_list(int i, char* label, size_t n) {
   static unsigned loadedFrame = 0;
   if (!g_f3LampsLoaded || (i == 0 && g_frame - loadedFrame >= 30)) { f3_lamps_reload(); loadedFrame = g_frame; }   // the key marker may have added one
-  if (i < 0 || i >= static_cast<int>(g_f3Lamps.size())) return 0;
-  const LampMark& m = g_f3Lamps[i];
+  const int real = f3_lamp_real(i);
+  if (real < 0) return 0;
+  const LampMark& m = g_f3Lamps[real];
   char b[320];
   snprintf(b, sizeof(b), "%016llX uv %.3f %.3f %.3f %.3f  %s", m.tex, m.rect[0], m.rect[1], m.rect[2], m.rect[3], m.note.c_str());
   strncpy_s(label, n, b, _TRUNCATE);
@@ -6255,7 +6264,8 @@ int f3_lamp_list(int i, char* label, size_t n) {
 }
 
 int f3_lamp_remove(int i) {
-  const bool ok = lamp_mark_remove(i);
+  const int real = f3_lamp_real(i);
+  const bool ok = real >= 0 && lamp_mark_remove(real);
   f3_lamps_reload();
   return ok ? 1 : 0;
 }

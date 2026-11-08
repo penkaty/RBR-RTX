@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,7 @@ struct EmitState {
 };
 std::map<uint64_t, RbrEmit> g_emit;
 std::map<uint64_t, EmitState> g_state;
+std::set<uint64_t> g_drawnThisStage;                   // F3 lists: emissive textures drawn since the stage loaded
 
 std::wstring emit_dir() {
   const wchar_t* d = rbrrtx_genmod_dir();
@@ -402,6 +404,7 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on) {
   if (stageKey != g_stage) {
     destroy_stage(g_stage);
     g_stage = stageKey;
+    g_drawnThisStage.clear();
   }
   if (!g_api || !g_api->CreateLight || !g_api->DrawLightInstance) return;
   const float night = rbrrtx_world_lights_night_fraction(sunElevation);
@@ -501,11 +504,13 @@ void rbrrtx_emit_remove(unsigned long long tex) {
 }
 
 bool rbrrtx_emit_wanted() { return !g_emit.empty(); }
+bool rbrrtx_emit_on_stage(unsigned long long tex) { return g_drawnThisStage.count(tex) != 0 || rbrrtx_texture_on_stage(tex); }
 
 // A draw with an emissive texture: its twin for the lit level (nullptr = draw the game's texture).
 void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture, float night) {
   const auto it = g_emit.find(hash);
   if (it == g_emit.end()) return nullptr;
+  g_drawnThisStage.insert(hash);
   const RbrEmit& e = it->second;
   if (e.mode == 0 && night <= 0.02f) return nullptr;
   EmitState& st = g_state[hash];

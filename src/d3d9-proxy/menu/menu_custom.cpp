@@ -187,17 +187,30 @@ void pitch_yaw_dir(float pitch, float yaw, float out[3]) {
 
 // ---- Lamp presets (the old Alt+X lamp creator's, rtx_light_authoring.cpp, user 2026-11-07: "presets in F3") ------------
 // Sodium lamps orange, LED / metal halide white. Lumens as the sphere/spot light's output; cone 0 = every way.
-struct LampPreset { const char* name; float rgb[3]; float lumens, cone, softness, intensity; };
+// User 2026-11-08 (saved 14:04): strong sodium = 125000 lm, cone 50, softness 0.15 (softer dims the lamp), glow 0.2 (the glow
+// only has to look right and not clip; the lumens light the road). The others scaled from it. kelvin 0 = the rgb below.
+struct LampPreset { const char* name; float kelvin; float rgb[3]; float lumens, cone, softness, intensity; };
 constexpr LampPreset kLampPresets[] = {
-  { "Streetlamp (sodium)",         { 1.0f, 0.62f, 0.25f }, 8000.0f,   70.0f, 0.30f, 6.0f },
-  { "Strong streetlamp (sodium)",  { 1.0f, 0.62f, 0.25f }, 20000.0f,  70.0f, 0.30f, 8.0f },
-  { "Modern streetlamp (LED)",     { 1.0f, 0.95f, 0.88f }, 10000.0f,  60.0f, 0.25f, 8.0f },
-  { "Modern strong streetlamp",    { 0.95f, 0.97f, 1.0f }, 25000.0f,  60.0f, 0.25f, 10.0f },
-  { "Floodlight",                  { 1.0f, 0.96f, 0.90f }, 40000.0f,  35.0f, 0.15f, 12.0f },
-  { "Stadium light",               { 0.95f, 0.97f, 1.0f }, 150000.0f, 40.0f, 0.15f, 20.0f },
-  { "Coloured spot",               { 1.0f, 0.2f, 0.1f },   20000.0f,  25.0f, 0.10f, 8.0f },
-  { "Point light (every way)",     { 1.0f, 0.9f, 0.8f },   5000.0f,   0.0f,  0.0f,  5.0f },
+  { "Streetlamp (sodium)",         2100.0f, { 1.0f, 1.0f, 1.0f }, 50000.0f,  50.0f, 0.15f, 0.2f },
+  { "Strong streetlamp (sodium)",  2100.0f, { 1.0f, 1.0f, 1.0f }, 125000.0f, 50.0f, 0.15f, 0.2f },
+  { "Modern streetlamp (LED)",     4000.0f, { 1.0f, 1.0f, 1.0f }, 62000.0f,  50.0f, 0.15f, 0.2f },
+  { "Modern strong streetlamp",    5000.0f, { 1.0f, 1.0f, 1.0f }, 156000.0f, 50.0f, 0.15f, 0.2f },
+  { "Floodlight",                  4000.0f, { 1.0f, 1.0f, 1.0f }, 250000.0f, 35.0f, 0.15f, 0.3f },
+  { "Stadium light",               5600.0f, { 1.0f, 1.0f, 1.0f }, 400000.0f, 40.0f, 0.15f, 0.4f },
+  { "Coloured spot",               0.0f,    { 1.0f, 0.2f, 0.1f }, 125000.0f, 25.0f, 0.10f, 0.2f },
+  { "Point light (every way)",     2700.0f, { 1.0f, 1.0f, 1.0f }, 31000.0f,  0.0f,  0.0f,  0.2f },
 };
+
+float nearest_kelvin(const float rgb[3]) {             // a saved lamp's colour on the temperature slider
+  float best = 3000.0f, bestErr = 1e9f;
+  for (float k = 1500.0f; k <= 9000.0f; k += 50.0f) {
+    float c[3];
+    kelvin_rgb(k, c);
+    const float err = (c[0] - rgb[0]) * (c[0] - rgb[0]) + (c[1] - rgb[1]) * (c[1] - rgb[1]) + (c[2] - rgb[2]) * (c[2] - rgb[2]);
+    if (err < bestErr) { bestErr = err; best = k; }
+  }
+  return best;
+}
 
 // ---- Emissive (props) ------------------------------------------------------------------------------------------------
 void page_emissive(void*) {
@@ -206,18 +219,21 @@ void page_emissive(void*) {
                      "other objects sharing the texture stay dark. Every lamp head drawn with that part gets one lamp at its centre "
                      "(move it with the offset in the list). Window facades: Windows page.");
   static bool freeze = false, island_only = true;
-  static float rgb[3] = { 1.0f, 0.62f, 0.25f }, intensity = 6.0f, kelvin = 3000.0f;
+  static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 2100.0f;
+  static const int rgbFromKelvin = (kelvin_rgb(kelvin, rgb), 0);
+  (void)rgbFromKelvin;
   static int mode = 0, preset = 0;
   // Light the prop casts (user 2026-11-05: stadium floodlights): a lamp at every place the picked part is drawn.
   static bool cast = true;
-  static float lumens = 8000.0f, cone = 70.0f, softness = 0.3f, pitch = 90.0f, yaw = 0.0f;
+  static float lumens = 50000.0f, cone = 50.0f, softness = 0.15f, pitch = 90.0f, yaw = 0.0f;
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
   if (ImGui::BeginCombo("preset", kLampPresets[preset].name)) {
     for (int p = 0; p < static_cast<int>(std::size(kLampPresets)); ++p)
       if (ImGui::Selectable(kLampPresets[p].name, p == preset)) {
         preset = p;
         const LampPreset& lp = kLampPresets[p];
-        std::memcpy(rgb, lp.rgb, sizeof(rgb));
+        if (lp.kelvin > 0.0f) { kelvin = lp.kelvin; kelvin_rgb(kelvin, rgb); }
+        else std::memcpy(rgb, lp.rgb, sizeof(rgb));
         lumens = lp.lumens; cone = lp.cone; softness = lp.softness; intensity = lp.intensity;
         cast = true;
       }
@@ -269,9 +285,13 @@ void page_emissive(void*) {
     static bool addPart = false;
     ImGui::SameLine();
     ImGui::Checkbox("add to the texture's other parts", &addPart);
-    ImGui::ColorEdit3("colour", rgb, ImGuiColorEditFlags_Float);
-    if (ImGui::SliderFloat("or temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
-    ImGui::SliderFloat("intensity", &intensity, 0.2f, 60.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+    if (ImGui::SliderFloat("temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 2100 K, warm LED 3000 K, LED 4000-5000 K.");
+    if (ImGui::TreeNode("colour instead of temperature")) {
+      ImGui::ColorEdit3("colour", rgb, ImGuiColorEditFlags_Float);
+      ImGui::TreePop();
+    }
+    ImGui::SliderFloat("glow intensity", &intensity, 0.02f, 60.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
     ImGui::RadioButton("at night", &mode, 0);
     ImGui::SameLine();
     ImGui::RadioButton("always", &mode, 1);
@@ -317,8 +337,9 @@ void page_emissive(void*) {
   // the lamp was made with). The row being dragged keeps its own copy until the release applies it.
   static RbrEmit s_drag = {};
   static unsigned long long s_dragTex = 0;
+  ImGui::TextDisabled("Only the lamps on this stage are listed.");
   for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i) {
-    if (!rbrrtx_emit_get(i, &e) || e.windows) continue;
+    if (!rbrrtx_emit_get(i, &e) || e.windows || !rbrrtx_emit_on_stage(e.tex)) continue;
     if (e.tex == s_dragTex) e = s_drag;
     ImGui::PushID(i);
     ImGui::Text("0x%016llX  %s  intensity %.1f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
@@ -328,16 +349,20 @@ void page_emissive(void*) {
     // values change the material, so it comes back after the generated mod has reloaded, about 10 s.
     bool edit = false, held = false, glowEdit = false;
     if (ImGui::TreeNode("glow")) {                     // what "Make this a lamp" set (user 2026-11-08: all of it editable)
-      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
-      ImGui::ColorEdit3("colour", e.rgb, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoPicker);
-      glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
-      held |= ImGui::IsItemActive();
       static std::map<unsigned long long, float> s_kelvin;
-      float& k = s_kelvin.try_emplace(e.tex, 3000.0f).first->second;
-      if (ImGui::SliderFloat("or temperature (K)", &k, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(k, e.rgb);
+      auto kIt = s_kelvin.find(e.tex);
+      if (kIt == s_kelvin.end()) kIt = s_kelvin.emplace(e.tex, nearest_kelvin(e.rgb)).first;
+      if (ImGui::SliderFloat("temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kIt->second, e.rgb);
       glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
       held |= ImGui::IsItemActive();
-      ImGui::SliderFloat("intensity", &e.intensity, 0.2f, 60.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+      if (ImGui::TreeNode("colour instead of temperature")) {
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
+        ImGui::ColorEdit3("colour", e.rgb, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoPicker);
+        glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
+        held |= ImGui::IsItemActive();
+        ImGui::TreePop();
+      }
+      ImGui::SliderFloat("glow intensity", &e.intensity, 0.02f, 60.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
       glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
       held |= ImGui::IsItemActive();
       glowEdit |= ImGui::RadioButton("at night", &e.mode, 0);
@@ -511,7 +536,7 @@ void page_windows(void*) {
   ImGui::SeparatorText("Window textures");
   RbrEmit e = {};
   for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i) {
-    if (!rbrrtx_emit_get(i, &e) || !e.windows) continue;
+    if (!rbrrtx_emit_get(i, &e) || !e.windows || !rbrrtx_emit_on_stage(e.tex)) continue;
     ImGui::PushID(i);
     ImGui::Text("0x%016llX  %d pane(s), %d %% lit, %s", e.tex, e.nrects, e.litPercent, e.mode ? "always" : "night");
     ImGui::SameLine();

@@ -457,6 +457,26 @@ bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path) {
   return true;
 }
 
+bool rbrrtx_texture_on_stage(unsigned long long hash) {
+  static std::unordered_set<unsigned long long> s_hashes;
+  static DWORD s_built = 0;
+  const DWORD now = GetTickCount();
+  if (!s_built || now - s_built > 1000) {
+    s_built = now;
+    s_hashes.clear();
+    const int track = read_int(0x01660804);
+    std::lock_guard<std::mutex> g(g_mx);
+    auto add = [&](void* t, int from) {
+      if (from != track) return;
+      auto h = g_texHash.find(t);
+      if (h != g_texHash.end()) s_hashes.insert(h->second);
+    };
+    for (const auto& kv : g_copies) add(kv.first, kv.second.track);
+    for (const auto& kv : g_held) add(kv.first, kv.second.track);
+  }
+  return s_hashes.count(hash) != 0;
+}
+
 // A saved DDS whose mip 0 is the texture with this hash (files saved before 2026-11-08 can be noise, see PixelCopy).
 bool rbrrtx_dds_is_texture(const wchar_t* path, unsigned long long hash) {
   FILE* fp = nullptr;

@@ -319,6 +319,8 @@ void rbrrtx_dinput_block_install();
 // custom.cpp (+ custom.hpp): lights and emissives made in the F3 menu (pages Lights, Windows); menu.ini [lights.<stage>], [emissive], [windows].
 void rbrrtx_custom_init(const remixapi_Interface* api);
 void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on);               // per Present: the stage's custom lights
+bool rbrrtx_emit_on_stage(unsigned long long tex);             // F3 lists: this texture belongs to the loaded stage
+bool rbrrtx_texture_on_stage(unsigned long long hash);         // uploaded for the stage being driven (cached for a second)
 bool rbrrtx_emit_wanted();                                                         // any emissive texture set (else no per-draw work)
 void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture, float night);   // twin texture to draw instead, or null
 void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value);
