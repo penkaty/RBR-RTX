@@ -191,8 +191,8 @@ void pitch_yaw_dir(float pitch, float yaw, float out[3]) {
 // only has to look right and not clip; the lumens light the road). The others scaled from it. kelvin 0 = the rgb below.
 struct LampPreset { const char* name; float kelvin; float rgb[3]; float lumens, cone, softness, intensity; };
 constexpr LampPreset kLampPresets[] = {
-  { "Streetlamp (sodium)",         2100.0f, { 1.0f, 1.0f, 1.0f }, 50000.0f,  50.0f, 0.15f, 0.2f },
-  { "Strong streetlamp (sodium)",  2100.0f, { 1.0f, 1.0f, 1.0f }, 125000.0f, 50.0f, 0.15f, 0.2f },
+  { "Streetlamp (sodium)",         2200.0f, { 1.0f, 1.0f, 1.0f }, 50000.0f,  50.0f, 0.15f, 0.2f },
+  { "Strong streetlamp (sodium)",  2200.0f, { 1.0f, 1.0f, 1.0f }, 125000.0f, 50.0f, 0.15f, 0.2f },
   { "Modern streetlamp (LED)",     4000.0f, { 1.0f, 1.0f, 1.0f }, 62000.0f,  50.0f, 0.15f, 0.2f },
   { "Modern strong streetlamp",    5000.0f, { 1.0f, 1.0f, 1.0f }, 156000.0f, 50.0f, 0.15f, 0.2f },
   { "Floodlight",                  4000.0f, { 1.0f, 1.0f, 1.0f }, 250000.0f, 35.0f, 0.15f, 0.3f },
@@ -219,7 +219,7 @@ void page_emissive(void*) {
                      "other objects sharing the texture stay dark. Every lamp head drawn with that part gets one lamp at its centre "
                      "(move it with the offset in the list). Window facades: Windows page.");
   static bool freeze = false, island_only = true;
-  static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 2100.0f;
+  static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 2200.0f;
   static const int rgbFromKelvin = (kelvin_rgb(kelvin, rgb), 0);
   (void)rgbFromKelvin;
   static int mode = 0, preset = 0;
@@ -286,7 +286,7 @@ void page_emissive(void*) {
     ImGui::SameLine();
     ImGui::Checkbox("add to the texture's other parts", &addPart);
     if (ImGui::SliderFloat("temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 2100 K, warm LED 3000 K, LED 4000-5000 K.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 2200 K, warm LED 3000 K, LED 4000-5000 K.");
     if (ImGui::TreeNode("colour instead of temperature")) {
       ImGui::ColorEdit3("colour", rgb, ImGuiColorEditFlags_Float);
       ImGui::TreePop();

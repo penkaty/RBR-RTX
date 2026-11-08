@@ -115,6 +115,9 @@ std::wstring g_carFile;
 int g_state[kSignals] = {};
 int g_raw[kSignals] = {};
 unsigned g_same[kSignals] = {};
+// Triangle counts of this car's brake discs. Its unlit disc mesh has the same count and vanishes on braking like an unlit
+// lens: on a standing wheel it looked like a tail lens and glowed until the brake was pressed (user 2026-11-08, Focus WRC).
+std::vector<unsigned> g_discPrims;
 
 // Twins and the materials for them.
 struct Twin { IDirect3DTexture9* tex = nullptr; uint64_t hash = 0; };
@@ -567,6 +570,7 @@ void forget_car() {
   g_parts.clear();
   g_drawn.clear();
   g_drawnAt.clear();
+  g_discPrims.clear();
   for (Side& s : g_side) s = Side();
 }
 
@@ -653,6 +657,8 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
       p.hasRel = true;
       const bool wasDisc = p.disc();
       if (turn < 1e-3f) ++p.onBody; else ++p.offBody;
+      if ((p.mask & (1u << kBrake)) && p.disc() && std::find(g_discPrims.begin(), g_discPrims.end(), p.prims) == g_discPrims.end())
+        g_discPrims.push_back(p.prims);
       if (p.disc() != wasDisc && (p.mask & (1u << kBrake)))
         llog(L"lit parts: a %u-triangle brake part is %s", p.prims, p.disc()
              ? L"drawn off the body (moves with a wheel): a brake disc, it glows by its heat"
@@ -715,7 +721,8 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   int kind = -1;
   for (int i : { kBrake, kReverse, kLamps }) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] > 0) kind = i;
   if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
-  if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims) kind = kTail;
+  if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims &&
+      std::find(g_discPrims.begin(), g_discPrims.end(), p.prims) == g_discPrims.end()) kind = kTail;
   if (kind == kLamps && g_sunEl >= g_cfg.dayAbove) kind = kLampsDay;
   if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
