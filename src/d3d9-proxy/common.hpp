@@ -228,6 +228,8 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
 void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world);
 void rbrrtx_litparts_status(wchar_t* out, size_t n);
 void rbrrtx_litparts_destroy();
+// A car's <name>_lit.dds (hash) and its unlit <name>.dds file: with the lamps off that mesh is drawn with the unlit one.
+void rbrrtx_litparts_note_lit_atlas(unsigned long long litHash, const wchar_t* unlitFile);
 // foliage.cpp: swaying foliage textures get Remix thin-opaque (subsurface) materials. Settings: materials.ini [foliage].
 void rbrrtx_foliage_startup();                                 // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_foliage_draw(void* texture);                       // a swaying foliage draw's stage-0 texture

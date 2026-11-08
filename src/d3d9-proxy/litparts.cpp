@@ -122,7 +122,7 @@ std::vector<unsigned> g_discPrims;
 // Twins and the materials for them.
 struct Twin { IDirect3DTexture9* tex = nullptr; uint64_t hash = 0; };
 std::map<std::pair<uint64_t, int>, Twin> g_twins;        // (atlas hash, signal) -> twin
-struct Entry { uint64_t twin, src; int signal; std::wstring file; };
+struct Entry { uint64_t twin, src; int signal; std::wstring file; unsigned readyFrame = 0; };   // readyFrame: Remix has had time to load its material
 std::map<uint64_t, Entry> g_entries;                     // twin hash -> material (this run + earlier runs)
 std::mutex g_mx;                                         // g_entries, g_pending (worker thread)
 struct Pending { uint64_t twin, src; int signal; std::wstring carDir; UINT w, h; };
@@ -130,6 +130,11 @@ std::vector<Pending> g_pending;
 std::atomic<bool> g_workerBusy{ false };
 std::wstring g_cacheFile;
 unsigned g_learnt = 0, g_swapped = 0, g_noHash = 0;
+
+// Cars with a <name>_lit.dds lamp atlas (BMW M3 E30): the game draws it always (Predicate = NotUsed), so with the lamps off
+// the same mesh gets the unlit <name>.dds. The unlit texture object is taken from the car's own draws of it.
+struct LitAtlas { uint64_t unlit; IDirect3DBaseTexture9* unlitTex; };
+std::map<uint64_t, LitAtlas> g_litAtlas;                 // lit atlas hash -> its unlit sibling
 
 uint64_t mix(uint64_t h, uint64_t v) {
   h ^= v + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
@@ -252,6 +257,34 @@ std::wstring heat_dds(int signal) {
   return path;
 }
 
+// The emission mask of a head lamp lens: one solid colour, so the lamp lights up whatever its texture looks like (carbon, painted,
+// chrome: user 2026-11-08). Written once per run.
+constexpr float kLampRgb[3] = { 1.0f, 0.93f, 0.82f };
+std::wstring lamp_dds() {
+  const wchar_t* dir = rbrrtx_genmod_dir();
+  if (!dir || !dir[0]) return std::wstring();
+  const std::wstring path = std::wstring(dir) + L"\\litparts_lamp.dds";
+  static bool done = false;
+  if (done) return path;
+  const uint32_t argb = 0xFF000000u | (static_cast<uint32_t>(std::lround(kLampRgb[0] * 255.0f)) << 16) |
+                        (static_cast<uint32_t>(std::lround(kLampRgb[1] * 255.0f)) << 8) | static_cast<uint32_t>(std::lround(kLampRgb[2] * 255.0f));
+  uint32_t h[32] = {};
+  std::memcpy(h, "DDS ", 4);
+  h[1] = 124;
+  h[2] = 0x100F;
+  h[3] = 4; h[4] = 4; h[5] = 16;
+  h[7] = 1;
+  h[19] = 32; h[20] = 0x41; h[22] = 32;
+  h[23] = 0x00FF0000u; h[24] = 0x0000FF00u; h[25] = 0x000000FFu; h[26] = 0xFF000000u;
+  h[27] = 0x1000;
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  f.write(reinterpret_cast<const char*>(h), 128);
+  for (int i = 0; i < 16; ++i) f.write(reinterpret_cast<const char*>(&argb), 4);
+  if (!f) return std::wstring();
+  done = true;
+  return path;
+}
+
 std::string material_for(const Entry& e) {
   const std::string a = rbrrtx_genmod_asset(e.file);
   char glow[64];
@@ -261,6 +294,9 @@ std::string material_for(const Entry& e) {
   if (e.signal >= kDisc) {
     const std::wstring hd = heat_dds(e.signal);
     if (!hd.empty()) mask = rbrrtx_genmod_asset(hd);
+  } else if (e.signal == kLamps) {
+    const std::wstring ld = lamp_dds();
+    if (!ld.empty()) mask = rbrrtx_genmod_asset(ld);
   }
   const std::string in =
       "                asset inputs:diffuse_texture = @" + a + "@ (\n"
@@ -279,6 +315,11 @@ std::string material_for(const Entry& e) {
     sprintf_s(col, "                color3f inputs:emissive_color_constant = (%.3f, %.3f, %.3f)\n", c[0], c[1], c[2]);
     in2 += col;
   }
+  if (e.signal == kLamps) {
+    char col[120];
+    sprintf_s(col, "                color3f inputs:emissive_color_constant = (%.3f, %.3f, %.3f)\n", kLampRgb[0], kLampRgb[1], kLampRgb[2]);
+    in2 += col;
+  }
   char c[96];
   sprintf_s(c, "lit car part (%ls), atlas %016llX:", kSignalName[e.signal], static_cast<unsigned long long>(e.src));
   return rbrrtx_genmod_material(e.twin, std::string(c) + " " + a, in2);
@@ -290,7 +331,7 @@ void publish_locked() {
   std::string cache = std::string(kCacheTag) + "\n";
   for (const auto& kv : g_entries) {
     const Entry& e = kv.second;
-    if (g_cfg.glow[e.signal] <= 0.0f) continue;
+    if (g_cfg.glow[e.signal] <= 0.0f || e.signal == kLampsDay) continue;   // one lamp material (user 2026-11-08), old by-day entries dropped
     body += material_for(e);
     char line[64];
     sprintf_s(line, "%016llX %016llX %d ", static_cast<unsigned long long>(e.twin), static_cast<unsigned long long>(e.src), e.signal);
@@ -361,7 +402,8 @@ void resolve_pending() {
     llog(L"lit parts: %s part on atlas %016llX glows with %s (%s), twin %016llX", kSignalName[p.signal],
          static_cast<unsigned long long>(p.src), found->path.c_str(), how, static_cast<unsigned long long>(p.twin));
     std::lock_guard<std::mutex> g(g_mx);
-    g_entries[p.twin] = { p.twin, p.src, p.signal, found->path };
+    // Not drawn for 6 s: written within 4 s (genmod kMinGap), then Remix loads it. Until then the draw stays as the game made it (no noise).
+    g_entries[p.twin] = { p.twin, p.src, p.signal, found->path, g_frame + 360 };
     any = true;
   }
   if (any) {
@@ -564,6 +606,7 @@ void queue_disc_levels(IDirect3DDevice9* dev, Part& p) {
 }
 
 void forget_car() {
+  for (auto& kv : g_litAtlas) if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
   g_heat = 0.0f;
   g_discLevel = 0;
   g_heatTick = 0;
@@ -596,7 +639,7 @@ void rbrrtx_litparts_startup() {
     while (!path.empty() && (path.back() == '\r' || path.back() == ' ')) path.pop_back();
     wchar_t w[MAX_PATH * 2] = {};
     MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w, MAX_PATH * 2);
-    if (GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES || twin_hash(src, sig) != tw) continue;
+    if (sig == kLampsDay || GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES || twin_hash(src, sig) != tw) continue;
     g_entries[tw] = { tw, src, sig, w };
   }
   if (!g_cfg.enabled) g_entries.clear();
@@ -702,6 +745,19 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
   p.prims = prims;
   g_drawn.push_back(key);
+  if (!g_litAtlas.empty()) {                             // the always-drawn lit lamp atlas follows the lamps
+    IDirect3DBaseTexture9* cur = nullptr;
+    dev->lpVtbl->GetTexture(dev, 0, &cur);
+    if (cur) {
+      const uint64_t h = rbrrtx_texture_hash(cur);
+      for (auto& kv : g_litAtlas)
+        if (kv.second.unlit == h && !kv.second.unlitTex) { cur->lpVtbl->AddRef(cur); kv.second.unlitTex = cur; }
+      auto lit = g_litAtlas.find(h);
+      IDirect3DBaseTexture9* unlit = lit != g_litAtlas.end() && g_raw[kLamps] < 0 ? lit->second.unlitTex : nullptr;
+      cur->lpVtbl->Release(cur);
+      if (unlit) return unlit;
+    }
+  }
   if (world && ((p.mask & (1u << kBrake)) || p.tail) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
     g_drawnAt.push_back({ key, { world[0], world[1], world[2], world[3], world[4], world[5], world[6], world[7],
                                  world[8], world[9], world[10], world[11] } });
@@ -720,10 +776,9 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   }
   int kind = -1;
   for (int i : { kBrake, kReverse, kLamps }) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] > 0) kind = i;
-  if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i))) kind = i;
+  if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] == 0) kind = i;   // signal unknown only: known off = no glow
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims &&
       std::find(g_discPrims.begin(), g_discPrims.end(), p.prims) == g_discPrims.end()) kind = kTail;
-  if (kind == kLamps && g_sunEl >= g_cfg.dayAbove) kind = kLampsDay;
   if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
@@ -741,14 +796,17 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   bool published = true;
   {
     std::lock_guard<std::mutex> g(g_mx);
-    if (!g_entries.count(th)) {
+    auto en = g_entries.find(th);
+    if (en != g_entries.end()) {
+      published = g_frame >= en->second.readyFrame;
+    } else {
       published = false;
       bool queued = false;
       for (const Pending& q : g_pending) queued = queued || q.twin == th;
       if (!queued) g_pending.push_back({ th, src, kind, car_dir(), d.Width, d.Height });
     }
   }
-  if (kind >= kDisc && !published) return nullptr;     // a disc waits for its material (no noise-textured disc)
+  if (!published) return nullptr;                      // every kind waits for its material (no noise on the part)
   ++g_swapped;
   return twin;
 }
@@ -770,7 +828,14 @@ void rbrrtx_litparts_status(wchar_t* out, size_t n) {
              g_switches, g_switchesRefused, entries, g_swapped);
 }
 
+void rbrrtx_litparts_note_lit_atlas(unsigned long long litHash, const wchar_t* unlitFile) {
+  uint64_t unlit = 0;
+  UINT w = 0, h = 0;
+  if (dds_hash(unlitFile, &unlit, &w, &h)) g_litAtlas[litHash] = { unlit, nullptr };
+}
+
 void rbrrtx_litparts_destroy() {
+  for (auto& kv : g_litAtlas) if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
   for (auto& kv : g_twins) if (kv.second.tex) kv.second.tex->lpVtbl->Release(kv.second.tex);
   g_twins.clear();
 }

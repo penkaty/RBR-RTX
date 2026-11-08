@@ -74,6 +74,7 @@ struct Settings {
   // Automatic (user 2026-10-30): daytime running lights, the low beams always on, and the brights by themselves with
   // the sun below brightsBelow degrees. day_running = 0: the lamps come on only below autoBelow, in autoMode.
   bool dayRunning = true;
+  bool keepLampsAlive = true;                          // lamps off on a stage: the head lamps stay in Remix at zero strength (light count unchanged)
   float brightsBelow = 4.0f;
   float autoBelow = 10.0f;                             // sun elevation (degrees) below which the lights come on; -90 = never
   int autoMode = 2;                                    // mode the automatic switch uses
@@ -342,6 +343,7 @@ void load_settings() {
     else if (v[0]) s.autoBelow = static_cast<float>(_wtof(v));
     s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 2, 3);   // 1 (centre light) is gone
     s.dayRunning = ini_float(path, L"day_running", 1.0f) != 0.0f;
+    s.keepLampsAlive = ini_float(path, L"keep_lamps_alive", 1.0f) != 0.0f;
     s.autoBadWeather = ini_float(path, L"auto_bad_weather", 1.0f) != 0.0f;
     ini_str(L"brights_below_sun", v, 32, path);
     if (!_wcsicmp(v, L"none")) s.brightsBelow = -90.0f;
@@ -1340,8 +1342,9 @@ void set_mode(int m, const wchar_t* why) {
   // Only the lamps the new mode does not use (send_lamps also destroys every lamp it did not draw). Destroying all of
   // them here re-created the low beams under the same hash in the same frame, and on Remix Plus the destroy won: OFF ->
   // BRIGHTS showed the high beams alone until the car moved (run 20261030-072711, Gabiria marks 1-3).
-  if (m != kBrights && !(g_cfg.quadLamps && m == kPair)) { destroy_lamp(g_lamps[3]); destroy_lamp(g_lamps[4]); }
-  if (m == kOff) { destroy_lamp(g_lamps[1]); destroy_lamp(g_lamps[2]); }
+  const bool keep = g_cfg.keepLampsAlive && g_track >= 0;   // send_lamps keeps them at zero strength instead
+  if (!keep && m != kBrights && !(g_cfg.quadLamps && m == kPair)) { destroy_lamp(g_lamps[3]); destroy_lamp(g_lamps[4]); }
+  if (!keep && m == kOff) { destroy_lamp(g_lamps[1]); destroy_lamp(g_lamps[2]); }
   g_creates = 0;                                       // log the first lamps of each switch
   hlog(L"headlights: %s (%s)", mode_name(m), why);
   wchar_t ev[96];
@@ -1728,6 +1731,18 @@ void send_lamps(const float C[16], const wchar_t* src) {
                 high ? g_cfg.brightsSoftness : g_cfg.softness);
     }
   }
+  if (g_cfg.keepLampsAlive && g_track >= 0) {         // user 2026-11-08: the scenery flickered with every L press; the light count stays the same now
+    static const float kNoLight[3] = { 0.0f, 0.0f, 0.0f };
+    const V3 dir = aim(g_cfg.pitch);
+    if (g_mode == kOff) {
+      draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, kNoLight, g_cfg.softness);
+      draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, kNoLight, g_cfg.softness);
+    }
+    if (g_mode == kOff || (g_mode == kPair && !g_cfg.quadLamps)) {
+      draw_lamp(g_lamps[3], wl, dir, g_cfg.cone, kNoLight, g_cfg.softness);
+      draw_lamp(g_lamps[4], wr, dir, g_cfg.cone, kNoLight, g_cfg.softness);
+    }
+  }
   if (g_cfg.extra && g_mode != kOff) {                // extra lamps of the headlight group
     const V3 edir = aim(g_cfg.brightsPitch), wdir = aim(g_cfg.pitch);
     for (size_t i = 0; i < g_car.extras.size(); ++i) {
@@ -1814,8 +1829,8 @@ void rbrrtx_headlights_emit() {
   g_popActive = pop;
   g_popOn = pop;
   g_tailOn = g_cfg.rear && g_mode != kOff;
-  g_lampsLit = g_mode != kOff || braking || pop || reversing;
-  if (!g_lampsLit) { destroy_all(); return; }
+  g_lampsLit = g_mode != kOff || braking || pop || reversing || g_cfg.keepLampsAlive;   // kept lamps are sent at zero strength
+  if (!g_lampsLit && !g_cfg.keepLampsAlive) { destroy_all(); return; }
   g_lampFrame = g_frameNo;
   // Remix Plus with the body drawn last frame: wait for this frame's body draw (rbrrtx_headlights_refine, before Remix
   // takes the lights); the lamps stay where last frame's body put them until then. Else send the prediction now.
@@ -2322,6 +2337,12 @@ size_t write_lit_mod_for(const std::wstring& game, float glow) {
       const unsigned long long hx = rbrrtx_xxh3(d.data() + 128, size);
       if (seen.count(hx)) continue;
       seen[hx] = true;
+      {                                                // the unlit sibling: same name without _lit
+        std::wstring lowTex = tex;
+        for (wchar_t& lc : lowTex) lc = static_cast<wchar_t>(towlower(lc));
+        const size_t at = lowTex.rfind(L"_lit");
+        if (at != std::wstring::npos) { std::wstring unlit = tex; unlit.erase(at, 4); rbrrtx_litparts_note_lit_atlas(hx, unlit.c_str()); }
+      }
       const std::string abs = rbrrtx_genmod_asset(tex);
       char in[MAX_PATH * 4 + 256];
       sprintf_s(in,

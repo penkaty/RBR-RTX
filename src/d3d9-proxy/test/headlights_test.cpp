@@ -8,6 +8,7 @@
 // The drawn body must be found among the wrong 3rd-person body, and a car drawn 70 ms behind its object must give a
 // measured lag of 70 ms (pose rewrite 2026-10-30).
 // Prints each car's lamps (model frame) and body frame.
+void rbrrtx_litparts_note_lit_atlas(unsigned long long, const wchar_t*) {}
 #include "../headlights.cpp"
 #include "../genmod.cpp"
 #include <cstdarg>
