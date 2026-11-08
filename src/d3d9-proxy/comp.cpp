@@ -3261,7 +3261,9 @@ void end_frame(IDirect3DDevice9* dev) {
       // change or a long time). Here and not on the way back: a destroy and a create of one hash in one frame ends destroyed.
       rbrrtx_headlights_destroy();
     } else {
-      g_rasterKeepRestoreFrame = g_frame + 300;
+      // 30 frames, not 300: every instance is touched on the first frames back, and with the limits still raised the rain
+      // spawner's per-frame instances piled up (user 2026-11-08 13:23: 41 -> 260 ms until the limits came back, 50 s later).
+      g_rasterKeepRestoreFrame = g_frame + 30;
     }
     remix_set("rtx.enableRaytracing", rtOn ? "True" : "False");
     rbrrtx_particles_raster(!rtOn);

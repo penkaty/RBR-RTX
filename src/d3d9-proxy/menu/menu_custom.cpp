@@ -324,9 +324,28 @@ void page_emissive(void*) {
     ImGui::Text("0x%016llX  %s  intensity %.1f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
     ImGui::SameLine();
     if (ImGui::SmallButton("Remove")) remove = static_cast<int>(i);
+    // Edits apply on release: each one reloads the lamps (and the drag would otherwise do it every frame). The glow's
+    // values change the material, so it comes back after the generated mod has reloaded, about 10 s.
+    bool edit = false, held = false, glowEdit = false;
+    if (ImGui::TreeNode("glow")) {                     // what "Make this a lamp" set (user 2026-11-08: all of it editable)
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
+      ImGui::ColorEdit3("colour", e.rgb, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoPicker);
+      glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
+      held |= ImGui::IsItemActive();
+      static std::map<unsigned long long, float> s_kelvin;
+      float& k = s_kelvin.try_emplace(e.tex, 3000.0f).first->second;
+      if (ImGui::SliderFloat("or temperature (K)", &k, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(k, e.rgb);
+      glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
+      held |= ImGui::IsItemActive();
+      ImGui::SliderFloat("intensity", &e.intensity, 0.2f, 60.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+      glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
+      held |= ImGui::IsItemActive();
+      glowEdit |= ImGui::RadioButton("at night", &e.mode, 0);
+      ImGui::SameLine();
+      glowEdit |= ImGui::RadioButton("always", &e.mode, 1);
+      ImGui::TreePop();
+    }
     if (e.lumens > 0.0f) {
-      // Edits apply on release: each one reloads the lamps (and the drag would otherwise do it every frame).
-      bool edit = false, held = false;
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.0f);
       ImGui::SliderFloat("lm", &e.lumens, 1000.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
       edit |= ImGui::IsItemDeactivatedAfterEdit();
@@ -354,11 +373,23 @@ void page_emissive(void*) {
       held |= ImGui::IsItemActive();
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Moves every lamp of this texture by this much (world axes, y = up), e.g. out of the lamp head so the mesh does not block it.");
       if (e.aim) ImGui::TextDisabled("  aimed at (%.1f %.1f %.1f)", e.aimAt[0], e.aimAt[1], e.aimAt[2]);
-      if (held) { s_drag = e; s_dragTex = e.tex; }
-      else if (s_dragTex == e.tex) s_dragTex = 0;
-      if (edit) {
-        rbrrtx_emit_set_light(e);
-        status("light changed (Save keeps it)");
+      if (ImGui::TreeNode("lamp")) {
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+        edit |= ImGui::Combo("lamp sits at the part's", &e.anchor, "top\0centre\0bottom\0");
+        ImGui::SliderFloat("cone softness", &e.softness, 0.0f, 1.0f, "%.2f");
+        edit |= ImGui::IsItemDeactivatedAfterEdit();
+        held |= ImGui::IsItemActive();
+        float rowPitch = std::asin(std::clamp(-e.dir[1], -1.0f, 1.0f)) * 180.0f / 3.14159265f;
+        float rowYaw = std::atan2(e.dir[0], e.dir[2]) * 180.0f / 3.14159265f;
+        if (rowYaw < 0.0f) rowYaw += 360.0f;
+        bool aimed = ImGui::SliderFloat("pitch below horizontal", &rowPitch, -90.0f, 90.0f, "%.0f deg");
+        edit |= ImGui::IsItemDeactivatedAfterEdit();
+        held |= ImGui::IsItemActive();
+        aimed |= ImGui::SliderFloat("yaw", &rowYaw, 0.0f, 360.0f, "%.0f deg");
+        edit |= ImGui::IsItemDeactivatedAfterEdit();
+        held |= ImGui::IsItemActive();
+        if (aimed) { e.aim = 0; pitch_yaw_dir(rowPitch, rowYaw, e.dir); }
+        ImGui::TreePop();
       }
     } else if (ImGui::SmallButton("Cast light")) {
       e.lumens = lumens;
@@ -366,6 +397,15 @@ void page_emissive(void*) {
       e.softness = softness;
       pitch_yaw_dir(pitch, yaw, e.dir);
       rbrrtx_emit_set_light(e);
+    }
+    if (held) { s_drag = e; s_dragTex = e.tex; }
+    else if (s_dragTex == e.tex) s_dragTex = 0;
+    if (glowEdit) {
+      rbrrtx_emit_set(e);
+      status("glow changed (Save keeps it); it returns once the generated mod has reloaded, about 10 s");
+    } else if (edit) {
+      rbrrtx_emit_set_light(e);
+      status("light changed (Save keeps it)");
     }
     ImGui::PopID();
     if (remove == i) { rbrrtx_emit_remove(e.tex); break; }
