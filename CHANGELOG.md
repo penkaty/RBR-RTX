@@ -3,10 +3,76 @@
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
 RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing within 0.1 ms.
 
-## Next
+## 0.4.0 (being prepared, not released)
+
+The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. The reasoning and findings are in the [technical notes](docs/release-0.4.0.md). Items marked *not yet seen* were built but not confirmed in game.
 
 ### Licence
 From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT.
+
+### Weather and sky
+- **NUMOS clouds, fog and haze follow the game's weather,** with presets per sky type. A stage can have its own preset; Legazpi-Gabiria does, with more cloud. Hazy skies carry more cloud too.
+- **Main menu weather** changes slowly between random skies, with a 10 % chance of fog or rain. *Not yet seen.*
+- **Heavy rain has lightning, and rain has low cloud banks and thicker fog.** *Not yet seen.*
+
+### Roads
+- **Wet roads and puddles** from the track condition and the rain. Saved F3 wetness values now apply from the start, and holds on the stage-driven values end with the stage. *Not yet seen.*
+- **Raindrops can be dense and small at once.** New Raindrop Density slider, on by default at 16 times the old density. *Not yet seen.*
+- **Automatic Terrain tags are off.** This removes the grey ground and moving textures. Textures you tag by hand keep the flag.
+- **The second ground layer shades as ground:** smooth normals and wetness on every twin.
+
+### Particles
+- **Dust** has larger puffs and is less grey on grey roads, and the emission rate is lower than before. **Snow surfaces** throw their own, smaller snow dust.
+- **Falling snow draws at all now.** The runtime dropped particles under 10 cm. Flakes are larger and packed closer to the camera. *Not yet seen.*
+- **Tyre smoke only on dry tarmac,** while moving and not in rain.
+- **Particles fade before they fill the screen,** the worst case for frame rate.
+- **Sky light reaches particles,** so dust and smoke are no longer dark under an overcast sky.
+- **Headlights and lamps light the rain.** Particles used to take light only from a coarse cache, so a beam never showed in the drops at night. *Not yet seen.*
+- **Particle light follows changes faster:** that cache now averages 16 frames instead of 128.
+
+### Lights
+- **Brights reach further:** 1.5 times the candela, which is about 1.2 times the distance. *Not yet seen.*
+- **Headlights by car year** in candela and kelvin, on the car as drawn. Lit lenses, hot brake discs, street lamps from textures or marked in game.
+- **Brake lens left behind the car:** still open. The trial fix was undone; it hid rain and snow.
+- **Emissive props can cast light.** In the F3 Emissive page, "also cast light" puts a lamp on every mesh with that texture: a cone in a direction you choose, or aimed at a point (stadium floodlights, street lamps). lights.ini kinds take the same cone keys. *Not yet seen.*
+
+### RBRHUD
+- **F4 windscreen opacity and banner threshold work under Remix.** RBRHUD's shader does this in the game, and Remix never runs it; RBR-RTX now applies the same rule to the windscreen texture. *Not yet seen.*
+- **Gauge displays glow again,** dimmer than the first try, and the needle layers of analogue gauges are left out (they turned black). *Not yet seen.*
+
+### Lighting response
+- **The indirect light cache reacts faster** to a light switching or moving: with the Medium SHaRC preset it refreshed one path per 12x12 pixels; now 8x8, with the visible surface added. *Not yet seen.*
+
+### Faster
+- `rtx.conf` is read once, not twice per frame (9 of 10.6 ms in the menu).
+- Car draws skip vertex capture (menu 16.57 to 13.83 ms).
+- A state block created every frame (by a plugin) is reused instead of re-created through the bridge: 1.3 to 12 ms a frame down to 0.06 ms.
+- Comparison runs against earlier versions are still to come.
+
+### Stability
+- **Alt+K sweep:** the opacity micromap steps, which came right before both sweep crashes, are gone. *Not yet seen.*
+- Saves swap in whole, so a crash cannot empty `menu.ini`.
+
+### F3 in-game menu
+- **A menu inside the game window** (key `F3`, `menu` in `keys.ini`; Dear ImGui drawn by the add-on, Alt+X Remix is unchanged).
+  **Wetness:** every `rtx.wet.*` slider (they left Remix's own Alt+X panel, which stays as close to Remix Plus as it was
+  built); a value you move wins over the automatic rain driver. **Textures:** aim the middle of the screen, the draw under
+  it shows its two texture hashes, shader and current Remix categories; Terrain / Decal / Water / Ignore tag it (toggle) and
+  apply live through the Remix API, saved in `config\menu.ini` (applied on top of `rtx.conf` at the next start, never
+  written to Remix's `user.conf`). **Info:** stage, weather, ground mode and baker, every key. It draws only while open.
+
+### Remix Plus support
+- **The Remix API works on Remix Plus.** Remix Plus refused the API version RBR-RTX was built with, so the sun,
+  headlights, dust, rain, snow and windscreen drops were all off there. RBR-RTX now talks to it in its own API version
+  (1.0.0) and converts what differs. Lights that move get a new id every time they are re-created, because Remix Plus
+  drops a light re-created under the id it had in the same frame (that is why the headlights did not show).
+  Remix 1.5.2 is used exactly as before.
+- **NUMOS sky follows the game's weather.** With Remix Plus's NUMOS sky (`rtx.skyMode = 1`), the stage's sun (with all
+  RBR-RTX's per-stage fixes), its weather and its own fog distances drive NUMOS's sun, clouds and fog. Weather presets
+  for every RBR sky and cloud type are in `config-remixplus\weather`. NUMOS lights the scene itself, so RBR-RTX's own
+  sun light and Remix's global volumetric haze are off there.
+- **Separate settings.** Everything for Remix Plus lives in `rbr-rtx\config-remixplus\`; the Remix 1.5.2 settings in
+  `config\` are not read or changed by it.
 
 ## 0.3.0 (2026-10-25)
 

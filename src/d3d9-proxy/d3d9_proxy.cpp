@@ -23,6 +23,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
+#include <fstream>
+#include <string>
 
 // Log files stay open (one handle per file name, appended with WriteFile, no CRT buffer): a line costs microseconds
 // and still reaches the OS at once (kept after a crash). Opening and closing the file per line cost ~8 ms a line
@@ -151,11 +153,37 @@ void seed_user_conf(const wchar_t* addon) {
   if (CopyFileW(seed, L"user.conf", TRUE)) log(L"user.conf seeded from %s", seed);
 }
 
-// Before Remix starts (it reads its mods once, at start): the local mod that makes lit lamp textures emissive.
+// Options the proxy drives per stage/frame through the Remix API land in Remix's User Settings layer, so Save on the
+// first Alt+X page writes the current stage's values into user.conf, and the next start (main menu included) used them:
+// user 2026-11-01, Toivonvaara's NUMOS fog (697 m) in the main menu after a restart. Dropped from user.conf before Remix
+// reads it; every other line (the user's own settings) stays. Was only in the dev launcher (Remove-ProxyOptions).
+bool proxy_owned_option(const std::string& key) {
+  static const char* const exact[] = {
+    "rtx.atmosphere.sunRotation", "rtx.atmosphere.sunElevation", "rtx.atmosphere.sunIntensity",
+    "rtx.atmosphere.realMoonEnabled", "rtx.atmosphere.timeCycleEnable", "rtx.atmosphere.fogVisibilityMeters",
+    "rtx.atmosphere.fogAlbedo", "rtx.atmosphere.aerosolDensity", "rtx.atmosphere.groundLevelWorldUnits",
+    "rtx.atmosphere.groundLevelAuto", "rtx.atmosphere.directionalLightRadianceScale", "rtx.weather.gameWeather",
+    "rtx.weather.gameWeatherBlend", "rtx.enableFog", "rtx.enableRaytracing", "rtx.debugView.debugViewIdx",
+    "rtx.enableReplacementAssets", "rtx.captureHotKey", "rtx.captureShowMenuOnHotkey", "rtx.skyProvider.worldChangeCount", "rtx.cardNormalsTextures" };
+  for (const char* k : exact) if (key == k) return true;
+  return key.rfind("rtx.atmosphere.moon0.", 0) == 0;
+}
+
+// (2026-11-03, user: rtx.conf and user.conf work like in Remix and persist.) The proxy no longer rewrites user.conf at
+// start; proxy_owned_option above is kept for reference only.
+
+// Before Remix starts (it opens the mods it finds then): the generated mod (genmod.cpp) with the lit lamp textures, the
+// lit car parts and the foliage known from earlier runs. Remix reloads it when the proxy changes it later.
 void write_lit_mod() {
   wchar_t mods[MAX_PATH * 2] = {};
   const DWORD m = GetEnvironmentVariableW(L"DEFAULT_MODS_DIR", mods, MAX_PATH * 2);
-  if (m > 0 && m < MAX_PATH * 2) rbrrtx_headlights_write_lit_mod(mods);
+  if (m == 0 || m >= MAX_PATH * 2) return;
+  rbrrtx_genmod_init(mods);
+  rbrrtx_headlights_write_lit_mod();
+  rbrrtx_litparts_startup();
+  rbrrtx_world_lights_startup();
+  rbrrtx_foliage_startup();
+  rbrrtx_genmod_flush(L"game start");
 }
 
 BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
@@ -174,7 +202,16 @@ BOOL CALLBACK load_backend(PINIT_ONCE, PVOID, PVOID*) {
       swprintf_s(g_backend_path, L"%s\\remix\\d3d9.dll", addon);
       if (GetFileAttributesW(g_backend_path) != INVALID_FILE_ATTRIBUTES) {
         default_env_path(L"DXVK_CONFIG_FILE", addon, L"config\\dxvk.conf");
-        default_env_path(L"DXVK_RTX_CONFIG_FILE", addon, L"config\\rtx.conf");
+        // Remix's own layout: <game>\rtx.conf (Remix Config Save) and <game>\user.conf (User Settings Save) are the player's
+        // files. The shipped defaults (rbr-rtx\config\rtx.conf) are copied there once, when the game folder has none; after
+        // that nothing of ours rewrites, trims or replaces either file (an add-on update never overwrites them).
+        if (GetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE", nullptr, 0) == 0) {
+          wchar_t shipped[MAX_PATH * 2], live[MAX_PATH * 2];
+          swprintf_s(shipped, L"%s\\config\\rtx.conf", addon);
+          swprintf_s(live, L"%s\\rtx.conf", dir);
+          if (CopyFileW(shipped, live, TRUE)) log(L"rtx.conf created from %s (yours from now on)", shipped);
+          SetEnvironmentVariableW(L"DXVK_RTX_CONFIG_FILE", live);
+        }
         default_env_path(L"DXVK_LOG_PATH", addon, L"logs");
         default_env_path(L"DXVK_METRICS_PATH", addon, L"logs");
         default_env_path(L"DXVK_STATE_CACHE_PATH", addon, L"cache");
@@ -308,7 +345,7 @@ int WINAPI Proxy_remixapi_RegisterCallbacks(void* begin_scene, void* end_scene, 
 
 }  // extern "C"
 
-BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
+BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
     g_self = inst;
     DisableThreadLibraryCalls(inst);
@@ -317,6 +354,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     log(L"proxy attached to %s", exe);
     rbrrtx_exception_trace_install();
+  } else if (reason == DLL_PROCESS_DETACH && !reserved) {
+    rbrrtx_comp_shutdown();                             // FreeLibrary only: the F3 menu's window subclass must not outlive the DLL
   }
   return TRUE;
 }

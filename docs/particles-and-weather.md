@@ -1,6 +1,6 @@
 # Particles, rain, snow and weather
 
-In 0.3 the game's own particles are switched off and RBR-RTX makes them with the Remix API instead: real particles
+Since 0.3 the game's own particles are switched off and RBR-RTX makes them with the Remix API instead: real particles
 that the path tracer lights and shadows, for less cost than the game's stacked sprites.
 
 | Effect | What it does | Key |

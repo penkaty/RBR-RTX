@@ -64,7 +64,8 @@ HELP WANTED: SKY, SUN AND WEATHER
      not give enough information, so manual input will be needed here too.
 
 Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your controls)
-  Only while the game window is active and Ctrl/Alt are not held. Alt+X = RTX Remix menu.
+  Only while the game window is active and Ctrl is not held; Alt+<key> only with Alt. Alt+X = RTX Remix menu.
+  Letter keys are all Alt+<letter> except L, so typing or letter-key driving binds never toggle anything.
   You need none of them to drive: the defaults are the best-looking, fastest setup. The four marked * are the ones
   worth remembering.
 
@@ -79,33 +80,30 @@ Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your co
 * 9        mark a problem while driving: press it the moment something goes wrong (stutter, wrong picture,
            anything). Beep, screenshot, the frame times around that moment. Every stage is recorded anyway (see
            "Reporting a problem"); a mark names that stage's zip -marked.
-  I        cockpit windscreen glass on (default) / off
-  J        foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
-  K        faster scenery: default (static scenery, trees/grass/flags do not sway) -> off (old, slower) -> static
-           only (everything sways)
 * L        headlights: OFF -> ON (two lights at the car's own headlights) -> BRIGHTS (two more, tight high beams
-           that reach further; four lights) -> OFF.
-           They switch on by themselves when the sun is lower than 12 degrees (and off again above it) until you
-           press L on that stage. Brightness, beam width, automatic switch:
-           rbr-rtx\config\headlights.ini. Night weathers (the stage's weather says "night") get a sun between
-           -5 and +5 degrees (atmosphere.ini night_sun), so the headlights come on there by themselves.
-           Tail lights (red, at the car's own rear lamps) are on with the headlights; brake lights light up
-           whenever you brake, headlights on or off. A backfire flashes a short orange light at the exhaust.
-           In reverse gear the right rear lamp turns white (reverse_light).
-  O        RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on)
-  P        secondary ray bounces 2 (default) <-> 1: 1 is faster, but on some heavily forested stages the first two
-           rows of trees then get a black background behind them. Press P again if you see it.
-  U        distance culling on/off (off by default): far geometry outside the view left out of path tracing
-           (rbr-rtx\config\culling.ini)
-  /        debug sun: manual sun on/off (starts at the game's sun); while on, hold ; / ' to lower / raise it and
-           [ / ] to turn it around. Below the horizon it becomes twilight and night (down to -18 degrees).
+           that reach further; four lights) -> OFF. By default the two lamps run all day as daytime running lights
+           and the brights come on by themselves when the sun is lower than 4 degrees, until you press L on that
+           stage. Brightness, colour, lamp type by the car's age: rbr-rtx\config\headlights.ini.
+           Tail lights (red) are on with the headlights; brake lights light up whenever you brake. A backfire
+           flashes a short orange light at the exhaust. In reverse gear the right rear lamp turns white.
+  /        debug sun: manual sun on/off (starts at the game's sun, off again at the next stage); while on, hold
+           ; / ' to lower / raise it and [ / ] to turn it around. Below the horizon it becomes twilight and night.
   \        keep the sun now shown for this stage and time of day (see "Help wanted: sky, sun and weather")
+  Alt+0    secondary ray bounces 2 (default) <-> 1: 1 is faster, but on some heavily forested stages the first two
+           rows of trees then get a black background behind them. Press it again if you see it.
   Alt+7    rain and snow: Remix particles (default) <-> the game's own
+  Alt+9    experimental: foliage cards cut to the leaf outline
+  Alt+Comma  faster scenery: default (static scenery, trees/grass/flags do not sway) -> off (old, slower) ->
+           static only (everything sways)
+  Alt+I    cockpit windscreen glass on (default) / off
+  Alt+J    foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
   Alt+L    Remix sun on/off
   Alt+M / Alt+N  sun dimmer / brighter (10 % per press; the log shows the value to keep)
-  Alt+O    experimental: foliage cards cut to the leaf outline
+  Alt+O    RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on)
   Alt+P    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
            setting in rbr-rtx\logs\rbrrtx_comp.log
+  Alt+U    distance culling on/off (off by default): far geometry outside the view left out of path tracing
+           (rbr-rtx\config\culling.ini)
   Alt+Y    ground second layer on/off (off by default): stages that mix two ground textures (sea and coast, cliffs,
            road markings) get the second one too. Turn it on before loading a stage. Known issue: road markings
            and damp patches can show as black, mirror-like holes, and it uses a lot of memory on big stages.

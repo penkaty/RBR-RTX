@@ -5,8 +5,11 @@
 // other matrices, three more model parts in their own frames, a bigger, wrongly placed 3rd-person body 4.6 m ahead and an off-centre bonnet bigger than the body; RBR's car object (+0x100 block as the
 // game lays it out) is given. The model offset must lock after 20 still frames, and a car that drove on and turned,
 // with no car draws at all, must be placed from RBR's car object alone: lamps within 1 cm of lamp * C, forward axis right, upright.
+// The drawn body must be found among the wrong 3rd-person body, and a car drawn 70 ms behind its object must give a
+// measured lag of 70 ms (pose rewrite 2026-10-30).
 // Prints each car's lamps (model frame) and body frame.
 #include "../headlights.cpp"
+#include "../genmod.cpp"
 #include <cstdarg>
 #include <cstdio>
 #include <filesystem>
@@ -21,9 +24,13 @@ void rbrrtx_log_to(const wchar_t*, const wchar_t* fmt, ...) {
 }
 void rbrrtx_config_path(const wchar_t*, const wchar_t* file, wchar_t* out, size_t size) { swprintf_s(out, size, L"none\\%s", file); }
 bool rbrrtx_key_pressed(int) { return false; }
+bool rbrrtx_env_flag(const wchar_t*, bool d) { return d; }
+bool rbrrtx_remix_plus() { return false; }
 const wchar_t* rbrrtx_key_name(int) { return L"L"; }
 void rbrrtx_report_event(const wchar_t*) {}
 bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
+bool rbrrtx_menu_sun_elevation(float*) { return false; }
+float rbrrtx_numos_lux_per_unit() { return 0.0f; }
 float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
 bool g_testPhysOn = false;
 bool rbrrtx_player_car_brake(float*) { return false; }
@@ -75,7 +82,7 @@ int wmain(int argc, wchar_t** argv) {
   for (int r = 0; r < 3; ++r) { C[r * 4] = rows[r].x; C[r * 4 + 1] = rows[r].y; C[r * 4 + 2] = rows[r].z; }
   C[12] = 1234.5f; C[13] = 87.25f; C[14] = -4321.0f; C[15] = 1;
   int interiorGlass = 0;
-  int cars = 0, fails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0, noGlass = 0, glassFallback = 0;
+  int cars = 0, fails = 0, menuFails = 0, noLamps = 0, noBody = 0, noRear = 0, noExhaust = 0, noGlass = 0, glassFallback = 0;
   for (const auto& e : std::filesystem::recursive_directory_iterator(argv[1])) {
     if (_wcsicmp(e.path().extension().c_str(), L".sgc") != 0) continue;
     ++cars;
@@ -138,6 +145,52 @@ int wmain(int argc, wchar_t** argv) {
       }
       measure_frame();
     }
+    // Main menu car (menu_root, no car object): the same draws must give the drawn car, not the wrong bigger body or
+    // the off-centre bonnet. Models with fewer than two distinct part frames cannot have two groups agree.
+    float Mm[16];
+    const bool menuOk = menu_root(g_groups, Mm);
+    const float menuErr = menuOk ? len(to_world(Mm, g_car.lf) - to_world(C, g_car.lf)) : 99.0f;
+    const bool menuPass = g_car.parts.size() < 2 || menuErr < 0.01f;
+    bool menuPassRaised = true;
+    if (!menuPass) {
+      ++menuFails;
+      wprintf(L"%-30s menu car root: %s, lamp %.3f m off\n", e.path().filename().c_str(), menuOk ? L"found" : L"NOT found", menuErr);
+    }
+    // The menu car's body rides 5 cm above the parts' rest pose (user 2026-10-30: lamps low on the Yaris and the Fabia):
+    // the lamps must sit on the body as drawn, not on the pose the other parts agree on.
+    {
+      std::vector<Group> mg;
+      float Lb[16], Cr[16];
+      local_to_root(g_car.body, Lb);
+      std::memcpy(Cr, C, sizeof(Cr));
+      const V3 upv = norm(row(C, 1)) * 0.05f;
+      Cr[12] += upv.x; Cr[13] += upv.y; Cr[14] += upv.z;
+      Group b;
+      mul(Lb, Cr, b.m);
+      b.prims = 9000;
+      mg.push_back(b);
+      for (size_t k = 0, added = 0; k < g_car.parts.size() && added < 4; ++k) {
+        float Lp[16];
+        local_to_root(g_car.parts[k], Lp);
+        Group part;
+        mul(Lp, C, part.m);
+        float Lpr[16];
+        mul(Lp, Cr, Lpr);
+        if (same_matrix(Lpr, b.m)) continue;           // the body node itself
+        part.prims = 400 + static_cast<unsigned>(k);
+        mg.push_back(part);
+        ++added;
+      }
+      float Mr[16];
+      const bool ok2 = menu_root(mg, Mr);
+      const float err2 = ok2 ? len(to_world(Mr, g_car.lf) - to_world(Cr, g_car.lf)) : 99.0f;
+      if (mg.size() >= 3 && err2 >= 0.01f) {
+        ++menuFails;
+        menuPassRaised = false;
+        wprintf(L"%-30s menu car, body raised 5 cm: %s, lamp %.3f m off the body\n", e.path().filename().c_str(),
+                ok2 ? L"found" : L"NOT found", err2);
+      }
+    }
     // The car drives on (20 m, turned 50 deg), nothing of it drawn: the lamps from RBR's car object alone.
     float C2[16];
     const float t = 0.8727f;
@@ -149,14 +202,16 @@ int wmain(int argc, wchar_t** argv) {
     const bool placed = place_frame(P);
     const V3 want = to_world(C2, g_car.lf);
     const float err = len(to_world(P, g_car.lf) - want), dirErr = len(norm(row(P, 2)) - norm(row(C2, 2)));
-    // TV camera while moving (2026-10-23 sweep): the car drawn 0.4 m ahead of RBR's object (plus the wrong 3rd-person
-    // body): after a second (slow average) the lamps sit in the drawn car.
+    // TV camera while moving (2026-10-23 sweep): the car drawn 0.4 m ahead of RBR's object, plus the wrong 3rd-person
+    // body (4.6 m ahead, bigger) and a door-sized part: the body match (2026-10-30 rewrite) gives the drawn car exactly,
+    // in the same frame.
     float C3[16];
     std::memcpy(C3, C2, sizeof(C3));
     const V3 ahead = norm(row(C2, 2)) * (0.4f * g_car.forward.z);
     C3[12] += ahead.x; C3[13] += ahead.y; C3[14] += ahead.z;
-    for (int f = 0; f < 60; ++f) {
-      g_groups.clear();
+    g_groups.clear();
+    g_bodyFrames = 0;
+    {
       Group body3;
       mul(L, C3, body3.m);
       body3.prims = 9000;
@@ -168,13 +223,58 @@ int wmain(int argc, wchar_t** argv) {
       mul(L, wrong3, w3.m);
       w3.prims = 16000;
       g_groups.push_back(w3);
-      track_drift();
     }
-    float P3[16];
-    place_frame(P3);
-    const float driftErr = len(to_world(P3, g_car.lf) - to_world(C3, g_car.lf));
+    float B3[16];
+    const bool matched = match_body(B3);
+    const float driftErr = matched ? len(to_world(B3, g_car.lf) - to_world(C3, g_car.lf)) : 1.0f;
+    // Lag (2026-10-30): the car driving straight at 20 m/s, drawn as RBR's object was 70 ms earlier, 45 fps: the
+    // measured lag must come out 70 ms, and the prediction (object 70 ms back) must sit on the drawn car.
+    g_lag = 0.0f; g_lagKnown = false; g_lagN = g_lagNext = 0; g_histN = 0; g_bodyFrames = 0;
+    float lagPredErr = 1.0f;
+    for (int f = 0; f < 60; ++f) {
+      const float tf = 100.0f + f / 45.0f;
+      auto moved = [&](float s, float* out) {
+        std::memcpy(out, C2, sizeof(float) * 16);
+        const V3 fw = norm(row(C2, 2)) * (20.0f * s * g_car.forward.z);
+        out[12] += fw.x; out[13] += fw.y; out[14] += fw.z;
+      };
+      float Cn[16], Cd[16];
+      moved(tf - 100.0f, Cn);
+      moved(tf - 100.0f - 0.07f, Cd);
+      physics_at(Cn);
+      g_frameT = tf;
+      hist_push(tf);
+      g_groups.clear();
+      Group bd;
+      mul(L, Cd, bd.m);
+      bd.prims = 9000;
+      g_groups.push_back(bd);
+      float B[16];
+      if (match_body(B)) {
+        lag_sample(B);
+        std::memcpy(g_bodyM, B, sizeof(g_bodyM));
+        V3 ph;
+        float O[16];
+        if (physics_pose(O, &ph)) g_bodyObj = ph;
+        ++g_bodyFrames;
+      } else g_bodyFrames = 0;
+      if (f == 59) {
+        float Pp[16];
+        if (pred_pose(Pp)) lagPredErr = len(to_world(Pp, g_car.lf) - to_world(Cd, g_car.lf));
+      }
+    }
+    const bool lagOk = g_lagKnown && std::fabs(g_lag - 0.07f) < 0.003f && lagPredErr < 0.05f;
+    if (!lagOk)
+      wprintf(L"%-30s lag %.1f ms (%d samples, residual %.3f), prediction off %.3f m BAD\n", e.path().filename().c_str(),
+              g_lag * 1000.0f, g_lagN, g_lagResid, lagPredErr);
+    g_lag = 0.0f; g_lagKnown = false; g_lagN = g_lagNext = 0; g_histN = 0; g_bodyFrames = 0;
+    physics_at(C2);
     // Windscreen drops (user run 6: they wiggled while driving): placed on the car as drawn this frame. The wrong
     // 3rd-person body comes first and must be passed over; the drawn body gives C3 exactly.
+    // Last frame's refine found the drawn body (as in the game): the drops expect it there, moved with the object.
+    std::memcpy(g_bodyM, B3, sizeof(g_bodyM));
+    { V3 ph; float O[16]; if (physics_pose(O, &ph)) g_bodyObj = ph; }
+    g_bodyFrames = 1;
     g_rootThisFrame = g_predThisFrame = false;
     g_wsCalls = 0;
     g_track = 1;                                       // on a stage (the game sets it when a stage loads)
@@ -245,7 +345,6 @@ int wmain(int argc, wchar_t** argv) {
     g_bodyFrames = 0;
     g_track = -1;
     g_groups.clear();
-    g_drift = {};
     // Rear lamps: one each side, behind the headlights; exhaust tip behind the car's middle, unit direction.
     const float cx = (g_car.lf.x + g_car.rf.x) * 0.5f;   // some models are off-centre: sides from the centreline
     const bool rearOk = g_car.rear && (g_car.lb.x - cx) * (g_car.rb.x - cx) < 0.0f && (g_car.lb.x - cx) * (g_car.lf.x - cx) > 0.0f &&
@@ -265,7 +364,7 @@ int wmain(int argc, wchar_t** argv) {
     wprintf(L"%-30s glass %s: %.2f m behind the lamps, %.2f up, %.2f/%.2f wide, %.2f long, normal (%.2f %.2f %.2f), flat %.3f\n",
             e.path().filename().c_str(), g_car.glass ? L"ok" : g_car.glassRejected ? L"rejected (lamp plane)" : L"BAD", glassBack, gc.y - lampMid.y, g_car.glassWb, g_car.glassWt,
             glassLen, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassFlat);
-    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f;
+    const bool ok = g_off.locked && placed && err < 0.01f && dirErr < 0.01f && rearOk && driftErr < 0.02f && lagOk && menuPass && menuPassRaised;
     if (!ok) ++fails;
     if (g_car.bodyName[0] == '(') ++noBody;
     wprintf(L"%-30s lf (%5.2f %5.2f %5.2f) rf (%5.2f %5.2f %5.2f) fwd %+.0fz | body %-18S err %.4f drift %.4f | rear (%5.2f %5.2f %5.2f) "
@@ -280,7 +379,9 @@ int wmain(int argc, wchar_t** argv) {
     const std::filesystem::path game = std::filesystem::path(argv[1]).parent_path();
     const std::filesystem::path mods = std::filesystem::temp_directory_path() / L"rbrrtx_lit_test";
     std::filesystem::create_directories(mods);
-    const size_t lit = write_lit_mod_for(game.wstring() + L"\\", mods.c_str(), 3.0f);
+    rbrrtx_genmod_init(mods.c_str());
+    const size_t lit = write_lit_mod_for(game.wstring() + L"\\", 3.0f);
+    rbrrtx_genmod_flush(L"test");
     std::ifstream in(mods / L"rbr_rtx_lit" / L"mod.usda");
     const std::string usda((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const bool litOk = lit >= 1 && usda.find("mat_AE5889DDDA655C65") != std::string::npos;
@@ -288,7 +389,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!litOk) ++fails;
   }
   wprintf(L"%d cars use the interior glass (i_window_f)\n", interiorGlass);
-  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d bad windscreen glass (%d lamp-plane fallbacks), %d FAIL\n",
-          cars, noLamps, noBody, noRear, noExhaust, noGlass, glassFallback, fails);
+  wprintf(L"%d cars, %d without lamps, %d without e_body/i_body, %d bad rear lamps, %d bad exhaust, %d bad windscreen glass (%d lamp-plane fallbacks), %d menu car misses, %d FAIL\n",
+          cars, noLamps, noBody, noRear, noExhaust, noGlass, glassFallback, menuFails, fails);
   return cars > 0 && fails == 0 ? 0 : 1;
 }

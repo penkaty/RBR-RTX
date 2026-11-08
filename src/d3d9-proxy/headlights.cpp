@@ -5,14 +5,16 @@
 //   mode 2 = two spots at the model's own lamp nodes Point_light_lf / Point_light_rf
 //   mode 3 = brights (user 2026-10-23): mode 2 plus a tight high beam next to each lamp, toward the car's middle
 // The headlights key (L) steps off -> 2 -> 3 -> off (mode 1, one centre light, was dropped, user 2026-10-23).
-// Automatic: when the sun shown drops below auto_below_sun (10 degrees) the lights come on in auto_mode, above it they go off again; once the key is used on a stage the
+// Automatic (2026-10-30): daytime running lights (mode 2 all day) and the brights below brights_below_sun (4 degrees);
+// day_running = 0 is the old switch (lamps on below auto_below_sun in auto_mode). Once the key is used on a stage the
 // lights stay as set until the next stage. Settings: rbr-rtx\config\headlights.ini (env RBRRTX_HEADLIGHTS).
 //
 // Where the lamps are. The car model (Cars\Cars.ini [CarNN] FileName, a .sgc) holds a node tree; each node record
 // is the tag 0xC 0x13 0x2F 0x1, u32 size, name\0, u32 id, u32 parent (0xFFFFFFFF = root) and a 3x4 float [R|t]
 // (to the parent). A lamp's model position = its transforms chained to the root (all 111 car models of the install
-// decoded, 2026-10-22). Car pose C (model root -> world, row vectors) = RBR's own car rotation and position plus a
-// per-car offset measured from the body's draw (physics_pose / measure_frame). Why: the 2026-10-23 USD capture (Twingo R1) shows the game draws most of the car
+// decoded, 2026-10-22). Car pose C (model root -> world, row vectors) = the car body as drawn in this frame
+// (match_body), else RBR's own car rotation and position as they were g_lag earlier plus a per-car offset measured
+// from the body's draw (pred_pose / measure_frame; "Pose of the lamps" below). Why: the 2026-10-23 USD capture (Twingo R1) shows the game draws most of the car
 // (body, bumpers, bonnet, wings, glass, ~20 meshes) with ONE matrix, the body node's (e_body, else i_body), and only
 // moving parts (doors, wheels, wipers, steering wheel) with their own. Bodies are often stored rotated (Twingo: z
 // down); the stored 3x3 read as R (column vectors) gives an upright Twingo, transposed an upside-down one.
@@ -21,6 +23,10 @@
 // Lights: Remix 1.5.2 keys API lights by hash; re-creating one overwrites it (its RTXDI index resets either way,
 // rtx_lights.cpp copyFrom), and through the bridge every CreateLight takes a new handle, so a moved lamp is
 // destroyed and created again (as the sun) and drawn every frame (DrawLightInstance is per frame).
+// Remix Plus (2026-10-29): re-creating a live hash keeps the light's buffer slot and identity, so there a moved lamp is
+// only created again (one light for its life, no destroy). Cost: the bridge server keeps one ~40-byte handle entry per
+// update until DestroyLight (bridge util_remixapi.h Handle), about 50 MB an hour with four lamps moving every frame,
+// until the bridge forwards UpdateLightDefinition (a stub in Remix Plus 2.0.0's bridge client).
 //
 // Rear (user 2026-10-23): two red spots at Point_light_brake_lb / _rb (on all 109 models; Point_light_lb is broken on
 // some, Fabia R5 evo x = 0), aimed backwards. Tail lights while the headlights are on; brake lights, brighter, whenever
@@ -42,6 +48,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -64,6 +71,10 @@ V3 norm(V3 a) { const float l = len(a); return l > 1e-6f ? a * (1.0f / l) : V3{ 
 
 struct Settings {
   bool enabled = true;
+  // Automatic (user 2026-10-30): daytime running lights, the low beams always on, and the brights by themselves with
+  // the sun below brightsBelow degrees. day_running = 0: the lamps come on only below autoBelow, in autoMode.
+  bool dayRunning = true;
+  float brightsBelow = 4.0f;
   float autoBelow = 10.0f;                             // sun elevation (degrees) below which the lights come on; -90 = never
   int autoMode = 2;                                    // mode the automatic switch uses
   // user 2026-10-23: x27 of the first build, +50 %, -20 %, then -15 %
@@ -71,6 +82,9 @@ struct Settings {
   float radius = 0.05f;                                // sphere light radius (m)
   float cone = 36.0f;                                  // half angle (degrees; Remix takes cos of it)
   float softness = 0.15f, focus = 1.0f;
+  // Daylight (user 2026-10-30: still too strong in daylight): every lamp but the backfire flash x a factor that goes
+  // from 1 with the sun at dayFade[0] degrees to dayIntensity with the sun at dayFade[1] degrees and above.
+  float dayIntensity = 1.0f, dayFade[2] = { 0.0f, 20.0f };
   // Brights (mode 3). Remix's cone only masks the light (shaping factor <= 1, light_shaping.slangh), so a tighter
   // cone does not make the beam brighter: the reach comes from the extra radiance on the axis, the tight cone keeps
   // it off the near road and the verges. Softness is in cosine units: 0.15 would darken a 12 degree cone (1 - cos =
@@ -78,12 +92,15 @@ struct Settings {
   float brightsRadiance[3] = { 45441.0f, 43169.0f, 38625.0f };   // per high beam (user tuning 2026-10-23, +10 %, then -15 %)
   float brightsCone = 15.0f, brightsSoftness = 0.01f, brightsPitch = -0.5f;
   float brightsInset = 0.25f;                          // metres toward the car's middle from each lamp node
+  // Four round lamps (BMW M3 E30): the inner pair at brights_inset is lit as low beams too and becomes the brights.
+  bool quadLamps = false;
   float brightsForward = 0.15f;                        // extra metres ahead (user 2026-10-23: the Quattro's big front
                                                        // lamps hid the high beams inside the car model)
   float pitch = 0.0f;                                  // beam aimed this many degrees below the car's forward axis (+ = down)
   float forward = 0.08f;                               // lamp moved this far ahead of its node (in front of the lens glass)
   float volumetric = 1.0f;                             // volumetricRadianceScale (beams in fog / dust)
   bool fallbackOn = true;                              // keep Remix's fallback light while the lights are on at night
+  float historyFrames = 0.0f;                          // NUMOS froxel history while car lamps are lit (0 = leave NUMOS's)
   V3 fallback = { 0.6f, 0.5f, -1.8f };                 // model offset of the left lamp when the model has none
   // Rear lamps (cone and aim after gta4-rtx: cone 0.6 x + 5; aimed back, 0.2 down). RBR's own lamp sprites are pure
   // red (Cars\*\*_settings.ini Red 255 Green 0 Blue 0). Brightness (user 2026-10-23 tuning, replacing gta4-rtx's
@@ -94,7 +111,7 @@ struct Settings {
   float rearCone = 36.0f * 0.6f + 5.0f, rearSoftness = 0.15f;
   float rearPitch = 11.3f;                             // degrees below straight back (atan 0.2)
   float rearBack = 0.05f;                              // metres behind the lamp node (outside the lens)
-  bool reverseLight = true;                            // right rear lamp white in reverse (user 2026-10-24)
+  bool reverseLight = true;                            // two white reversing lamps in reverse gear (user 2026-11-01; was the right rear lamp)
   float reverseRadiance[3] = { 6000.0f, 6000.0f, 6000.0f };
   float brakeOn = 0.05f;                               // brake input (0..1) that lights them; off again below half of it
   // Backfire flash
@@ -102,12 +119,30 @@ struct Settings {
   float popRadiance[3] = { 53460.0f, 24057.0f, 6415.0f };   // orange (flame), point light; the high beams before their -15 % (user 2026-10-23)
   float popRadius = 0.08f, popHold = 0.06f, popOut = 0.12f;   // m, s after the last pop draw, m beyond the pipe tip
   unsigned long long popTexture = 0x93E4994710A5380BULL;
+  // Lamp halo sprite (user 2026-11-02: the glow around a lit lamp is too big and strong and the lamp mesh clips through it):
+  // Cars\*\textures\light.dds, a 64x64 white disc with a soft alpha edge that RBR draws additive for every lamp, is drawn
+  // as a generated twin with a steeper edge. core = the part of the radius kept as the game has it, scale = how much of the
+  // rest is left, falloff = how steeply that fades (exponent).
+  bool halo = true;
+  unsigned long long haloTexture = 0x660BCAB491C6BCCAULL;
+  float haloCore = 0.25f, haloScale = 0.6f, haloFalloff = 2.0f;
   bool gameLamps = true;                               // L also switches the game's own lit lamp meshes / glow sprites
-  bool followDrawn = true;                             // lamps follow the drawn car (track_drift)
-  // Head lamps this far ahead of their nodes in outside views (car body drawn: chase, TV, 3rd person) and in the
-  // cockpit views (user 2026-10-23: 1.5 m outside made them stop vanishing; they still vanished a few times onboard).
-  float outsideForward = 1.5f, cockpitForward = 0.0f;
+  // Pose (rewrite 2026-10-30, see "Pose of the lamps" below): the drawn car's lag behind RBR's car object, seconds;
+  // < 0 = measured while driving (headlights.ini pose_lag = auto).
+  float poseLag = -1.0f;
+  bool poseLog = false;                                // per-frame CSV rbrrtx_lamp_pose.csv in the run's logs
+  // Lamp type (lamp_photometry): what the head lamps and brights are, for the log.
+  std::wstring lampNote = L"custom (radiance keys)";
+  // Extra lamps (RSF carparts: bonnet pods, light bars, bumper lamps): a spot at each extra light node the car's live
+  // <car>_settings.ini switches on. extra = 0 off, 1 with the headlights, 2 with the brights only. Each lamp gets
+  // extraIntensity x a high beam's radiance in its own [LightN] colour; position lamps (posi, gab) get extraWeak x that.
+  int extra = 1;
+  float extraIntensity = 0.6f, extraCone = 20.0f, extraWeak = 0.04f;
 } g_cfg;
+bool g_haloStale = true;                               // load_settings ran: rebuild the halo twin on its next draw
+
+// The player's car slot (headlights_frame_end), for the lamp type by year.
+int g_carSlot = -1;
 
 // Per-car tuning (experiment, user 2026-10-23): a section named after the car model file ([BMW_M3_E30] for
 // Cars\BMW_M3_E30\BMW_M3_E30.sgc) overrides any [headlights] key for that car.
@@ -132,6 +167,167 @@ void ini_rgb(const wchar_t* path, const wchar_t* key, float out[3]) {
   if (v[0] && swscanf_s(v, L"%f , %f , %f", &r, &g, &b) == 3) { out[0] = r; out[1] = g; out[2] = b; }
 }
 
+// ---------------------------------------------------------------- lamp type and photometry (user 2026-10-30)
+// "Lights never brighter than the sun, a realistic scene; the hue easy to set; LED for cars from 2010, xenon 1998-2009,
+// halogen before". The head lamps and brights are given as a real lamp is: luminous intensity on the beam axis in
+// candela (cd = lux on a surface 1 m away) and a colour temperature in kelvin (or an sRGB colour). Under NUMOS they
+// become Remix radiance through NUMOS's own calibration (its sun, sunIlluminance x sunIntensity, is 127,000 lux;
+// numos renderer.cpp luxPerUnit), the sun cap keeps every lamp at or below the sun on a surface 1 m away, and the
+// radius no longer changes the brightness. On Remix 1.5.2 (no NUMOS) only the colour applies, the brightness stays
+// that of the radiance keys.
+
+// Kelvin -> linear Rec.709 / sRGB primaries (Remix's working space), luminance 1. Planckian locus after Kim et al.
+// (cubic fits of CIE 1931 x, y, 1667-25000 K), then XYZ -> linear sRGB (IEC 61966-2-1); negative channels clipped.
+void kelvin_rgb(float kelvin, float out[3]) {
+  const double T = std::clamp(static_cast<double>(kelvin), 1667.0, 25000.0);
+  const double x = T <= 4000.0 ? -0.2661239e9 / (T * T * T) - 0.2343589e6 / (T * T) + 0.8776956e3 / T + 0.179910
+                               : -3.0258469e9 / (T * T * T) + 2.1070379e6 / (T * T) + 0.2226347e3 / T + 0.240390;
+  const double y = T <= 2222.0 ? -1.1063814 * x * x * x - 1.34811020 * x * x + 2.18555832 * x - 0.20219683
+                 : T <= 4000.0 ? -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867
+                               : 3.0817580 * x * x * x - 5.87338670 * x * x + 3.75112997 * x - 0.37001483;
+  const double X = x / y, Y = 1.0, Z = (1.0 - x - y) / y;
+  double r = 3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z;
+  double g = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z;
+  double b = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z;
+  r = (std::max)(r, 0.0); g = (std::max)(g, 0.0); b = (std::max)(b, 0.0);
+  const double l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  out[0] = static_cast<float>(r / l); out[1] = static_cast<float>(g / l); out[2] = static_cast<float>(b / l);
+}
+
+// sRGB 0-255 (as a colour picker shows it) -> linear, luminance 1.
+void srgb_rgb(const float c[3], float out[3]) {
+  double v[3];
+  for (int i = 0; i < 3; ++i) {
+    const double u = std::clamp(c[i] / 255.0, 0.0, 1.0);
+    v[i] = u <= 0.04045 ? u / 12.92 : std::pow((u + 0.055) / 1.055, 2.4);
+  }
+  const double l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  for (int i = 0; i < 3; ++i) out[i] = l > 1e-6 ? static_cast<float>(v[i] / l) : 1.0f;
+}
+
+float luminance(const float c[3]) { return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]; }
+
+// The car's model year: Cars\Cars.ini [CarNN] RSFCarID -> <game>\rsfdata\cache\cars_data.json "year" (RSF's car
+// data: 102 of 103 cars have one). 0 = not known.
+int car_year(int carId, int* rsfId) {
+  *rsfId = 0;
+  if (carId < 0 || carId > 7) return 0;
+  wchar_t dir[MAX_PATH] = {};
+  DWORD n = GetModuleFileNameW(nullptr, dir, MAX_PATH);
+  wchar_t* slash = (n > 0 && n < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
+  if (!slash) return 0;
+  slash[1] = 0;
+  const std::wstring base(dir);
+  wchar_t sec[8];
+  swprintf_s(sec, L"Car%02d", carId);
+  *rsfId = static_cast<int>(GetPrivateProfileIntW(sec, L"RSFCarID", 0, (base + L"Cars\\Cars.ini").c_str()));
+  if (*rsfId <= 0) return 0;
+  static std::unordered_map<int, int> cache;
+  auto it = cache.find(*rsfId);
+  if (it != cache.end()) return it->second;
+  std::ifstream f(base + L"rsfdata\\cache\\cars_data.json", std::ios::binary);
+  const std::string d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  auto value = [&](size_t from, size_t to, const char* key) -> std::string {   // "key" : "value" inside [from, to)
+    const std::string k = std::string("\"") + key + "\"";
+    size_t p = d.find(k, from);
+    if (p == std::string::npos || p >= to) return "";
+    p = d.find(':', p + k.size());
+    if (p == std::string::npos || p >= to) return "";
+    p = d.find('"', p);
+    const size_t e = p == std::string::npos ? p : d.find('"', p + 1);
+    return e == std::string::npos || e >= to ? "" : d.substr(p + 1, e - p - 1);
+  };
+  int year = 0;
+  for (size_t o = d.find('{'); o != std::string::npos; o = d.find('{', o + 1)) {
+    const size_t end = d.find('}', o);
+    if (end == std::string::npos) break;
+    if (atoi(value(o, end, "car_id").c_str()) == *rsfId) { year = atoi(value(o, end, "year").c_str()); break; }
+  }
+  cache[*rsfId] = year;
+  return year;
+}
+
+void lamp_photometry(const wchar_t* path, Settings& s) {
+  wchar_t v[64] = {};
+  ini_str(L"lamp_type", v, 64, path);
+  std::wstring type = v[0] ? v : L"auto";
+  for (wchar_t& ch : type) ch = static_cast<wchar_t>(towlower(ch));
+  if (type == L"custom") { s.lampNote = L"custom (radiance keys)"; return; }
+  int rsf = 0;
+  const int year = car_year(g_carSlot, &rsf);
+  wchar_t why[96] = L"set in headlights.ini";
+  if (type == L"auto") {
+    const int led = static_cast<int>(ini_float(path, L"led_from_year", 2010.0f));
+    const int xenon = static_cast<int>(ini_float(path, L"xenon_from_year", 1998.0f));
+    type = !year ? L"xenon" : year >= led ? L"led" : year >= xenon ? L"xenon" : L"halogen";
+    if (year) swprintf_s(why, L"car from %d (RSF car %d)", year, rsf);
+    else swprintf_s(why, L"car year not known (RSF car %d): the middle one", rsf);
+  }
+  // A key of the car's own section wins, then the type's section [lamp.<type>].
+  const std::wstring sec = L"lamp." + type;
+  auto key = [&](const wchar_t* k, wchar_t* out, DWORD n) {
+    out[0] = 0;
+    if (!g_carSection.empty()) GetPrivateProfileStringW(g_carSection.c_str(), k, L"", out, n, path);
+    if (!out[0]) GetPrivateProfileStringW(sec.c_str(), k, L"", out, n, path);
+  };
+  float rgb[3] = { 1, 1, 1 };
+  wchar_t c[96] = {}, t[32] = {};
+  float cr, cg, cb;
+  key(L"color", c, 96);
+  key(L"colour_temperature", t, 32);
+  const float kelvin = t[0] ? static_cast<float>(_wtof(t)) : type == L"led" ? 6500.0f : type == L"halogen" ? 3200.0f : 5000.0f;
+  wchar_t colourNote[64];
+  if (c[0] && swscanf_s(c, L"%f , %f , %f", &cr, &cg, &cb) == 3) {
+    const float in[3] = { cr, cg, cb };
+    srgb_rgb(in, rgb);
+    swprintf_s(colourNote, L"colour %.0f, %.0f, %.0f", cr, cg, cb);
+  } else {
+    kelvin_rgb(kelvin, rgb);
+    swprintf_s(colourNote, L"%.0f K", kelvin);
+  }
+  wchar_t iv[32] = {}, bv[32] = {};
+  key(L"intensity", iv, 32);
+  key(L"brights_intensity", bv, 32);
+  float cd = iv[0] ? static_cast<float>(_wtof(iv)) : type == L"led" ? 80000.0f : type == L"halogen" ? 40000.0f : 60000.0f;
+  float bcd = bv[0] ? static_cast<float>(_wtof(bv)) : type == L"led" ? 127000.0f : type == L"halogen" ? 90000.0f : 110000.0f;
+  const float unitLux = rbrrtx_numos_lux_per_unit();
+  wchar_t brightNote[160];
+  if (unitLux > 0.0f) {
+    // Sun cap: on a surface 1 m from the lamp, no more light than the sun gives (127,000 lux x sun_cap).
+    const float cap = (std::max)(0.0f, ini_float(path, L"sun_cap", 1.0f)) * 127000.0f;
+    const bool capped = cap > 0.0f && (cd > cap || bcd > cap);
+    if (cap > 0.0f) { cd = (std::min)(cd, cap); bcd = (std::min)(bcd, cap); }
+    const float area = 3.14159265f * s.radius * s.radius;   // a sphere light's on-axis intensity = radiance x pi r^2
+    for (int i = 0; i < 3; ++i) {
+      s.radiance[i] = rgb[i] * cd / (unitLux * area);
+      s.brightsRadiance[i] = rgb[i] * bcd / (unitLux * area);
+    }
+    // Rear lamps the same way (user 2026-10-30: "taillights do not seem to be affected by the correct headlight
+    // intensity"). Real lamps (UN ECE R7 / R23): a tail lamp 4-12 cd, a brake lamp 60-185 cd, a reversing lamp 80-600 cd;
+    // the old radiance keys were about 140 times a real tail lamp (a red pool on the road behind the car).
+    auto cdKey = [&](const wchar_t* k, float d) { return (std::max)(0.0f, ini_float(path, k, d)); };
+    float red[3] = { 1, 0, 0 }, white[3];
+    ini_rgb(path, L"rear_color", red);
+    float redLin[3];
+    srgb_rgb(red, redLin);
+    kelvin_rgb(ini_float(path, L"reverse_colour_temperature", 6500.0f), white);
+    const float tail = cdKey(L"tail_intensity", 10.0f), brake = cdKey(L"brake_intensity", 150.0f),
+                rev = cdKey(L"reverse_intensity", 300.0f);
+    for (int i = 0; i < 3; ++i) {
+      s.tailRadiance[i] = redLin[i] * (std::min)(tail, cap > 0.0f ? cap : tail) / (unitLux * area);
+      s.brakeRadiance[i] = redLin[i] * (std::min)(brake, cap > 0.0f ? cap : brake) / (unitLux * area);
+      s.reverseRadiance[i] = white[i] * (std::min)(rev, cap > 0.0f ? cap : rev) / (unitLux * area);
+    }
+    swprintf_s(brightNote, L"%.0f cd, brights %.0f cd%s; tail %.0f cd, brake %.0f cd, reverse %.0f cd (NUMOS: 1 unit = %.0f lux)",
+               cd, bcd, capped ? L", capped at the sun's light 1 m away" : L"", tail, brake, rev, unitLux);
+  } else {                                             // 1.5.2: the colour only, brightness from the radiance keys
+    const float l = luminance(s.radiance), bl = luminance(s.brightsRadiance);
+    for (int i = 0; i < 3; ++i) { s.radiance[i] = rgb[i] * l; s.brightsRadiance[i] = rgb[i] * bl; }
+    swprintf_s(brightNote, L"brightness from the radiance keys (no NUMOS: no candela scale)");
+  }
+  s.lampNote = type + L" (" + why + L"): " + colourNote + L", " + brightNote;
+}
+
 void load_settings() {
   wchar_t path[MAX_PATH * 2] = {};
   rbrrtx_config_path(L"RBRRTX_HEADLIGHTS", L"headlights.ini", path, MAX_PATH * 2);
@@ -144,12 +340,22 @@ void load_settings() {
     if (!_wcsicmp(v, L"none")) s.autoBelow = -90.0f;
     else if (v[0]) s.autoBelow = static_cast<float>(_wtof(v));
     s.autoMode = std::clamp(static_cast<int>(ini_float(path, L"auto_mode", 2.0f)), 2, 3);   // 1 (centre light) is gone
+    s.dayRunning = ini_float(path, L"day_running", 1.0f) != 0.0f;
+    ini_str(L"brights_below_sun", v, 32, path);
+    if (!_wcsicmp(v, L"none")) s.brightsBelow = -90.0f;
+    else if (v[0]) s.brightsBelow = static_cast<float>(_wtof(v));
     ini_rgb(path, L"radiance", s.radiance);
+    s.dayIntensity = std::clamp(ini_float(path, L"day_intensity", 1.0f), 0.0f, 1.0f);
+    wchar_t fv[64] = {};
+    ini_str(L"day_fade", fv, 64, path);
+    float f0, f1;
+    if (fv[0] && swscanf_s(fv, L"%f , %f", &f0, &f1) == 2 && f1 > f0) { s.dayFade[0] = f0; s.dayFade[1] = f1; }
     ini_rgb(path, L"brights_radiance", s.brightsRadiance);
     s.brightsCone = std::clamp(ini_float(path, L"brights_cone", s.brightsCone), 1.0f, 89.0f);
     s.brightsSoftness = std::clamp(ini_float(path, L"brights_softness", s.brightsSoftness), 0.0f, 1.0f);
     s.brightsPitch = std::clamp(ini_float(path, L"brights_pitch", s.brightsPitch), -30.0f, 30.0f);
     s.brightsInset = std::clamp(ini_float(path, L"brights_inset", s.brightsInset), -1.0f, 1.0f);
+    s.quadLamps = ini_float(path, L"quad_lamps", 0.0f) != 0.0f;
     s.brightsForward = std::clamp(ini_float(path, L"brights_forward", s.brightsForward), -1.0f, 1.0f);
     s.radius = std::clamp(ini_float(path, L"radius", s.radius), 0.005f, 1.0f);
     s.cone = std::clamp(ini_float(path, L"cone", s.cone), 1.0f, 89.0f);
@@ -178,23 +384,52 @@ void load_settings() {
     wchar_t tex[32] = {};
     ini_str(L"backfire_texture", tex, 32, path);
     if (tex[0]) s.popTexture = wcstoull(tex, nullptr, 16);
+    s.halo = ini_float(path, L"halo", 1.0f) != 0.0f;
+    wchar_t ht[32] = {};
+    ini_str(L"halo_texture", ht, 32, path);
+    if (ht[0]) s.haloTexture = wcstoull(ht, nullptr, 16);
+    s.haloCore = std::clamp(ini_float(path, L"halo_core", s.haloCore), 0.0f, 0.95f);
+    s.haloScale = std::clamp(ini_float(path, L"halo_scale", s.haloScale), 0.05f, 1.0f);
+    s.haloFalloff = std::clamp(ini_float(path, L"halo_falloff", s.haloFalloff), 0.5f, 8.0f);
     s.gameLamps = ini_float(path, L"game_lamps", 1.0f) != 0.0f;
-    s.followDrawn = ini_float(path, L"follow_drawn_car", 1.0f) != 0.0f;
-    s.outsideForward = std::clamp(ini_float(path, L"outside_view_forward", s.outsideForward), -1.0f, 5.0f);
-    s.cockpitForward = std::clamp(ini_float(path, L"cockpit_view_forward", s.cockpitForward), -1.0f, 5.0f);
+    s.extra = std::clamp(static_cast<int>(ini_float(path, L"extra_lights", 1.0f)), 0, 2);
+    s.extraIntensity = std::clamp(ini_float(path, L"extra_intensity", s.extraIntensity), 0.0f, 10.0f);
+    s.extraCone = std::clamp(ini_float(path, L"extra_cone", s.extraCone), 1.0f, 89.0f);
+    s.extraWeak = std::clamp(ini_float(path, L"extra_weak", s.extraWeak), 0.0f, 1.0f);
+    wchar_t lag[32] = {};
+    ini_str(L"pose_lag", lag, 32, path);
+    if (lag[0] && _wcsicmp(lag, L"auto")) s.poseLag = std::clamp(static_cast<float>(_wtof(lag)), -0.1f, 0.3f);
+    s.poseLog = ini_float(path, L"pose_log", 0.0f) != 0.0f || rbrrtx_env_flag(L"RBRRTX_LAMP_LOG", false);
+    // Remix Plus + NUMOS (user 2026-10-29): head, brake, tail and reverse lamps x remixplus_intensity (0.5 = half);
+    // the backfire flash is left alone. numos_history_frames: see rbrrtx_headlights_history_frames.
+    if (rbrrtx_remix_plus()) {
+      const float k = std::clamp(ini_float(path, L"remixplus_intensity", 1.0f), 0.0f, 10.0f);
+      for (float* rgb : { s.radiance, s.brightsRadiance, s.brakeRadiance, s.tailRadiance, s.reverseRadiance })
+        for (int i = 0; i < 3; ++i) rgb[i] *= k;
+      s.historyFrames = std::clamp(ini_float(path, L"numos_history_frames", 0.0f), 0.0f, 255.0f);
+    }
+    lamp_photometry(path, s);                          // head lamps and brights: type, colour, candela
   }
   g_cfg = s;
+  g_haloStale = true;                                  // the twin is made again from the new settings
+  hlog(L"headlights: lamps %s", s.lampNote.c_str());
+  hlog(L"headlights: lamp halo sprite %016llX %s (core %.2f, scale %.2f, falloff %.1f)", s.haloTexture, s.halo ? L"thinned" : L"as the game draws it",
+       s.haloCore, s.haloScale, s.haloFalloff);
   if (!g_carSection.empty()) {
     wchar_t keys[16] = {};
     const bool own = GetPrivateProfileSectionW(g_carSection.c_str(), keys, 16, path) > 0;
     hlog(L"headlights: car section [%s] %s", g_carSection.c_str(), own ? L"found: its keys override [headlights]" : L"not in the ini");
   }
-  hlog(L"headlights (%s): %s, auto below sun %.1f deg in mode %d, radiance %.0f/%.0f/%.0f, "
+  wchar_t autoNote[96];
+  if (s.dayRunning) swprintf_s(autoNote, L"day running lights, brights below sun %.1f deg", s.brightsBelow);
+  else swprintf_s(autoNote, L"auto below sun %.1f deg in mode %d", s.autoBelow, s.autoMode);
+  hlog(L"headlights (%s): %s, %s, radiance %.0f/%.0f/%.0f, "
        L"radius %.3f, cone %.1f, softness %.2f, focus %.2f, pitch %.1f, forward %.2f, volumetric %.2f, "
        L"keep fallback light %s; brights radiance %.0f cone %.1f softness %.3f pitch %.1f inset %.2f forward %.2f",
-       found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", s.autoBelow,
-       s.autoMode, s.radiance[0], s.radiance[1], s.radiance[2], s.radius, s.cone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
+       found ? path : L"defaults, no headlights.ini", s.enabled ? L"on" : L"OFF", autoNote, s.radiance[0], s.radiance[1], s.radiance[2], s.radius, s.cone, s.softness, s.focus, s.pitch, s.forward, s.volumetric,
        s.fallbackOn ? L"yes" : L"no", s.brightsRadiance[0], s.brightsCone, s.brightsSoftness, s.brightsPitch, s.brightsInset, s.brightsForward);
+  hlog(L"headlights: daylight x%.2f with the sun at %.0f deg and above, full strength at %.0f deg and below "
+       L"(backfire flash not dimmed)", s.dayIntensity, s.dayFade[1], s.dayFade[0]);
   hlog(L"headlights: tail lights %s (radiance %.0f/%.0f/%.0f), brake lights %s (radiance %.0f/%.0f/%.0f, on at brake %.2f), "
        L"rear cone %.1f softness %.2f pitch %.1f back %.2f; backfire light %s (texture %016llX, radiance %.0f/%.0f/%.0f, "
        L"radius %.2f, hold %.2f s, out %.2f)",
@@ -216,6 +451,8 @@ struct CarModel {
   V3 lf = {}, rf = {};                                 // lamp positions in the root frame
   bool rear = false;                                   // rear lamps found (Point_light_brake_lb/rb, else _lb/_rb)
   V3 lb = {}, rb = {};
+  bool reverse = false;                                // Point_light_reverse_lb / _rb found (105-108 of 109 models)
+  V3 revl = {}, revr = {};                             // else the rear lamps
   bool exhaust = false;                                // Point_exhaust1 (pipe tip) found
   V3 exhaustTip = {}, exhaustDir = {};                 // tip and its outward direction (from Point_exhaust2)
   V3 forward = { 0, 0, -1 };                           // model forward axis (up = +y)
@@ -242,7 +479,83 @@ struct CarModel {
   bool kQuad = false;
   V3 kCam[4] = {};                                     // bottom left, bottom right, top left, top right (camera space)
   Placed glassNode = {};                               // model root -> e_window_f node local (its node chain)
+  // Extra lamps switched on in the live <car>_settings.ini (load_extra_lamps), in the root frame.
+  struct Extra { std::string name; V3 pos = {}; float rgb[3] = { 1, 1, 1 }; bool weak = false; bool brake = false; };
+  std::vector<Extra> extras;
 } g_car;
+constexpr size_t kMaxExtra = 16;
+
+// The value of "key = value" on a line of an ini block ("" if absent).
+std::string ini_field(const std::string& block, const char* key) {
+  const size_t klen = std::strlen(key);
+  size_t at = 0;
+  while ((at = block.find(key, at)) != std::string::npos) {
+    const bool lineStart = at == 0 || block[at - 1] == '\n';
+    size_t e = at + klen;
+    while (e < block.size() && (block[e] == ' ' || block[e] == '\t')) ++e;
+    if (lineStart && e < block.size() && block[e] == '=') {
+      size_t v = e + 1;
+      while (v < block.size() && (block[v] == ' ' || block[v] == '\t')) ++v;
+      const size_t end = block.find_first_of("\r\n", v);
+      std::string out = block.substr(v, end == std::string::npos ? std::string::npos : end - v);
+      while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+      return out;
+    }
+    at = e;
+  }
+  return std::string();
+}
+
+// RBR's [LightN] Id says what switches a lamp: 4 / 5 (6-11 on light bars) light with the headlights, 16-18 with the
+// brake, 21 / 22 are position lamps. Only active lamps that are not one of the stock ones (placed elsewhere) count.
+template <class NodeFn>
+void load_extra_lamps(const std::wstring& modelFile, NodeFn node) {
+  const size_t slash = modelFile.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return;
+  const std::wstring dir = modelFile.substr(0, slash + 1);
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW((dir + L"*_settings.ini").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  const std::wstring file = dir + fd.cFileName;
+  FindClose(h);
+  std::ifstream f(file, std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  auto lower = [](std::string x) {
+    for (char& c : x) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return x;
+  };
+  static const char* const kStock[] = { "point_light_lf", "point_light_rf", "point_light_lb", "point_light_rb",
+                                        "point_light_brake_lb", "point_light_brake_rb", "point_light_reverse_lb",
+                                        "point_light_reverse_rb" };
+  size_t at = 0;
+  while ((at = text.find('[', at)) != std::string::npos && g_car.extras.size() < kMaxExtra) {
+    const size_t next = text.find("\n[", at + 1);
+    const std::string block = text.substr(at, next == std::string::npos ? std::string::npos : next + 1 - at);
+    at = next == std::string::npos ? text.size() : next + 1;
+    const std::string part = ini_field(block, "Car Part"), lpart = lower(part);
+    if (part.empty() || lower(ini_field(block, "Active")) != "true") continue;
+    if (std::any_of(std::begin(kStock), std::end(kStock), [&](const char* k) { return lpart == k; })) continue;
+    const int id = std::atoi(ini_field(block, "Id").c_str());
+    CarModel::Extra e;
+    e.name = part;
+    e.weak = lpart.find("posi") != std::string::npos || lpart.find("gab") != std::string::npos;
+    e.brake = id >= 16 && id <= 18;
+    if (!e.weak && !e.brake && (id < 4 || id > 11)) continue;
+    if (std::any_of(g_car.extras.begin(), g_car.extras.end(), [&](const CarModel::Extra& o) { return o.name == part; })) continue;
+    if (!node(part.c_str(), e.pos)) continue;
+    const float r = static_cast<float>(std::atoi(ini_field(block, "Red").c_str()));
+    const float g = static_cast<float>(std::atoi(ini_field(block, "Green").c_str()));
+    const float b = static_cast<float>(std::atoi(ini_field(block, "Blue").c_str()));
+    const float m = (std::max)({ r, g, b });
+    if (m > 0.0f) { e.rgb[0] = r / m; e.rgb[1] = g / m; e.rgb[2] = b / m; }
+    else if (e.brake) { e.rgb[1] = e.rgb[2] = 0.0f; }
+    g_car.extras.push_back(e);
+  }
+  std::wstring names;
+  for (const CarModel::Extra& e : g_car.extras)
+    names += std::wstring(e.name.begin(), e.name.end()) + (e.brake ? L" (brake) " : e.weak ? L" (position) " : L" ");
+  hlog(L"headlights: extra lamps from %s: %zu %s", file.c_str(), g_car.extras.size(), names.empty() ? L"(none switched on)" : names.c_str());
+}
 
 // Model root -> node local (row vectors) from the node's chain to the root: p_local = R^-1 (p_root - t). A real
 // inverse: some nodes are scaled (fiesta_r2 e_body: x 1.048).
@@ -550,6 +863,13 @@ void load_car_model(const std::wstring& file) {
     if (hl && !hr) g_car.rb = { 2.0f * c - g_car.lb.x, g_car.lb.y, g_car.lb.z };
     if (hr && !hl) g_car.lb = { 2.0f * c - g_car.rb.x, g_car.rb.y, g_car.rb.z };
     g_car.rear = hl || hr;
+    // Reversing lamps (user 2026-11-01: most cars light two reverse lenses, e_light_reverse_lb/rb_lit): a white light at
+    // each Point_light_reverse_* node; a missing side mirrors the other, none at all = the rear lamps' places.
+    const bool vl = usable("Point_light_reverse_lb", sl, g_car.revl), vr = usable("Point_light_reverse_rb", -sl, g_car.revr);
+    if (vl && !vr) g_car.revr = { 2.0f * c - g_car.revl.x, g_car.revl.y, g_car.revl.z };
+    if (vr && !vl) g_car.revl = { 2.0f * c - g_car.revr.x, g_car.revr.y, g_car.revr.z };
+    g_car.reverse = vl || vr;
+    if (!g_car.reverse) { g_car.revl = g_car.lb; g_car.revr = g_car.rb; }
   }
   V3 ex2 = {};
   if (lamp("Point_exhaust1", g_car.exhaustTip)) {      // the tip; Point_exhaust2 lies further in along the pipe
@@ -560,6 +880,7 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaust = true;
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
+  load_extra_lamps(file, lamp);
   load_windscreen(d, nodes, byName);
   load_cockpit_quad(d, file);
   for (const char* name : { "e_body", "i_body" }) {   // the frame most of the car is drawn in
@@ -595,6 +916,8 @@ void load_car_model(const std::wstring& file) {
        L"(%.2f %.2f %.2f), %d points, flatness %.3f", g_car.glassName.c_str(), g_car.glass ? L"found" : g_car.glassRejected ? L"REJECTED (not where a windscreen goes): lamp-based plane" : L"NOT found: lamp-based plane",
        g_car.glassBottom.x, g_car.glassBottom.y, g_car.glassBottom.z, g_car.glassWb, g_car.glassTop.x, g_car.glassTop.y,
        g_car.glassTop.z, g_car.glassWt, g_car.glassN.x, g_car.glassN.y, g_car.glassN.z, g_car.glassPoints, g_car.glassFlat);
+  hlog(L"headlights: reversing lamps %s l (%.3f %.3f %.3f) r (%.3f %.3f %.3f)", g_car.reverse ? L"found" : L"not in the model: at the rear lamps",
+       g_car.revl.x, g_car.revl.y, g_car.revl.z, g_car.revr.x, g_car.revr.y, g_car.revr.z);
   hlog(L"headlights: rear lamps %s lb (%.3f %.3f %.3f) rb (%.3f %.3f %.3f), exhaust %s tip (%.3f %.3f %.3f) out (%.2f %.2f %.2f)",
        g_car.rear ? L"found" : L"MISSING", g_car.lb.x, g_car.lb.y, g_car.lb.z, g_car.rb.x, g_car.rb.y, g_car.rb.z,
        g_car.exhaust ? L"found" : L"MISSING", g_car.exhaustTip.x, g_car.exhaustTip.y, g_car.exhaustTip.z,
@@ -641,16 +964,26 @@ void compose(const Placed& a, const float* W, float C[16]) {
   }
 }
 
-// The car pose C (model root -> world) comes from RBR's car movement object (0x8EF660, block from +0x100):
+// The car pose C (model root -> world) from RBR's car movement object (0x8EF660, block from +0x100):
 // +0x110 is a 3x3 rotation, 9 floats, rows = the car's axes; +0x140 the car position; physics space = render world
 // with Y and Z swapped (decoded 2026-10-23 01:43 from "pose sample" lines: the body draw's rows are
 // swap(M0), swap(M2), swap(M1) to 3 decimals in two poses). So C rows = those, and C's origin = position + d * R,
 // d = the model root's offset from the physics origin in car axes (E30 standing: (-0.06, -0.24, -0.16) m).
-// d is measured per car by a vote of the car draws (measure_frame), only while the car stands still (draws and physics come from slightly different moments: the moving car's
-// draw trailed the physics by ~0.37 m), averaged over 20 frames, then locked (kept for the session per model file).
-// Until then d = 0 (lamps ~0.3 m off). Car draws are not needed for the lamps at all: every camera works, and the
-// lamps go out at the first BeginScene with the sun (one fixed point per frame; the UI trigger did not come every
-// frame, so lamps were sometimes sent after Remix had taken the frame's lights: periodic flashing).
+// d is measured per car by a vote of the car draws (measure_frame), only while the car stands still, averaged over 20
+// frames, then locked (kept for the session per model file). Until then d = 0 (lamps ~0.3 m off in views without a
+// body draw; the stage-load view draws the body, so the lamps are on it from the first frame there).
+//
+// Pose of the lamps (rewrite 2026-10-30, docs/research/headlights-rewrite-handoff.md): the car AS DRAWN in this frame.
+// comp.cpp gives Remix every car draw's world matrix W and hands the same W here (rbrrtx_headlights_car_draw); the
+// body draw's W composed with the body node's placement is the model root Remix renders the car at, so lamps placed
+// from it are rigid with the car on screen by construction. They are sent from it just before Remix takes the
+// frame's lights (our UI trigger, else Present: rbrrtx_headlights_refine); Remix Plus updates a live light in place.
+// Views without a body draw (cockpit, bonnet) and Remix 1.5.2 (no in-place update: lamps go out once, at the first
+// BeginScene) use RBR's car object as it was g_lag seconds earlier, from a short pose history: the drawn car trails
+// the object by a near constant time (logs 2026-10-29: 0.2-1.4 m growing with speed, ~70 ms). g_lag is measured
+// from frames with a body draw (the delay that puts the object's past pose onto the drawn root; median of 31).
+// Replaced: the 0.9/0.1 average of drawn-minus-object (follow_drawn_car, track_drift), which trailed by ~10 frames and
+// wandered at every speed change, and the per-view head lamp offsets that flipped with the view.
 unsigned g_frameNo = 0, g_solved = 0, g_failed = 0;
 struct Offset { int n = 0; V3 sum = {}; bool locked = false; V3 d = {}; int rejected = 0; };
 Offset g_off;
@@ -661,66 +994,208 @@ int g_sampleLogged = 0;
 
 V3 swap_yz(const float* v) { return { v[0], v[2], v[1] }; }
 
-// Drawn car vs RBR's car object (user 2026-10-23 07:38 sweep, TV camera, replay): the headlights went dark while the
-// car moved in TV / 3rd-person cameras and came back when the replay was paused; tail lights stayed. With the car
-// hidden the scene was 25x brighter (sweep step 07), so the lamps sat inside the drawn car: in those cameras the car
-// is drawn ahead of RBR's car object (draws and physics from different moments; known camera-dependent 3rd-person
-// transform). The lamps now follow the drawn car: g_drift = drawn body root - predicted root, from the body draw of
-// the last frame (smoothed; it fades out in views without the body, e.g. the cockpit).
-V3 g_drift = {};
-unsigned g_driftFrames = 0, g_driftLogged = 0;
-unsigned g_bodyFrames = 0;                             // frames in a row with the car body drawn (outside views)
-float g_driftMax = 0.0f;
+double now_s() {
+  static LARGE_INTEGER f = {};
+  if (!f.QuadPart) QueryPerformanceFrequency(&f);
+  LARGE_INTEGER c;
+  QueryPerformanceCounter(&c);
+  return static_cast<double>(c.QuadPart) / static_cast<double>(f.QuadPart);
+}
 
-// RBR's pose in render space with the model root at d: rows = car axes (x, y = up, z), row 3 = position.
-// drift = add g_drift (the lamps); without it = RBR's object only (offset measurement).
-bool physics_pose(float C[16], V3* phys, bool drift = false) {
+// RBR's car object now: axes (render space, rows x, y = up, z) and physics origin. False while it is not a rotation.
+bool read_object(V3 ax[3], V3* pos) {
   float r[20];
   if (!rbrrtx_player_car_raw(r)) return false;
-  const V3 ax[3] = { swap_yz(r + 4), swap_yz(r + 10), swap_yz(r + 7) };
-  for (const V3& a : ax) if (!(len(a) > 0.5f && len(a) < 2.0f)) return false;   // not a rotation: object not ready
-  *phys = swap_yz(r + 16);
-  for (int i = 0; i < 3; ++i) { C[i * 4] = ax[i].x; C[i * 4 + 1] = ax[i].y; C[i * 4 + 2] = ax[i].z; C[i * 4 + 3] = 0; }
-  const V3 o = *phys + ax[0] * g_off.d.x + ax[1] * g_off.d.y + ax[2] * g_off.d.z +
-               (drift && g_cfg.followDrawn ? g_drift : V3{ 0, 0, 0 });
-  C[12] = o.x; C[13] = o.y; C[14] = o.z; C[15] = 1;
+  ax[0] = swap_yz(r + 4); ax[1] = swap_yz(r + 10); ax[2] = swap_yz(r + 7);
+  for (int i = 0; i < 3; ++i) if (!(len(ax[i]) > 0.5f && len(ax[i]) < 2.0f)) return false;   // object not ready
+  *pos = swap_yz(r + 16);
   return true;
 }
 
-// At frame end: where this frame's body draw put the model root, against RBR's object (offset measured only).
-void track_drift() {
-  float Q[16];
+// C = axes as rows, origin = pos + d in car axes.
+void pose_of(const V3 ax[3], V3 pos, float C[16]) {
+  for (int i = 0; i < 3; ++i) { C[i * 4] = ax[i].x; C[i * 4 + 1] = ax[i].y; C[i * 4 + 2] = ax[i].z; C[i * 4 + 3] = 0; }
+  const V3 o = pos + ax[0] * g_off.d.x + ax[1] * g_off.d.y + ax[2] * g_off.d.z;
+  C[12] = o.x; C[13] = o.y; C[14] = o.z; C[15] = 1;
+}
+
+// RBR's object now with the model root at d (offset measurement, cockpit test, windscreen anchor).
+bool physics_pose(float C[16], V3* phys) {
+  V3 ax[3];
+  if (!read_object(ax, phys)) return false;
+  pose_of(ax, *phys, C);
+  return true;
+}
+
+// Pose history: RBR's object once per frame (first BeginScene), with the time.
+struct PoseSample { double t; V3 ax[3]; V3 pos; };
+constexpr int kHist = 64;
+PoseSample g_hist[kHist];
+int g_histN = 0, g_histHead = 0;                       // head = newest
+double g_frameT = 0.0;                                 // time of this frame's sample
+
+const PoseSample& hist(int age) { return g_hist[(g_histHead - age + kHist) % kHist]; }
+
+void hist_push(double t) {
+  PoseSample s;
+  if (!read_object(s.ax, &s.pos)) { g_histN = 0; return; }
+  s.t = t;
+  // A jump (stage restart, replay seek or camera cut to another car moment): the old samples mean nothing now.
+  if (g_histN && (t <= hist(0).t || len(s.pos - hist(0).pos) > 25.0f)) g_histN = 0;
+  g_histHead = (g_histHead + 1) % kHist;
+  g_hist[g_histHead] = s;
+  if (g_histN < kHist) ++g_histN;
+}
+
+PoseSample lerp(const PoseSample& a, const PoseSample& b, float f) {
+  PoseSample s;
+  s.t = a.t + (b.t - a.t) * f;
+  for (int i = 0; i < 3; ++i) s.ax[i] = norm(a.ax[i] + (b.ax[i] - a.ax[i]) * f);
+  s.pos = a.pos + (b.pos - a.pos) * f;
+  return s;
+}
+
+// The object at time t: between two samples linear, after the newest extrapolated from the last two (at most 0.15 s),
+// before the oldest the oldest.
+bool hist_at(double t, PoseSample* out) {
+  if (!g_histN) return false;
+  if (t >= hist(0).t) {
+    if (g_histN < 2 || hist(0).t - hist(1).t < 1e-4) { *out = hist(0); return true; }
+    const double ahead = (std::min)(t - hist(0).t, 0.15);
+    *out = lerp(hist(1), hist(0), static_cast<float>(1.0 + ahead / (hist(0).t - hist(1).t)));
+    return true;
+  }
+  for (int age = 1; age < g_histN; ++age) {
+    const PoseSample &o = hist(age), &n = hist(age - 1);
+    if (t >= o.t) { *out = lerp(o, n, static_cast<float>((t - o.t) / (n.t - o.t))); return true; }
+  }
+  *out = hist(g_histN - 1);
+  return true;
+}
+
+// Speed of the object over the last ~0.1 s (m/s).
+float hist_speed() {
+  if (g_histN < 2) return 0.0f;
+  int age = 1;
+  while (age + 1 < g_histN && hist(0).t - hist(age).t < 0.1) ++age;
+  const double dt = hist(0).t - hist(age).t;
+  return dt > 1e-3 ? len(hist(0).pos - hist(age).pos) / static_cast<float>(dt) : 0.0f;
+}
+
+// The drawn car's lag behind the object.
+float g_lag = 0.0f;
+bool g_lagKnown = false;
+float g_lagSamples[31];
+int g_lagN = 0, g_lagNext = 0;
+float g_lagResid = 0.0f;                               // distance left at the best lag, last sample (m)
+unsigned g_lagTaken = 0, g_lagRefused = 0, g_lagLogged = 0;
+
+// The object as the car is drawn: g_lag seconds back (the prediction for views without a body draw).
+bool pred_pose(float C[16]) {
+  PoseSample s;
+  if (g_histN && hist_at(g_frameT - g_lag, &s)) { pose_of(s.ax, s.pos, C); return true; }
   V3 phys;
-  if (!g_off.locked || !physics_pose(Q, &phys)) { g_drift = g_drift * 0.8f; return; }
-  const V3 want = row(Q, 3);
-  const Group* best = nullptr;
-  V3 root = {};
-  float C[16];
+  return physics_pose(C, &phys);
+}
+
+// One lag sample from this frame's drawn body root B: the delay in -0.1 .. 0.3 s whose past object pose puts the
+// model root nearest B. Only while driving (> 4 m/s: standing still any delay fits) and with d known.
+void lag_sample(const float B[16]) {
+  if (!g_off.locked || g_histN < 8 || g_cfg.poseLag >= 0.0f) return;
+  const float v = hist_speed();
+  if (v < 4.0f) return;
+  float best = 1e9f, bestLag = 0.0f;
+  for (int i = 0; i <= 200; ++i) {
+    const float lag = -0.1f + 0.002f * i;
+    PoseSample s;
+    if (!hist_at(g_frameT - lag, &s)) return;
+    float C[16];
+    pose_of(s.ax, s.pos, C);
+    const float e = len(row(C, 3) - row(B, 3));
+    if (e < best) { best = e; bestLag = lag; }
+  }
+  g_lagResid = best;
+  if (best > 0.3f || bestLag <= -0.099f || bestLag >= 0.299f) { ++g_lagRefused; return; }   // no delay explains it
+  g_lagSamples[g_lagNext] = bestLag;
+  g_lagNext = (g_lagNext + 1) % 31;
+  if (g_lagN < 31) ++g_lagN;
+  float sorted[31];
+  std::copy(g_lagSamples, g_lagSamples + g_lagN, sorted);
+  std::sort(sorted, sorted + g_lagN);
+  g_lag = sorted[g_lagN / 2];
+  g_lagKnown = g_lagN >= 5;
+  if (++g_lagTaken == 5 || g_lagTaken % 1800 == 0)
+    hlog(L"headlights: drawn car trails RBR's car object by %.0f ms (median of %d; last sample %.0f ms at %.1f m/s, %.3f m left)",
+         g_lag * 1000.0f, g_lagN, bestLag * 1000.0f, v, best);
+}
+
+// This frame's body draw: of the car draw groups whose body-node root has the car's axes (within ~10 deg: the drawn
+// car may be turned a little against the predicted one) the big ones (>= 35 % of the biggest such group), the one
+// nearest where the body is expected: last frame's drawn root moved as the object moved since, else the prediction.
+// The wrong 3rd-person body (4.6 m off, often bigger), the bonnet and doors (a part's offset away) lose on distance,
+// spinning wheels on the axes.
+float g_bodyM[16];                                     // the last matched drawn root
+V3 g_bodyObj = {};                                     // the object's position in that frame
+unsigned g_bodyFrames = 0;                             // frames in a row with the body matched (outside views)
+unsigned g_bodyMatched = 0, g_bodyMissed = 0;
+float g_bodyGap = 0.0f, g_bodyGapMax = 0.0f;           // drawn root - object root (no lag), this frame / this stage
+unsigned g_bodyHeld = 0;                               // frames in a row the lamps held the last body (no match)
+constexpr unsigned kHoldFrames = 10;                   // at most this many, then the prediction
+// Last match (pose log): candidates with the car's axes, eligible ones, the pick's triangles, its distance from where
+// the body was expected and the runner-up's (0 = none). Two close candidates = the match can alternate between them.
+int g_matchCands = 0, g_matchEligible = 0;
+unsigned g_matchPrims = 0;
+float g_matchD = 0.0f, g_matchD2 = 0.0f;
+// This car's body size: the biggest pick that sat on the prediction (run 20261101-052355 Osli: after L toggles and a
+// camera switch the 40042-triangle body group was gone for 15 s; 4519-12606-triangle parts, roots up to 2 m apart,
+// won in turn, and "near last frame's body" followed them away from the car). A pick must be half of it and near the
+// prediction too; without one the lamps take the prediction (cm-accurate with the lag known).
+unsigned g_bodyPrimsRef = 0;
+
+bool match_body(float out[16]) {
+  float P[16];
+  V3 phys;
+  if (!physics_pose(P, &phys) || !pred_pose(P)) return false;
+  const float v = hist_speed();
+  const V3 pred = row(P, 3);
+  V3 want = pred;
+  float tol = g_lagKnown ? 0.6f + 0.04f * v : (std::min)(1.2f + 0.12f * v, 5.0f);
+  const float tolPred = g_lagKnown ? 0.35f + 0.015f * v : tol;   // the prediction bounds the chain below
+  if (g_bodyFrames) { want = row(g_bodyM, 3) + (phys - g_bodyObj); tol = 0.4f + 0.02f * v; }
+  struct Cand { float C[16]; unsigned prims; float d, dPred; };
+  Cand cand[24];
+  int n = 0;
+  unsigned maxPrims = 0;
   for (const Group& g : g_groups) {
-    if (g.prims < 500 || (best && g.prims <= best->prims)) continue;
-    compose(g_car.body, g.m, C);
+    if (g.prims < 200 || n >= 24) continue;
+    Cand& c = cand[n];
+    compose(g_car.body, g.m, c.C);
     bool axes = true;
-    for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(Q, r))) > 0.995f;
-    if (!axes || len(row(C, 3) - want) > 2.5f) continue;   // not the body, or the wrong 3rd-person body far off
-    best = &g;
-    root = row(C, 3);
+    for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(c.C, r)), norm(row(P, r))) > 0.985f;
+    if (!axes) continue;
+    c.prims = g.prims;
+    c.d = len(row(c.C, 3) - want);
+    c.dPred = len(row(c.C, 3) - pred);
+    maxPrims = (std::max)(maxPrims, g.prims);
+    ++n;
   }
-  if (!best) { g_drift = g_drift * 0.9f; g_bodyFrames = 0; return; }
-  ++g_bodyFrames;
-  // Slow average: the gap comes from speed and timing and changes slowly, while single frames jitter by several cm
-  // (test 2026-10-23 09:00: 0.11 .. 0.23 m with the sign changing; lamps flickered in bonnet and chase cameras).
-  // A frame more than 0.5 m off the average is not trusted.
-  const V3 sample = root - want;
-  if (g_driftFrames > 10 && len(sample - g_drift) > 0.5f) return;
-  g_drift = g_drift * 0.9f + sample * 0.1f;
-  ++g_driftFrames;
-  const float l = len(g_drift);
-  if (l > g_driftMax) g_driftMax = l;
-  if (l > 0.1f && g_driftLogged < 5 && g_driftFrames % 120 == 0) {
-    ++g_driftLogged;
-    hlog(L"headlights: drawn car %.2f m from RBR's car object (%.2f %.2f %.2f); lamps follow the drawn car", l, g_drift.x,
-         g_drift.y, g_drift.z);
-  }
+  const Cand* best = nullptr;
+  g_matchCands = n;
+  g_matchEligible = 0;
+  g_matchD2 = 0.0f;
+  for (int i = 0; i < n; ++i)
+    if (cand[i].prims * 100 >= maxPrims * 35 && cand[i].d < tol && cand[i].dPred < tolPred &&
+        cand[i].prims * 2 >= g_bodyPrimsRef) {
+      ++g_matchEligible;
+      if (!best || cand[i].d < best->d) { if (best) g_matchD2 = best->d; best = &cand[i]; }
+      else if (!g_matchD2 || cand[i].d < g_matchD2) g_matchD2 = cand[i].d;
+    }
+  g_matchPrims = best ? best->prims : 0;
+  g_matchD = best ? best->d : 0.0f;
+  if (!best) return false;
+  if (g_lagKnown && best->dPred < 0.15f) g_bodyPrimsRef = (std::max)(g_bodyPrimsRef, best->prims);
+  std::memcpy(out, best->C, sizeof(best->C));
+  return true;
 }
 
 // At frame end, with all of this frame's car draws: one offset sample while the car stands still.
@@ -797,10 +1272,7 @@ void measure_frame() {
   }
 }
 
-bool place_frame(float C[16]) {
-  V3 phys;
-  return physics_pose(C, &phys, true);
-}
+bool place_frame(float C[16]) { return pred_pose(C); }
 
 // ---------------------------------------------------------------- state
 
@@ -808,14 +1280,31 @@ enum { kOff = 0, kPair = 2, kBrights = 3 };
 const remixapi_Interface* g_api = nullptr;
 int g_mode = kOff;
 bool g_manual = false;                                 // the key was used on this stage: no automatic switching
-bool g_dark = false;                                   // sun below auto_below_sun (last frame)
-int g_track = -1, g_carSlot = -1;
-bool g_emitted = false;
-struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; float rad[3] = {}; };
-// RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire)
-Lamp g_lamps[8] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
-                    { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
-                    { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL } };
+float g_dayK = 1.0f;                                   // daylight dimming of the lamps (day_intensity)
+int g_autoWant = -1;                                   // the automatic switch's mode last frame (-1 = none yet)
+// The mode the automatic switch wants at this sun height.
+int auto_mode_for(float sunEl) {
+  if (g_cfg.dayRunning) return sunEl < g_cfg.brightsBelow ? kBrights : kPair;
+  return sunEl < g_cfg.autoBelow ? g_cfg.autoMode : kOff;
+}
+int g_track = -1;
+bool g_emitted = false;                                // first BeginScene of this frame seen (lamp states read)
+bool g_refined = false;                                // this frame's drawn body looked for (rbrrtx_headlights_refine)
+bool g_sentThisFrame = false;                          // lamps sent this frame
+bool g_lampsLit = false;                               // some car lamp is lit this frame
+// Lamp states of this frame (read at the first BeginScene), used wherever the lamps are sent from.
+bool g_tailOn = false, g_popOn = false;
+const wchar_t* g_poseSrc = L"-";                       // where this frame's lamps were placed from (pose log)
+FILE* g_poseCsv = nullptr;
+unsigned g_lampFrame = 0;                              // last frame a car lamp was sent
+struct Lamp { remixapi_LightHandle h = nullptr; unsigned long long hash; V3 pos{}, dir{}; float cone = 0; float rad[3] = {};
+              unsigned sent = ~0u; };                  // sent = frame it was last drawn
+// RBRHLCEN / LFT / RGT, RBRHBRLF / BRRF, RBRTLLFT / RGT (rear), RBRBFPOP (backfire), RBRRVLFT / RGT (reversing)
+Lamp g_lamps[10 + kMaxExtra] = { { nullptr, 0x52425248'4C43454EULL }, { nullptr, 0x52425248'4C4C4654ULL }, { nullptr, 0x52425248'4C524754ULL },
+                     { nullptr, 0x52425248'42524C46ULL }, { nullptr, 0x52425248'42525246ULL }, { nullptr, 0x52425254'4C4C4654ULL },
+                     { nullptr, 0x52425254'4C524754ULL }, { nullptr, 0x52425242'46504F50ULL }, { nullptr, 0x52425252'564C4654ULL },
+                     { nullptr, 0x52425252'56524754ULL } };
+Lamp* const g_extraLamps = g_lamps + 10;               // RBRXL00.. (hashes set in rbrrtx_headlights_init)
 unsigned g_creates = 0;
 bool g_reversing = false;                              // reverse lamp lit (gear 0)
 unsigned g_reverseSwitches = 0;
@@ -840,7 +1329,11 @@ const wchar_t* mode_name(int m) {
 void set_mode(int m, const wchar_t* why) {
   if (m == g_mode) return;
   g_mode = m;
-  destroy_all();                                       // the other mode's lamps must not stay drawn
+  // Only the lamps the new mode does not use (send_lamps also destroys every lamp it did not draw). Destroying all of
+  // them here re-created the low beams under the same hash in the same frame, and on Remix Plus the destroy won: OFF ->
+  // BRIGHTS showed the high beams alone until the car moved (run 20261030-072711, Gabiria marks 1-3).
+  if (m != kBrights && !(g_cfg.quadLamps && m == kPair)) { destroy_lamp(g_lamps[3]); destroy_lamp(g_lamps[4]); }
+  if (m == kOff) { destroy_lamp(g_lamps[1]); destroy_lamp(g_lamps[2]); }
   g_creates = 0;                                       // log the first lamps of each switch
   hlog(L"headlights: %s (%s)", mode_name(m), why);
   wchar_t ev[96];
@@ -849,11 +1342,16 @@ void set_mode(int m, const wchar_t* why) {
 }
 
 // cone >= 180 = a plain point light (no shaping; dir unused). radius 0 = the headlights' radius.
-void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float softness, float radius = 0.0f) {
+void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float radIn[3], float softness, float radius = 0.0f) {
+  const float k = &l == &g_lamps[7] ? 1.0f : g_dayK;     // daylight dimming; the backfire flash stays
+  const float rad[3] = { radIn[0] * k, radIn[1] * k, radIn[2] * k };
   const bool moved = !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone ||
                      rad[0] != l.rad[0] || rad[1] != l.rad[1] || rad[2] != l.rad[2];
   if (moved) {
-    destroy_lamp(l);
+    // Remix Plus: the same hash again UPDATES the live lamp and keeps its RTXDI/denoiser history (remixplus_api.cpp
+    // header), so the lamp is one light for its whole life. 1.5.2 resets that history on any re-create and the
+    // bridge keeps a handle per create until DestroyLight, so there it is destroyed first (KB headlights.md section 5).
+    if (!rbrrtx_remix_plus()) destroy_lamp(l);
     remixapi_LightInfoSphereEXT sphere = {};
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
     sphere.position = { pos.x, pos.y, pos.z };
@@ -869,9 +1367,11 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
     info.pNext = &sphere;
     info.hash = l.hash;
     info.radiance = { rad[0], rad[1], rad[2] };
+    const remixapi_LightHandle old = l.h;
     const remixapi_ErrorCode err = g_api->CreateLight(&info, &l.h);
     if (err != REMIXAPI_ERROR_CODE_SUCCESS) {
-      l.h = nullptr;
+      l.h = old;
+      destroy_lamp(l);                                 // a failed in-place update must not leave the old lamp lit
       if (++g_creates <= 20) hlog(L"headlights: CreateLight failed, error %d", static_cast<int>(err));
       return;
     }
@@ -882,6 +1382,7 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
     std::memcpy(l.rad, rad, sizeof(l.rad));
   }
   g_api->DrawLightInstance(l.h);
+  l.sent = g_frameNo;
 }
 
 // The game's own lamp switch (user 2026-10-23: lit lamps when the lights are on). RBR never switches the headlights
@@ -896,6 +1397,17 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float rad[3], float so
 void* g_hhWorld = nullptr;
 int g_gameLampsSent = -1;                              // last state sent (-1 = none)
 unsigned g_gameLampsLog = 0;
+// A new world (stage, replay) keeps the game's lamps off for its first kLampHoldCarFrames frames with car draws, then
+// switches them on: litparts.cpp learns the lit lenses from that switch (night stages start with the lamps on, and
+// "drawn only while on" alone lit the whole car, run 20261030-055723). Our Remix lights are not held.
+constexpr unsigned kLampHoldCarFrames = 30;
+void* g_holdWorld = nullptr;
+unsigned g_worldCarFrames = 0;
+// Main menu car (user 2026-10-30: "the car in the main menu has lights when nighttime falls"). Under NUMOS the menu's sun
+// runs forward from a stage's time (comp.cpp numos_menu); below auto_below_sun the lamps go on, placed on the car as drawn (menu_root),
+// and the game's own lamp meshes switch with them (so its lit lenses glow, litparts.cpp).
+bool g_menuCar = false, g_menuDark = false;
+unsigned g_menuRootMissed = 0;
 
 void* find_hh_world() {
   HMODULE hh = GetModuleHandleW(L"HedgeHog3D.dll");
@@ -931,12 +1443,15 @@ void sync_game_lamps() {
   if (!g_cfg.gameLamps) return;
   if (g_frameNo % 30 != 0 && g_gameLampsSent == (g_mode != kOff ? 1 : 0)) return;
   void* world = find_hh_world();
-  const int want = g_mode != kOff ? 1 : 0;
+  int want = g_mode != kOff ? 1 : 0;
   if (!world) {
     if (g_gameLampsLog < 2 && g_gameLampsSent != -2) { ++g_gameLampsLog; hlog(L"headlights: game lamp switch not found (HedgeHog3D CSigCarLight connection)"); }
     g_gameLampsSent = -2;
     return;
   }
+  if (world != g_holdWorld) { g_holdWorld = world; g_worldCarFrames = 0; }
+  const bool held = want == 1 && g_worldCarFrames < kLampHoldCarFrames;
+  if (held) want = 0;
   if (world == g_hhWorld && want == g_gameLampsSent) return;
   // Headlights (type 1: light_lf, light_rf) and the tail lamps with them (type 3: index + 2 into the handler's suffix
   // table _lf _rf _lb _rb _m, prefix "light": light_lb, light_rb, light_m; HedgeHog3D.dll tables 0x101DA26C /
@@ -945,8 +1460,8 @@ void sync_game_lamps() {
   for (int i = 0; ok && i < 3; ++i) ok = call_car_light(world, 3, i, want == 1);
   if (g_gameLampsLog < 12) {
     ++g_gameLampsLog;
-    hlog(L"headlights: game's own head and tail lamps (lit meshes, glow sprites) %s%s (world %p)", want ? L"ON" : L"off",
-         ok ? L"" : L" FAILED", world);
+    hlog(L"headlights: game's own head and tail lamps (lit meshes, glow sprites) %s%s (world %p)%s", want ? L"ON" : L"off",
+         ok ? L"" : L" FAILED", world, held ? L", held off for the first car frames (lit parts learn the switch)" : L"");
   }
   g_hhWorld = world;
   g_gameLampsSent = want;
@@ -962,18 +1477,30 @@ bool in_stage(RbrStageInfo* si) {
 
 void rbrrtx_headlights_init(const remixapi_Interface* api) {
   g_api = api;
+  for (size_t i = 0; i < kMaxExtra; ++i) g_extraLamps[i].hash = 0x52425258'4C000000ULL + i;   // "RBRXL" + index
   load_settings();
+  if (g_cfg.poseLag >= 0.0f) { g_lag = g_cfg.poseLag; g_lagKnown = true; }
 }
 
 // The windscreen drops (windscreen.cpp) go on the car as it is drawn in this frame: the model root from the first big
-// car draw that one of the model's parts places within 0.5 m of where RBR's object (+ drift) expects it, axes
-// matching (wheels spin, doors swing: not those). RBR's object alone is 0.1-0.2 m off, differently every frame.
+// car draw whose body-node root lies within 0.35 m of where the body is expected (last frame's drawn body moved as RBR's
+// object moved since, else the object g_lag back), axes matching (wheels spin, doors swing: not those).
 bool g_rootThisFrame = false, g_predThisFrame = false, g_predOk = false;
 float g_pred[16];
 float g_rootM[16];                                     // this frame's drawn model root (when g_rootThisFrame)
 
 void drawn_root(const float* world) {
-  if (!g_predThisFrame) { g_predThisFrame = true; V3 phys; g_predOk = physics_pose(g_pred, &phys, true); }
+  if (!g_predThisFrame) {
+    g_predThisFrame = true;
+    V3 phys;
+    float O[16];
+    g_predOk = pred_pose(g_pred);
+    if (g_predOk && g_bodyFrames && physics_pose(O, &phys)) {
+      std::memcpy(g_pred, g_bodyM, sizeof(g_pred));
+      const V3 w = row(g_bodyM, 3) + (phys - g_bodyObj);
+      g_pred[12] = w.x; g_pred[13] = w.y; g_pred[14] = w.z;
+    }
+  }
   if (!g_predOk) return;
   // Only the body frame (run 7: trying every part's frame let a wrong part win by a few cm, shifting the drops).
   float best[16], C[16];
@@ -1008,7 +1535,7 @@ bool model_of(const float* M, Placed* inv) {
 }
 
 // Cockpit or not from where the camera is (user 2026-10-24 run 9: on Rosciszow the Civic's cockpit counted as an
-// outside view: its interior is drawn in the body's frame with enough triangles for track_drift, so the drops took
+// outside view: its interior is drawn in the body's frame with enough triangles for the body match, so the drops took
 // RBR's object in place of the camera and the dust showed in the cabin). Inside = within the car's width, between
 // its lamps and its rear, under the glass top, behind the windscreen plane. Bonnet and roof cameras are outside.
 float g_camW[3] = {};
@@ -1033,7 +1560,7 @@ bool camera_inside() {
   float O[16];
   V3 phys, b, t, n;
   Placed inv;
-  if (!physics_pose(O, &phys, false) || !model_of(O, &inv) || !windscreen_plane(&b, &t, &n)) return false;
+  if (!physics_pose(O, &phys) || !model_of(O, &inv) || !windscreen_plane(&b, &t, &n)) return false;
   const V3 p = xf_point(inv, { g_camW[0], g_camW[1], g_camW[2] });
   const V3 mid = (g_car.lf + g_car.rf) * 0.5f, F = g_car.forward;
   const float along = dot(p - mid, F);
@@ -1076,7 +1603,7 @@ void cockpit_glass_find() {
   if (g_camFrameNo != g_frameNo || !camera_inside() || !draws) { g_glassW.clear(); return; }
   float P[16];
   V3 phys;
-  if (!physics_pose(P, &phys, false)) { g_glassW.clear(); return; }
+  if (!physics_pose(P, &phys)) { g_glassW.clear(); return; }
   const V3 cam = row(g_camM, 3);
   const bool prev = g_cgFrame != ~0u && g_cgFrame + 2 >= g_frameNo;
   float bestScore = 1e9f;
@@ -1123,7 +1650,7 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
     // (Present) Remix has already taken the scene at the UI trigger, so instances sent then never showed.
     float P[16];
     V3 phys;
-    if (g_camFrameNo == g_frameNo && camera_inside() && physics_pose(P, &phys, false) && len(row(world, 3) - row(g_camM, 3)) < 2.0f) {
+    if (g_camFrameNo == g_frameNo && camera_inside() && physics_pose(P, &phys) && len(row(world, 3) - row(g_camM, 3)) < 2.0f) {
       bool axes = true;
       for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(world, r)), norm(row(P, r))) > 0.95f;
       (void)axes;                                      // run 16: drops placed from the car files instead
@@ -1133,9 +1660,9 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
   // Collected while the lights are on, and on a stage until the model offset is measured, lights off too: the
   // game shows the car in a 3rd-person view whenever a stage loads, where several car parts agree (user 2026-10-23;
   // the cockpit view often shows just one, and the lamps then moved once, ~0.3 m, when the view changed).
-  // On a stage always: the offset (until measured) and the drawn car's drift (track_drift) for every lamp, brake and
-  // backfire lights included.
-  if (!g_cfg.enabled || g_track < 0 || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
+  // On a stage always: the offset (until measured) and the drawn body (match_body) for every lamp, brake and backfire
+  // lights included.
+  if (!g_cfg.enabled || (g_track < 0 && !g_menuCar) || blended || g_groups.size() >= 96) return;   // blended: ghost car, glass
   for (Group& g : g_groups) if (same_matrix(g.m, world)) { g.prims += prims; return; }
   Group g;
   std::memcpy(g.m, world, sizeof(g.m));
@@ -1143,27 +1670,148 @@ void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended
   g_groups.push_back(g);
 }
 
+// Every lamp lit this frame at car pose C (model root -> world); lamps not lit this frame are destroyed: Remix Plus
+// draws a created light every frame until it is destroyed (persistent auto-instancing, RemixApi-Migration.md
+// "Lights"), so a brake lamp only left undrawn stayed lit where it was last placed (2026-10-30; the same for the
+// backfire flash and the reverse lamp). On 1.5.2 an undrawn light is dark anyway; destroying it frees its bridge handle.
+void send_lamps(const float C[16], const wchar_t* src) {
+  g_sentThisFrame = true;
+  g_poseSrc = src;
+  const V3 lf = g_car.lamps ? g_car.lf : g_cfg.fallback;
+  const V3 rf = g_car.lamps ? g_car.rf : V3{ -g_cfg.fallback.x, g_cfg.fallback.y, g_cfg.fallback.z };
+  // One head lamp offset for every view (forward, in front of the lens): with the lamps on the drawn car the car no
+  // longer blocks them (2026-10-23 they sat up to 1.4 m inside the drawn body while moving, which needed 0.5-1.5 m).
+  const V3 ahead = g_car.forward * g_cfg.forward;
+  const V3 wl = to_world(C, lf + ahead), wr = to_world(C, rf + ahead);
+  const V3 fwd = norm(row(C, 2) * g_car.forward.z);
+  const V3 up = norm(row(C, 1));
+  auto aim = [&](float pitchDeg) { const float pr = pitchDeg * 0.0174533f; return norm(fwd * std::cos(pr) - up * std::sin(pr)); };
+  if ((g_tailOn || g_braking || g_reversing) && g_car.rear) {         // rear: aimed straight back and rearPitch down
+    const V3 back = g_car.forward * -g_cfg.rearBack;
+    const float pr = g_cfg.rearPitch * 0.0174533f;
+    const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
+    const float* rad = g_braking ? g_cfg.brakeRadiance : g_cfg.tailRadiance;
+    if (g_tailOn || g_braking) {
+      draw_lamp(g_lamps[5], to_world(C, g_car.lb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+      draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+    }
+    if (g_reversing) {                                 // two white reversing lamps, as the game lights both lenses
+      draw_lamp(g_lamps[8], to_world(C, g_car.revl + back), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness);
+      draw_lamp(g_lamps[9], to_world(C, g_car.revr + back), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness);
+    }
+  }
+  if (g_popOn && g_car.exhaust)                        // backfire: a point light just beyond the pipe tip
+    draw_lamp(g_lamps[7], to_world(C, g_car.exhaustTip + g_car.exhaustDir * g_cfg.popOut), up, 180.0f, g_cfg.popRadiance,
+              0.0f, g_cfg.popRadius);
+  if (g_mode != kOff) {
+    const V3 dir = aim(g_cfg.pitch);
+    draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
+    draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
+    if (g_mode == kBrights || g_cfg.quadLamps) {       // high beams: each lamp node moved toward the car's middle
+      const float in = g_cfg.brightsInset;
+      const V3 bahead = ahead + g_car.forward * g_cfg.brightsForward;
+      const V3 bl = to_world(C, lf + bahead + V3{ lf.x > rf.x ? -in : in, 0, 0 });
+      const V3 br = to_world(C, rf + bahead + V3{ lf.x > rf.x ? in : -in, 0, 0 });
+      const bool high = g_mode == kBrights;            // quad_lamps: the inner pair is a low beam until brights
+      const V3 bdir = aim(high ? g_cfg.brightsPitch : g_cfg.pitch);
+      draw_lamp(g_lamps[3], bl, bdir, high ? g_cfg.brightsCone : g_cfg.cone, high ? g_cfg.brightsRadiance : g_cfg.radiance,
+                high ? g_cfg.brightsSoftness : g_cfg.softness);
+      draw_lamp(g_lamps[4], br, bdir, high ? g_cfg.brightsCone : g_cfg.cone, high ? g_cfg.brightsRadiance : g_cfg.radiance,
+                high ? g_cfg.brightsSoftness : g_cfg.softness);
+    }
+  }
+  if (g_cfg.extra && g_mode != kOff) {                // extra lamps of the headlight group
+    const V3 edir = aim(g_cfg.brightsPitch), wdir = aim(g_cfg.pitch);
+    for (size_t i = 0; i < g_car.extras.size(); ++i) {
+      const CarModel::Extra& e = g_car.extras[i];
+      if (e.brake || (!e.weak && g_cfg.extra == 2 && g_mode != kBrights)) continue;
+      const float k = g_cfg.extraIntensity * (e.weak ? g_cfg.extraWeak : 1.0f);
+      const float rad[3] = { g_cfg.brightsRadiance[0] * k * e.rgb[0], g_cfg.brightsRadiance[1] * k * e.rgb[1],
+                             g_cfg.brightsRadiance[2] * k * e.rgb[2] };
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + ahead), e.weak ? wdir : edir, e.weak ? g_cfg.cone : g_cfg.extraCone, rad,
+                e.weak ? g_cfg.softness : g_cfg.brightsSoftness);
+    }
+  }
+  if (g_cfg.extra && g_braking) {                      // extra brake lamps (centre and high brake lights)
+    const float pr = g_cfg.rearPitch * 0.0174533f;
+    const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
+    for (size_t i = 0; i < g_car.extras.size(); ++i) {
+      const CarModel::Extra& e = g_car.extras[i];
+      if (!e.brake) continue;
+      const float rad[3] = { g_cfg.brakeRadiance[0] * e.rgb[0], g_cfg.brakeRadiance[1] * e.rgb[1], g_cfg.brakeRadiance[2] * e.rgb[2] };
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + g_car.forward * -g_cfg.rearBack), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+    }
+  }
+  for (Lamp& l : g_lamps) if (l.h && l.sent != g_frameNo) destroy_lamp(l);
+}
+
+// Per-frame pose log (headlights.ini pose_log = 1): <logs>\rbrrtx_lamp_pose.csv, one line per frame at the refine
+// point. Columns: time, frame, game mode (1 driving, 2 pause, 8 replay, 10 pre-stage), speed, object root, predicted
+// root (object g_lag back), drawn body root (empty if none), lag, lag residual, source of the lamps, lamps lit, body
+// match: candidates, eligible, pick's triangles, pick's and runner-up's distance from the expected root.
+void pose_log(const float* body) {
+  if (!g_cfg.poseLog) return;
+  if (!g_poseCsv) {
+    wchar_t dir[MAX_PATH] = {};
+    const DWORD n = GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", dir, MAX_PATH);
+    if (!n || n >= MAX_PATH) { g_cfg.poseLog = false; return; }
+    wchar_t path[MAX_PATH * 2];
+    swprintf_s(path, L"%s\\rbrrtx_lamp_pose.csv", dir);
+    if (_wfopen_s(&g_poseCsv, path, L"w") || !g_poseCsv) { g_cfg.poseLog = false; return; }
+    fprintf(g_poseCsv, "t,frame,mode,speed,obj_x,obj_y,obj_z,pred_x,pred_y,pred_z,body_x,body_y,body_z,lag_ms,lag_resid,source,lit,cands,eligible,prims,d_best,d_second\n");
+    hlog(L"headlights: pose log %s", path);
+  }
+  float O[16], P[16];
+  V3 phys;
+  if (!physics_pose(O, &phys) || !pred_pose(P)) return;
+  RbrStageInfo si;
+  const int mode = rbrrtx_stage_info(&si) ? si.gameMode : -1;
+  char b[96] = "";
+  if (body) sprintf_s(b, "%.4f,%.4f,%.4f", body[12], body[13], body[14]); else strcpy_s(b, ",,");
+  fprintf(g_poseCsv, "%.4f,%u,%d,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%s,%.1f,%.3f,%ls,%d,%d,%d,%u,%.3f,%.3f\n", g_frameT, g_frameNo,
+          mode, hist_speed(), O[12], O[13], O[14], P[12], P[13], P[14], b, g_lag * 1000.0f, g_lagResid, g_poseSrc,
+          g_lampsLit ? 1 : 0, g_matchCands, g_matchEligible, g_matchPrims, g_matchD, g_matchD2);
+  if (g_frameNo % 120 == 0) fflush(g_poseCsv);
+}
+
 void rbrrtx_headlights_emit() {
   if (g_emitted || !g_api || !g_cfg.enabled || g_track < 0) return;
+  g_emitted = true;
+  g_frameT = now_s();
+  hist_push(g_frameT);
   // Brake lights: on above brake_on, off below half of it (no flicker from a pedal resting at the threshold).
   float brake = 0.0f;
   const bool brakeRead = rbrrtx_player_car_brake(&brake);
   const bool braking = g_cfg.brakeLights && brakeRead && brake > (g_braking ? g_cfg.brakeOn * 0.5f : g_cfg.brakeOn);
-  if (braking != g_braking && ++g_brakeSwitches <= 3)
-    hlog(L"headlights: brake lights %s (brake input %.2f)", braking ? L"ON" : L"off", brake);
+  if (braking != g_braking && ++g_brakeSwitches <= 6)
+    hlog(L"headlights: brake lights %s (brake input %.2f; lamps from %s, body frames %u, held %u)", braking ? L"ON" : L"off", brake,
+         g_poseSrc, g_bodyFrames, g_bodyHeld);
   g_braking = braking;
-  int gear = 1;                                        // reverse: the right rear lamp turns white
+  int gear = 1;                                        // reverse: two white lamps at Point_light_reverse_lb/rb
   const bool reversing = g_cfg.reverseLight && rbrrtx_player_car_gear(&gear) && gear == 0;
   if (reversing != g_reversing && ++g_reverseSwitches <= 3)
     hlog(L"headlights: reverse light %s (gear %d)", reversing ? L"ON" : L"off", gear);
   g_reversing = reversing;
+  {                                                    // game particles are off for good: the g_pop sprite is never drawn (0 flashes in 21 runs, 2026-11-01)
+    static unsigned noPop = 0;
+    static bool noted = false;
+    if (g_cfg.pop && !g_popSeen && !noted && ++noPop == 3600) {
+      noted = true;
+      hlog(L"headlights: backfire: no flame sprite (particles off), the flash light needs a draw of the g_pop sprite; nothing in %u headlight updates", noPop);
+    }
+  }
   const bool pop = g_cfg.pop && g_popSeen &&
                    std::chrono::duration<float>(std::chrono::steady_clock::now() - g_lastPop).count() <= g_cfg.popHold;
   if (pop && !g_popActive && ++g_popFlashes <= 3) hlog(L"headlights: backfire flash (%u pop draws so far)", g_popDraws);
   g_popActive = pop;
-  const bool tail = g_cfg.rear && g_mode != kOff;
-  if (g_mode == kOff && !braking && !pop && !reversing) return;
-  g_emitted = true;
+  g_popOn = pop;
+  g_tailOn = g_cfg.rear && g_mode != kOff;
+  g_lampsLit = g_mode != kOff || braking || pop || reversing;
+  if (!g_lampsLit) { destroy_all(); return; }
+  g_lampFrame = g_frameNo;
+  // Remix Plus with the body drawn last frame: wait for this frame's body draw (rbrrtx_headlights_refine, before Remix
+  // takes the lights); the lamps stay where last frame's body put them until then. Else send the prediction now.
+  if (rbrrtx_remix_plus() && (g_bodyFrames > 0 || (g_bodyHeld && g_bodyHeld < kHoldFrames))) return;
   float C[16];
   if (!place_frame(C)) {
     if (++g_failed <= 5 || g_failed % 600 == 0)
@@ -1171,52 +1819,58 @@ void rbrrtx_headlights_emit() {
     return;
   }
   if (++g_solved <= 2 || g_solved % 3600 == 0)
-    hlog(L"headlights: car placed from RBR's car object (model offset %s); placed %u, not placed %u frames",
-         g_off.locked ? L"measured" : L"not measured yet, 0", g_solved, g_failed);
-  const V3 lf = g_car.lamps ? g_car.lf : g_cfg.fallback;
-  const V3 rf = g_car.lamps ? g_car.rf : V3{ -g_cfg.fallback.x, g_cfg.fallback.y, g_cfg.fallback.z };
-  // User 2026-10-23: while the car body is drawn (3rd-person, chase, TV views) the car itself blocked the head lamps;
-  // moving them outside_view_forward (1.5 m) ahead fixed it. Cockpit views (no body drawn) have cockpit_view_forward.
-  const bool outside = g_bodyFrames >= 3;
-  const float extra = outside ? g_cfg.outsideForward : g_cfg.cockpitForward;
-  static int viewWas = -1;
-  if (static_cast<int>(outside) != viewWas) {
-    viewWas = outside;
-    hlog(L"headlights: %s view, head lamps %.2f m ahead", outside ? L"outside (car body drawn)" : L"cockpit",
-         g_cfg.forward + extra);
+    hlog(L"headlights: car placed from RBR's car object %.0f ms back (model offset %s); placed %u, not placed %u frames",
+         g_lag * 1000.0f, g_off.locked ? L"measured" : L"not measured yet, 0", g_solved, g_failed);
+  send_lamps(C, L"object");
+}
+
+// Before Remix takes this frame's lights (comp.cpp: right before our UI trigger draw, else at Present), once per frame:
+// find this frame's drawn body among the car draws so far; it measures the lag, and on Remix Plus the lamps are sent
+// again from it (an in-place update of each live light). Views without a body draw: the prediction, if not sent yet.
+void rbrrtx_headlights_refine() {
+  if (g_refined || !g_emitted || g_track < 0) return;
+  g_refined = true;
+  float B[16];
+  const bool body = !g_car.file.empty() && match_body(B);
+  if (body) {
+    V3 phys;
+    float O[16];
+    if (physics_pose(O, &phys)) {
+      g_bodyGap = len(row(B, 3) - row(O, 3));
+      g_bodyGapMax = (std::max)(g_bodyGapMax, g_bodyGap);
+      g_bodyObj = phys;
+    }
+    std::memcpy(g_bodyM, B, sizeof(g_bodyM));
+    lag_sample(B);
+    ++g_bodyFrames;
+    g_bodyHeld = 0;
+    if (++g_bodyMatched == 1 || g_bodyMatched % 3600 == 0)
+      hlog(L"headlights: car body drawn %.2f m from RBR's car object; lamps on the drawn body (%u frames matched, %u not)",
+           g_bodyGap, g_bodyMatched, g_bodyMissed);
+  } else {
+    if (g_bodyFrames || g_bodyHeld) ++g_bodyHeld;
+    if (g_bodyFrames >= 3 && ++g_bodyMissed <= 3)
+      hlog(L"headlights: car body not drawn this frame (after %u frames with it): lamps from RBR's car object %.0f ms back",
+           g_bodyFrames, g_lag * 1000.0f);
+    g_bodyFrames = 0;
   }
-  const V3 ahead = g_car.forward * (g_cfg.forward + extra);
-  const V3 wl = to_world(C, lf + ahead), wr = to_world(C, rf + ahead);
-  const V3 fwd = norm(row(C, 2) * g_car.forward.z);
-  const V3 up = norm(row(C, 1));
-  auto aim = [&](float pitchDeg) { const float pr = pitchDeg * 0.0174533f; return norm(fwd * std::cos(pr) - up * std::sin(pr)); };
-  if ((tail || braking || reversing) && g_car.rear) {               // rear: aimed straight back and rearPitch down
-    const V3 back = g_car.forward * -g_cfg.rearBack;
-    const float pr = g_cfg.rearPitch * 0.0174533f;
-    const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
-    const float* rad = braking ? g_cfg.brakeRadiance : g_cfg.tailRadiance;
-    if (tail || braking)
-      draw_lamp(g_lamps[5], to_world(C, g_car.lb + back), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
-    if (tail || braking || reversing)                  // reverse: this lamp is white
-      draw_lamp(g_lamps[6], to_world(C, g_car.rb + back), rdir, g_cfg.rearCone,
-                reversing ? g_cfg.reverseRadiance : rad, g_cfg.rearSoftness);
+  if (g_lampsLit && g_api && rbrrtx_remix_plus()) {
+    float H[16], Q[16];
+    V3 phys;
+    if (body) send_lamps(B, L"body");
+    // A frame without the body right after frames with it (2026-10-30 runs: 1 in 25 frames while driving): the last
+    // body moved as the object moved since, turned as the object turned. Switching to the prediction for one frame
+    // made the lamps jump by its error (0.2-0.8 m). Up to kHoldFrames, then the prediction (cockpit view).
+    else if (g_bodyHeld && g_bodyHeld <= kHoldFrames && physics_pose(Q, &phys) && pred_pose(H)) {
+      const V3 o = row(g_bodyM, 3) + (phys - g_bodyObj);
+      H[12] = o.x; H[13] = o.y; H[14] = o.z;
+      send_lamps(H, L"held");
+    } else if (!g_sentThisFrame) {
+      float C[16];
+      if (place_frame(C)) send_lamps(C, L"object");
+    }
   }
-  if (pop && g_car.exhaust)                            // backfire: a point light just beyond the pipe tip
-    draw_lamp(g_lamps[7], to_world(C, g_car.exhaustTip + g_car.exhaustDir * g_cfg.popOut), up, 180.0f, g_cfg.popRadiance,
-              0.0f, g_cfg.popRadius);
-  if (g_mode == kOff) return;
-  const V3 dir = aim(g_cfg.pitch);
-  draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
-  draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
-  if (g_mode == kBrights) {                            // high beams: each lamp node moved toward the car's middle
-    const float in = g_cfg.brightsInset;
-    const V3 bahead = ahead + g_car.forward * g_cfg.brightsForward;
-    const V3 bl = to_world(C, lf + bahead + V3{ lf.x > rf.x ? -in : in, 0, 0 });
-    const V3 br = to_world(C, rf + bahead + V3{ lf.x > rf.x ? in : -in, 0, 0 });
-    const V3 bdir = aim(g_cfg.brightsPitch);
-    draw_lamp(g_lamps[3], bl, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
-    draw_lamp(g_lamps[4], br, bdir, g_cfg.brightsCone, g_cfg.brightsRadiance, g_cfg.brightsSoftness);
-  }
+  pose_log(body ? B : nullptr);
 }
 
 // The car body drawn in recent frames (outside views: chase, TV, 3rd person) = 1, not drawn (cockpit views) = 0,
@@ -1227,13 +1881,12 @@ int rbrrtx_car_body_visible() {
   return g_bodyFrames >= 3 ? 1 : 0;
 }
 
-// The car's model root in render space as the lamps use it (rows: model x, y = up, z, row 3 = position; RBR's pose
-// + the measured model offset + drift), the head lamp nodes and the model's forward axis in that frame. For the
+// The car's model root in render space as the lamps use it without a body draw (rows: model x, y = up, z, row 3 =
+// position; RBR's pose g_lag back + the measured model offset), the head lamp nodes and the model's forward axis in that frame. For the
 // windscreen drops (windscreen.cpp). False while the model or its offset is not known.
 bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3]) {
   if (g_track < 0 || !g_car.lamps || !g_off.locked) return false;
-  V3 phys;
-  if (!physics_pose(M, &phys, true)) return false;
+  if (!pred_pose(M)) return false;
   lf[0] = g_car.lf.x; lf[1] = g_car.lf.y; lf[2] = g_car.lf.z;
   rf[0] = g_car.rf.x; rf[1] = g_car.rf.y; rf[2] = g_car.rf.z;
   fwd[0] = g_car.forward.x; fwd[1] = g_car.forward.y; fwd[2] = g_car.forward.z;
@@ -1245,7 +1898,7 @@ bool rbrrtx_car_model_frame(float M[16], float lf[3], float rf[3], float fwd[3])
 bool rbrrtx_car_object_frame(float M[16]) {
   if (g_track < 0 || !g_off.locked) return false;
   V3 phys;
-  return physics_pose(M, &phys, false);
+  return physics_pose(M, &phys);
 }
 
 // The windscreen glass plane in the model frame (load_windscreen: interior glass first); false if not usable.
@@ -1300,39 +1953,181 @@ const wchar_t* rbrrtx_car_model_name() {               // the model file's name 
   return name.c_str();
 }
 
+// The menu car's model root from its draws: every draw group (>= 200 triangles), for every drawn part of the model it
+// could be, gives a root; the root most groups agree on (within 1 mm) wins, two groups at least (as measure_frame).
+bool menu_root(const std::vector<Group>& groups, float out[16]) {
+  struct Cand { V3 p; int group; float C[16]; };
+  std::vector<Cand> c;
+  for (int j = 0; j < static_cast<int>(groups.size()); ++j) {
+    if (groups[j].prims < 200) continue;
+    for (const Placed& pl : g_car.parts) {
+      Cand k;
+      compose(pl, groups[j].m, k.C);
+      k.p = row(k.C, 3);
+      k.group = j;
+      c.push_back(k);
+    }
+  }
+  // Correctly placed parts give the same root to float precision; models with node frames a centimetre or two apart
+  // (124 Abarth, i20 R5) made 2 cm bins pick a neighbour. So: within 1 mm, swept along x.
+  std::sort(c.begin(), c.end(), [](const Cand& a, const Cand& b) { return a.p.x < b.p.x; });
+  int bestGroups = 0;
+  unsigned bestPrims = 0;
+  const Cand* best = nullptr;
+  std::vector<int> seen;
+  for (size_t i = 0; i < c.size(); ++i) {
+    seen.clear();
+    unsigned prims = 0;
+    size_t a = i;
+    while (a > 0 && c[i].p.x - c[a - 1].p.x < 0.001f) --a;
+    for (size_t k = a; k < c.size() && c[k].p.x - c[i].p.x < 0.001f; ++k) {
+      bool same = len(c[k].p - c[i].p) < 0.001f;     // and the same axes (impreza03: a rotated node at the root's origin)
+      for (int r = 0; r < 3 && same; ++r) same = len(row(c[k].C, r) - row(c[i].C, r)) < 0.001f * (1.0f + len(row(c[i].C, r)));
+      if (!same || std::find(seen.begin(), seen.end(), c[k].group) != seen.end()) continue;
+      seen.push_back(c[k].group);
+      prims += groups[c[k].group].prims;
+    }
+    const int n = static_cast<int>(seen.size());
+    if (n > bestGroups || (n == bestGroups && prims > bestPrims)) { bestGroups = n; bestPrims = prims; best = &c[i]; }
+  }
+  if (bestGroups < 2 || !best) return false;
+  std::memcpy(out, best->C, sizeof(best->C));
+  // The body as drawn, as on a stage (match_body): draws with one matrix are one group, so the body (one matrix for
+  // ~20 meshes) is one vote against every wheel and suspension part, and those sit at the model's rest pose. The menu
+  // car's body rides higher than that: the lamps sat low on the Yaris and the Fabia (user 2026-10-30). So: the biggest
+  // group whose body-node root is near the vote's root with the same axes.
+  unsigned bodyPrims = 0;
+  for (const Group& g : groups) {
+    if (g.prims < 200 || g.prims <= bodyPrims) continue;
+    float C[16];
+    compose(g_car.body, g.m, C);
+    bool close = len(row(C, 3) - row(best->C, 3)) < 0.3f;
+    for (int r = 0; r < 3 && close; ++r) close = dot(norm(row(C, r)), norm(row(best->C, r))) > 0.985f;
+    if (!close) continue;
+    bodyPrims = g.prims;
+    std::memcpy(out, C, sizeof(C));
+  }
+  return true;
+}
+
+void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& groups) {
+  if (!g_menuCar) {
+    g_menuCar = true;
+    g_menuDark = false;
+    g_menuRootMissed = 0;
+    g_gameLampsSent = -1;
+    g_hhWorld = nullptr;
+    if (g_mode != kOff) set_mode(kOff, L"menu");
+  }
+  const std::wstring model = car_model_path(si.carId);
+  if (model.empty()) return;
+  if (model != g_car.file) {
+    const size_t slash = model.find_last_of(L"\\/"), dot = model.find_last_of(L'.');
+    g_carSection = model.substr(slash + 1, dot != std::wstring::npos && dot > slash ? dot - slash - 1 : std::wstring::npos);
+    g_carSlot = si.carId;
+    load_settings();
+    load_car_model(model);
+    hlog(L"headlights: menu car %s (lamps on below sun %.1f deg)", model.c_str(), g_cfg.autoBelow);
+  }
+  {
+    const float t = std::clamp((sunEl - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
+    g_dayK = std::round((1.0f + (g_cfg.dayIntensity - 1.0f) * t) * 50.0f) / 50.0f;
+  }
+  // The parked menu car: no day running lights, its lamps on below auto_below_sun (brights below brights_below_sun).
+  const bool dark = sunEl < g_cfg.autoBelow;
+  const int want = !dark ? kOff : g_cfg.dayRunning ? auto_mode_for(sunEl) : g_cfg.autoMode;
+  if (dark != g_menuDark || want != g_mode) {
+    wchar_t why[64];
+    swprintf_s(why, L"menu, sun %.1f deg", sunEl);
+    set_mode(want, why);
+    g_menuDark = dark;
+  }
+  sync_game_lamps();                                   // the menu car's own lit lenses and glow sprites
+  g_braking = g_reversing = g_popOn = false;
+  g_tailOn = g_cfg.rear && g_mode != kOff;
+  g_lampsLit = g_mode != kOff;
+  if (!g_lampsLit) return;
+  float C[16];
+  if (!menu_root(groups, C)) {                         // not drawn this frame: the lamps stay where they were
+    if (++g_menuRootMissed == 1 || g_menuRootMissed % 3600 == 0)
+      hlog(L"headlights: menu car not found among this frame's car draws (%zu groups); %u frames so far", groups.size(), g_menuRootMissed);
+    for (Lamp& l : g_lamps) if (l.h) { g_api->DrawLightInstance(l.h); l.sent = g_frameNo; }
+    return;
+  }
+  send_lamps(C, L"menu");
+}
+
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   cockpit_glass_find();                                  // cockpit: the windscreen as drawn this frame
   ++g_frameNo;
+  // headlights.ini saved while driving (F3 > Headlights > Save, or an editor) applies within a second (user 2026-11-07).
+  if (g_frameNo % 60 == 0) {
+    static FILETIME s_seen = {};
+    wchar_t path[MAX_PATH * 2] = {};
+    rbrrtx_config_path(L"RBRRTX_HEADLIGHTS", L"headlights.ini", path, MAX_PATH * 2);
+    WIN32_FILE_ATTRIBUTE_DATA fa = {};
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+      const bool first = s_seen.dwLowDateTime == 0 && s_seen.dwHighDateTime == 0;
+      if (!first && CompareFileTime(&fa.ftLastWriteTime, &s_seen) != 0) {
+        load_settings();
+        hlog(L"headlights: headlights.ini changed, settings read again");
+      }
+      s_seen = fa.ftLastWriteTime;
+    }
+  }
   g_rootThisFrame = g_predThisFrame = false;            // windscreen drops: placed from the next frame's draws
   const bool keyed = rbrrtx_key_pressed(RBRKEY_HEADLIGHTS);
-  g_emitted = false;                                     // emitted at the next first BeginScene
-  if (layerOn && g_track >= 0) {                         // with every car draw of the frame
-    measure_frame();
-    track_drift();
+  // Remix Plus keeps a created light drawn every frame until it is destroyed: a frame that lit the lamps but sent none (no
+  // pose, no body, no object) left them hanging where the last frame put them (user 2026-11-02: the lamps "stay where braking
+  // started"). They go out instead, and the log says when and which pose source ran last.
+  if (g_lampsLit && g_emitted && !g_sentThisFrame && g_track >= 0) {
+    bool live = false;
+    for (const Lamp& l : g_lamps) live = live || l.h;
+    if (live) {
+      destroy_all();
+      static unsigned s_stale = 0;
+      if (++s_stale <= 10 || s_stale % 600 == 0)
+        hlog(L"headlights: a frame lit the lamps but sent none (last pose source %s, body frames %u, held %u, braking %d): lamps removed instead of left hanging (%u times)",
+             g_poseSrc, g_bodyFrames, g_bodyHeld, g_braking ? 1 : 0, s_stale);
+    }
   }
-  g_groups.clear();
+  g_emitted = g_refined = g_sentThisFrame = false;       // lamp states at the next first BeginScene
+  if (layerOn && g_track >= 0) measure_frame();          // with every car draw of the frame
+  if (!g_groups.empty()) ++g_worldCarFrames;
+  std::vector<Group> groups;
+  groups.swap(g_groups);
   if (!g_cfg.enabled || !g_api) return;
   RbrStageInfo si;
   const bool stage = in_stage(&si);
+  float menuEl = 0.0f;
+  if (!stage && layerOn && rbrrtx_menu_sun_elevation(&menuEl)) { menu_lamps(si, menuEl, groups); return; }
+  if (g_menuCar) {                                     // out of the menu: its lamps go, a stage decides afresh
+    g_menuCar = g_menuDark = false;
+    set_mode(kOff, L"left the menu");
+    g_gameLampsSent = -1;
+    g_hhWorld = nullptr;
+  }
   if (!stage || !layerOn) {
     if (g_mode != kOff && !stage) set_mode(kOff, L"left the stage");
     if (!layerOn) destroy_all();
-    if (!stage) { g_track = -1; g_manual = false; g_dark = false; g_gameLampsSent = -1; g_hhWorld = nullptr; }
+    if (!stage) { g_track = -1; g_manual = false; g_autoWant = -1; g_gameLampsSent = -1; g_hhWorld = nullptr; }
     return;
   }
   if (si.trackId != g_track || si.carId != g_carSlot) {  // new stage or car: read the model, automatic again
     g_track = si.trackId;
     g_carSlot = si.carId;
     g_manual = false;
-    g_dark = false;
+    g_autoWant = -1;
     g_solved = g_failed = 0;
     g_off = Offset();
     g_haveLastPhys = false;
     g_braking = g_popSeen = g_popActive = false;
-    g_drift = {};
-    g_driftMax = 0.0f;
-    g_driftFrames = 0;
-    g_gameLampsSent = -1;                              // the stage's world starts with the model ini's states
+    g_histN = 0;                                       // pose history and body tracking start again (the lag stays:
+    g_bodyFrames = 0;                                  // it is the game's timing, not the car's)
+    g_bodyHeld = 0;
+    g_bodyGapMax = 0.0f;
+    g_bodyPrimsRef = 0;
+    g_gameLampsSent = -1;                            // the stage's world starts with the model ini's states
     g_hhWorld = nullptr;
     const std::wstring model = car_model_path(si.carId);
     const size_t slash = model.find_last_of(L"\\/"), dot = model.find_last_of(L'.');
@@ -1341,19 +2136,84 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
     if (model != g_car.file) load_car_model(model);
     auto known = g_offsetByModel.find(g_car.file);         // measured earlier this session
     if (known != g_offsetByModel.end()) { g_off.d = known->second; g_off.locked = true; }
+    if (g_cfg.poseLag >= 0.0f) { g_lag = g_cfg.poseLag; g_lagKnown = true; }
   }
   if (keyed) {
     g_manual = true;
     set_mode(g_mode == kOff ? kPair : g_mode == kPair ? kBrights : kOff, rbrrtx_key_name(RBRKEY_HEADLIGHTS));
   }
-  const bool dark = sunElevation < g_cfg.autoBelow;
-  if (!g_manual && dark != g_dark) {
-    wchar_t why[64];
-    swprintf_s(why, L"sun %.1f deg, %s %.0f", sunElevation, dark ? L"below" : L"above", g_cfg.autoBelow);
-    set_mode(dark ? g_cfg.autoMode : kOff, why);
+  {                                                    // steps of 0.02: no lamp update every frame
+    const float t = std::clamp((sunElevation - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
+    g_dayK = std::round((1.0f + (g_cfg.dayIntensity - 1.0f) * t) * 50.0f) / 50.0f;
+    // day_intensity dims the automatic day running lights only: lamps switched on with the key are at full strength
+    // (user 2026-11-07: with day_intensity 0 the L key did nothing by day).
+    if (g_manual) g_dayK = 1.0f;
   }
-  g_dark = dark;
+  const int want = auto_mode_for(sunElevation);
+  if (!g_manual && want != g_autoWant) {
+    wchar_t why[96];
+    if (g_cfg.dayRunning) swprintf_s(why, L"day running lights; sun %.1f deg, brights below %.0f", sunElevation, g_cfg.brightsBelow);
+    else swprintf_s(why, L"sun %.1f deg, lamps below %.0f", sunElevation, g_cfg.autoBelow);
+    set_mode(want, why);
+  }
+  g_autoWant = want;
   sync_game_lamps();
+}
+
+// ---- lamp halo twin: RBR's light.dds (a white disc, alpha 255 in the middle, 0 at the edge; measured from the DXT3 dump of
+// 660BCAB491C6BCCA) redrawn with the same middle and a steeper, smaller edge. Same use as the lit-parts twins: bound for
+// the draws of that texture only, Remix sees an ordinary texture (no tag of the original hash is needed).
+namespace {
+
+IDirect3DTexture9* g_haloTex = nullptr;
+
+float halo_original(float rho) {                       // the game's alpha at radius rho (1 = the texture's edge)
+  static const float t[9] = { 1.0f, 1.0f, 0.933f, 0.83f, 0.63f, 0.40f, 0.165f, 0.03f, 0.0f };
+  if (rho >= 1.0f) return 0.0f;
+  const float x = rho * 8.0f;
+  const int i = static_cast<int>(x);
+  return t[i] + (t[i + 1] - t[i]) * (x - static_cast<float>(i));
+}
+
+float halo_alpha(float rho) {
+  const float a = halo_original(rho);
+  if (rho <= g_cfg.haloCore) return a;
+  const float t = (rho - g_cfg.haloCore) / (1.0f - g_cfg.haloCore);
+  if (t >= g_cfg.haloScale) return 0.0f;
+  return a * std::pow(1.0f - t / g_cfg.haloScale, g_cfg.haloFalloff);
+}
+
+}  // namespace
+
+unsigned long long rbrrtx_headlights_halo_texture() {
+  return g_cfg.enabled && g_cfg.halo ? g_cfg.haloTexture : 0;
+}
+
+void* rbrrtx_headlights_halo_twin(void* device) {
+  if (!g_haloStale) return g_haloTex;                  // (nullptr if the last build failed: not retried until the settings change)
+  if (g_haloTex) { g_haloTex->lpVtbl->Release(g_haloTex); g_haloTex = nullptr; }
+  g_haloStale = false;
+  IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+  if (FAILED(dev->lpVtbl->CreateTexture(dev, 64, 64, 7, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &g_haloTex, nullptr)) || !g_haloTex) {
+    g_haloTex = nullptr;
+    return nullptr;
+  }
+  for (UINT l = 0; l < 7; ++l) {
+    D3DLOCKED_RECT lr = {};
+    if (FAILED(g_haloTex->lpVtbl->LockRect(g_haloTex, l, &lr, nullptr, 0)) || !lr.pBits) continue;
+    const int n = 64 >> l;
+    for (int y = 0; y < n; ++y) {
+      uint32_t* row = reinterpret_cast<uint32_t*>(static_cast<char*>(lr.pBits) + y * lr.Pitch);
+      for (int x = 0; x < n; ++x) {
+        const float dx = (x + 0.5f) / n - 0.5f, dy = (y + 0.5f) / n - 0.5f;
+        const float a = std::clamp(halo_alpha(2.0f * std::sqrt(dx * dx + dy * dy)), 0.0f, 1.0f);
+        row[x] = (static_cast<uint32_t>(a * 255.0f + 0.5f) << 24) | 0x00FFFAFFu;   // the game's white (255, 250, 255)
+      }
+    }
+    g_haloTex->lpVtbl->UnlockRect(g_haloTex, l);
+  }
+  hlog(L"headlights: lamp halo twin built (core %.2f, scale %.2f, falloff %.1f)", g_cfg.haloCore, g_cfg.haloScale, g_cfg.haloFalloff);
+  return g_haloTex;
 }
 
 unsigned long long rbrrtx_headlights_pop_texture() {
@@ -1366,29 +2226,40 @@ void rbrrtx_headlights_pop_drawn() {
   g_lastPop = std::chrono::steady_clock::now();
 }
 
+// NUMOS's lamp glow in fog is a froxel grid with 32 frames of history reprojected with the camera only: a lamp that
+// moves with the car leaves a trail (user 2026-10-29). Lamps sent within the last 90 frames (no flapping with brake
+// pulses): the shorter history to ask for, else 0.
+int rbrrtx_headlights_history_frames() {
+  return g_cfg.historyFrames >= 1.0f && g_lampFrame != 0 && g_frameNo - g_lampFrame < 90 ? static_cast<int>(g_cfg.historyFrames) : 0;
+}
+
 bool rbrrtx_headlights_keep_fallback() { return g_mode != kOff && g_cfg.enabled && g_cfg.fallbackOn; }
 
-void rbrrtx_headlights_destroy() { destroy_all(); }
+void rbrrtx_headlights_destroy() {
+  destroy_all();
+  if (g_poseCsv) fflush(g_poseCsv);
+}
 
 void rbrrtx_headlights_status(wchar_t* out, size_t n) {
   swprintf_s(out, n, L"headlights: %s%s, model %s (lamps %s, rear %s, exhaust %s), auto below sun %.1f deg, placed %u / not placed %u frames; "
-             L"brake lights %s; backfire draws %u, flashes %u; drawn car %.2f m from RBR's object (max %.2f this stage)",
+             L"brake lights %s; backfire draws %u, flashes %u; drawn car %.2f m from RBR's object (max %.2f this stage), drawn %.0f ms "
+             L"behind it (%s, %d samples, %u refused), body matched %u / missed %u frames",
              mode_name(g_mode), g_manual ? L" (set by key)" : L" (automatic)", g_car.file.empty() ? L"none" : g_car.file.c_str(),
              g_car.lamps ? L"from model" : L"fallback", g_car.rear ? L"yes" : L"no", g_car.exhaust ? L"yes" : L"no",
              g_cfg.autoBelow, g_solved, g_failed, g_braking ? L"ON" : L"off", g_popDraws, g_popFlashes,
-             len(g_drift), g_driftMax);
+             g_bodyGap, g_bodyGapMax, g_lag * 1000.0f, g_cfg.poseLag >= 0.0f ? L"set in headlights.ini" : g_lagKnown ? L"measured" : L"not measured yet",
+             g_lagN, g_lagRefused, g_bodyMatched, g_bodyMissed);
 }
 
 // Lit lamp textures made emissive (user 2026-10-23: the lamps should look lit inside). Some cars draw their lamps
 // with their own lit texture when the lamp is on (BMW M3 E30: lights_lit.dds, Remix 0xAE5889DDDA655C65, shown by
 // e_light_*_lit meshes; most other cars use their shared car atlas, which cannot glow per texture). Before Remix
-// starts, every Cars\*\*_shaders.ini texture entry named *_lit*.dds is hashed as Remix does (XXH3_64 of mip 0) and a
-// local mod <mods>\rbr_rtx_lit\mod.usda gives that texture hash an emissive material whose emission texture is the
-// player's own file (absolute path: nothing is copied or shipped). headlights.ini lit_glow = emissive intensity
-// (0 = no mod). The file is rewritten only when its content changes.
+// starts, every Cars\*\*_shaders.ini texture entry named *_lit*.dds is hashed as Remix does (XXH3_64 of mip 0) and
+// the generated mod (genmod.cpp, section "lit") gives that texture hash an emissive material whose emission texture is
+// the player's own file (absolute path: nothing is copied or shipped). headlights.ini lit_glow = emissive intensity
+// (0 = none). Cars whose lamps are lit parts of the shared atlas: litparts.cpp.
 // game = game folder with a trailing backslash. Returns the number of textures made emissive.
-size_t write_lit_mod_for(const std::wstring& game, const wchar_t* modsDir, float glow) {
-  const std::wstring dir = std::wstring(modsDir) + L"\\rbr_rtx_lit", file = dir + L"\\mod.usda";
+size_t write_lit_mod_for(const std::wstring& game, float glow) {
   std::string body;
   std::unordered_map<unsigned long long, bool> seen;
   WIN32_FIND_DATAW fd = {};
@@ -1437,56 +2308,25 @@ size_t write_lit_mod_for(const std::wstring& game, const wchar_t* modsDir, float
       const unsigned long long hx = rbrrtx_xxh3(d.data() + 128, size);
       if (seen.count(hx)) continue;
       seen[hx] = true;
-      char u8[MAX_PATH * 4] = {};                      // USD asset paths are UTF-8
-      WideCharToMultiByte(CP_UTF8, 0, tex.c_str(), -1, u8, sizeof(u8), nullptr, nullptr);
-      std::string abs(u8);
-      for (char& c : abs) if (c == '\\') c = '/';
-      char m[1024];
-      sprintf_s(m,
-                "        # %s\n"
-                "        def Material \"mat_%016llX\"\n"
-                "        {\n"
-                "            def Shader \"Shader\"\n"
-                "            {\n"
-                "                uniform token info:implementationSource = \"sourceAsset\"\n"
-                "                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@\n"
-                "                uniform token info:mdl:sourceAsset:subIdentifier = \"AperturePBR_Opacity\"\n"
+      const std::string abs = rbrrtx_genmod_asset(tex);
+      char in[MAX_PATH * 4 + 256];
+      sprintf_s(in,
                 "                bool inputs:enable_emission = 1\n"
                 "                asset inputs:emissive_mask_texture = @%s@ (\n"
                 "                    colorSpace = \"auto\"\n"
                 "                )\n"
-                "                float inputs:emissive_intensity = %.3f\n"
-                "                token outputs:out\n"
-                "            }\n"
-                "        }\n",
-                abs.c_str(), hx, abs.c_str(), glow);
-      body += m;
+                "                float inputs:emissive_intensity = %.3f\n",
+                abs.c_str(), glow);
+      body += rbrrtx_genmod_material(hx, abs, in);
     }
   }
   if (h != INVALID_HANDLE_VALUE) FindClose(h);
-  std::string old;
-  {
-    std::ifstream in(file, std::ios::binary);
-    old.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  }
-  if (body.empty()) {
-    if (!old.empty()) { DeleteFileW(file.c_str()); RemoveDirectoryW(dir.c_str()); }
-    hlog(L"headlights: no lit lamp textures made emissive (lit_glow %.2f)", glow);
-    return 0;
-  }
-  const std::string usda = "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n\n# Written by RBR-RTX (headlights.cpp) at game start from the installed cars; do not edit.\n"
-                           "def Xform \"RootNode\"\n{\n    def Scope \"Looks\"\n    {\n" + body + "    }\n}\n";
-  if (usda != old) {
-    CreateDirectoryW(dir.c_str(), nullptr);
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out << usda;
-  }
-  hlog(L"headlights: %zu lit lamp texture(s) made emissive (intensity %.2f) in %s%s", seen.size(), glow, file.c_str(),
-       usda != old ? L" (written)" : L"");
+  rbrrtx_genmod_set("lit", body);
+  hlog(L"headlights: %zu lit lamp texture(s) made emissive (intensity %.2f, generated mod)", seen.size(), glow);
   return seen.size();
 }
 
-void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir) {
+void rbrrtx_headlights_write_lit_mod() {
   wchar_t path[MAX_PATH * 2] = {};
   rbrrtx_config_path(L"RBRRTX_HEADLIGHTS", L"headlights.ini", path, MAX_PATH * 2);
   const float glow = ini_float(path, L"lit_glow", 3.0f);
@@ -1495,5 +2335,24 @@ void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir) {
   wchar_t* slash = (n > 0 && n < MAX_PATH) ? wcsrchr(exe, L'\\') : nullptr;
   if (!slash) return;
   slash[1] = 0;
-  write_lit_mod_for(exe, modsDir, glow);
+  write_lit_mod_for(exe, glow);
 }
+
+// For litparts.cpp: the game's own lamp switch as last sent (1 on, 0 off), -1 when not switched by us (game_lamps 0,
+// switch not found, not on a stage).
+int rbrrtx_headlights_game_lamps() {
+  return g_cfg.enabled && g_cfg.gameLamps && (g_track >= 0 || g_menuCar) && g_hhWorld && g_gameLampsSent >= 0 ? g_gameLampsSent : -1;
+}
+
+// The matrix the car's body was drawn with this frame (the car draw group with the most triangles: the body node
+// draws ~20 meshes with one matrix), for litparts.cpp to tell lamp lenses (on the body) from brake discs (on the
+// wheels). Valid until this frame's headlights_frame_end.
+bool rbrrtx_car_body_draw(float m[16]) {
+  const Group* best = nullptr;
+  for (const Group& g : g_groups) if (!best || g.prims > best->prims) best = &g;
+  if (!best || best->prims < 200) return false;
+  std::memcpy(m, best->m, sizeof(best->m));
+  return true;
+}
+
+const wchar_t* rbrrtx_car_model_path() { return g_track >= 0 || g_menuCar ? g_car.file.c_str() : L""; }

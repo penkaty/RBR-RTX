@@ -45,6 +45,21 @@ bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]);
 // harvest.cpp: writes mip 0 of a 2D texture to a .dds through a READONLY lock (frame dump; through the Remix bridge
 // that is the client's copy, the bytes it sent). False if the type or format is not handled or the lock fails.
 bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path);
+bool rbrrtx_save_texture_dds_mips(void* base_texture, const wchar_t* path);   // ... the whole mip chain (a replacement file)
+
+// gaugeprobe.cpp: RBRHUD gauge / display probe (dev tool; RBRRTX_GAUGE_PROBE=1 / launcher -GaugeProbe). Every call site
+// checks rbrrtx_gauge_probe_on first, so nothing runs when it is off. Log: rbrrtx_gauge_probe.log in the run logs.
+extern bool rbrrtx_gauge_probe_on;
+void rbrrtx_gauge_probe_init(void* device);                   // patches SetTexture / SetPixelShaderConstantB / CreateRenderTarget
+void rbrrtx_gauge_probe_texture(void* tex, unsigned w, unsigned h, unsigned levels, DWORD usage, int format, int pool);   // CreateTexture result
+void rbrrtx_gauge_probe_update(void* src, void* dst);         // UpdateTexture(src, dst) succeeded
+void rbrrtx_gauge_probe_vs(void* vs, const void* bytecode, const wchar_t* gameName);   // CreateVertexShader result
+void rbrrtx_gauge_probe_rt(void* surface);                    // SetRenderTarget(0, surface)
+void rbrrtx_gauge_probe_draw(void* vs, bool primaryRT);       // top of every draw
+void rbrrtx_gauge_probe_skip(const wchar_t* why);             // the compat layer skipped the draw just announced
+void rbrrtx_gauge_probe_event(const wchar_t* text);
+void rbrrtx_gauge_probe_mark();                               // stage-report mark key (9): dump everything tracked
+void rbrrtx_gauge_probe_frame();                              // each Present
 
 // alphacut.cpp: alpha-card cut-outs (adr-001 tiers 2-3). For the current alpha-tested DrawIndexedPrimitive
 // (TRIANGLELIST), our copy of its cards clipped to the stage-0 texture's outline: draw `tris` triangles from
@@ -93,6 +108,8 @@ const wchar_t* rbrrtx_wetness_name(int wetness);
 struct StageWeather {
   bool found = false;
   std::wstring section, description;
+  std::wstring descriptionAbove;                               // comment lines right above the section header (<= 2 lines, <= 60 chars)
+  bool descAbove = false;                                      // description is that comment (the section has no words of its own)
   bool useFog = true, haveUseFog = false;
   int haveFog = 0;                                             // bit 1 FogStart, bit 2 FogEnd
   float fogStart = 0.0f, fogEnd = 0.0f, fogCol[3] = { -1.0f, -1.0f, -1.0f };
@@ -108,26 +125,124 @@ bool rbrrtx_screenshot(HWND wnd, const wchar_t* png_path, double* mean_luma);
 // exception_trace.cpp
 void rbrrtx_exception_trace_install();
 
+// remixplus_api.cpp: the Remix API on Remix Plus (API 1.0.0) behind NVIDIA's table layout (third_party/remix_c.h).
+// Fills `nvTable` (a remixapi_Interface, `size` bytes); returns the remixapi_ErrorCode (0 = success).
+int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size);
+unsigned rbrrtx_remixplus_converted();                         // pNext chains rebuilt for Remix Plus so far
+// Remix Plus calls beyond NVIDIA's table (Kim's header types; null = the runtime/bridge lacks it). For the API world.
+struct RbrApiExt {
+  void *createRetained, *updateRetained, *destroyRetained, *drawRetained, *importD3D9Texture, *createMeshBatched,
+       *setupCamera, *createMaterial, *drawInstance, *destroyMesh, *destroyMaterial, *destroyTexture, *setGameValue, *getGameValue;
+  unsigned long long version;                                  // the API version the library accepted
+};
+const RbrApiExt* rbrrtx_api_ext();                              // nullptr before init / without Remix Plus
+void rbrrtx_remixplus_frame();                                 // after each Present: a new frame for the light hashes
+unsigned rbrrtx_remixplus_renames();                           // light creates renamed (their hash destroyed that frame)
+bool rbrrtx_remix_plus();                                      // comp.cpp: the API runs through remixplus_api.cpp
+
 // headlights.cpp: car headlights as Remix API spot lights (headlights key: two lamps -> brights -> off;
-// on by themselves below auto_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
+// day running lights, brights below brights_below_sun; rbr-rtx\config\headlights.ini). Lamp positions from the car model's nodes.
 struct remixapi_Interface;
 void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Remix API: headlights off
 // each car draw on the primary target (row-major W); cockpitGlass = CarGlassInternal.vso (the windscreen seen from the cockpit)
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended, bool cockpitGlass);
 void rbrrtx_headlights_emit();                                 // once per frame at the first BeginScene (with the sun)
+void rbrrtx_headlights_refine();                               // before Remix takes the frame's lights (UI trigger, else Present)
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
 void rbrrtx_headlights_destroy();
+int rbrrtx_headlights_history_frames();                          // NUMOS froxel history while car lamps are lit (0 = none)
 bool rbrrtx_headlights_keep_fallback();                        // lights on and keep_fallback_light: Remix fallback light Always
 unsigned long long rbrrtx_headlights_pop_texture();            // Remix hash of the backfire sprite to watch for (0 = none now)
+unsigned long long rbrrtx_headlights_halo_texture();            // Remix hash of the lamp halo sprite (light.dds), 0 = leave it
+void* rbrrtx_headlights_halo_twin(void* device);               // its thinned twin texture to bind (nullptr = none)
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
-void rbrrtx_headlights_write_lit_mod(const wchar_t* modsDir);  // before Remix starts: lit lamp textures made emissive
+void rbrrtx_headlights_write_lit_mod();                         // before Remix starts: lit lamp textures made emissive (genmod)
+int rbrrtx_headlights_game_lamps();                             // the game's lamp switch as last sent: 1 on, 0 off, -1 unknown
+const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
+bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
+float rbrrtx_sun_shown_elevation();                             // the sun's height as lit now (comp.cpp; debug sun, night hold)
+bool rbrrtx_car_body_draw(float m[16]);                         // the matrix the car body was drawn with this frame (headlights.cpp)
+float rbrrtx_numos_lux_per_unit();                              // lux per unit of API light irradiance under NUMOS; 0 without
 void rbrrtx_headlights_status(wchar_t* out, size_t n);
 int rbrrtx_car_body_visible();                                 // 1 outside view (body drawn), 0 cockpit, -1 not known yet
 void rbrrtx_headlights_camera(const float camToWorld[16]);     // comp.cpp: this frame's camera (cockpit = camera in the cabin)
 
+// worldlights.cpp: lamps the game only paints (street lamps, the menu's lamp post) as Remix sphere lights from dusk to
+// dawn; rbr-rtx\config\lights.ini [lamp.<name>] texture = <Remix hash>.
+void rbrrtx_world_lights_init(const remixapi_Interface* api);
+bool rbrrtx_world_lights_wanted();                              // any lamp texture listed (else no per-draw work)
+bool rbrrtx_world_lights_texture(unsigned long long hash);
+// Lamp in an atlas: its TEXCOORD0 rectangles (count, up to max); poleMinHeight > 0 = keep only groups on a pole;
+// anchor: 0 top, 1 centre, 2 bottom of each group.
+int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight, int* anchor);
+void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
+void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
+void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
+void rbrrtx_world_lights_reload();
+// rbrhud.cpp: the cockpit windscreen with RBRHUD's F4 opacity / threshold (rbrhud.ini [windscreen]); nullptr = unchanged.
+bool rbrrtx_rbrhud_windscreen(float* opacity, float* threshold, bool* regionsOnly);   // RBRHUD F4 windscreen settings, while opacity < 1
+// An F3 emissive prop that casts light (custom.cpp): a lamp kind for its texture; lumens <= 0 removes it. Lamps go and are
+// found again from the next draws.
+void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
+                                  const float dir[3], int aim, const float aimAt[3], int always, const float offset[3],
+                                  const float (*rects)[4] = nullptr, int nrects = 0, int anchor = 1);                              // lights*.ini read again (after the lamp_mark key; lamps go)
+float rbrrtx_world_lights_mark_glow();                         // lights.ini [lights] mark_glow: the glow a new lamp mark gets
+void rbrrtx_world_lights_startup();                             // before the backend loads, after rbrrtx_genmod_init: glowing lamp materials of earlier runs
+// A draw with a marked lamp texture (kind with glow > 0) while the lamps are on: the twin texture to bind (its generated
+// material = the texture + an emissive mask on the marked rectangles), else nullptr. baseTexture = what is bound now.
+void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* baseTexture, bool inMenu);
+// apiworld.cpp: static stage draws as retained Remix API instances on Kim's runtime (materials.ini [api_world]).
+struct RbrWorldDraw { int base; unsigned minIdx, numV, startIdx, prims; bool sway; };
+void rbrrtx_apiworld_init(const RbrApiExt* ext);                // after the API is up (null = unavailable)
+bool rbrrtx_apiworld_wants(bool sway);                          // this class is taken now
+bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d); // true = its instance draws it: skip the D3D9 draw
+void rbrrtx_apiworld_replay();                                  // first BeginScene of a frame
+void rbrrtx_apiworld_frame_end(const float* viewProj, bool active);   // Present (viewProj null = no world camera)
+void rbrrtx_apiworld_reset(const wchar_t* why);                 // menu <-> stage, device released
+void rbrrtx_apiworld_forget(const void* buffer);                // the game created a buffer at this address
+void rbrrtx_apiworld_written(const void* buffer);               // the game locked a buffer for writing
+void rbrrtx_watch_buffer_writes(void* vb, void* ib);           // comp.cpp: report write locks of these buffers' kinds
+// hudglow.cpp: RBRHUD gauge displays (s0 render target + s15 emissive mask) glow through Kim's material protocol.
+void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol); // materials.ini [hud_glow]; patches SetTexture / SetPixelShaderConstantB
+void rbrrtx_hudglow_before(void* device);                       // around each D3D9 draw sent to Remix
+void rbrrtx_hudglow_after(void* device);
+void rbrrtx_hudglow_forget();                                   // stage / device change: texture pointers may be reused
+void rbrrtx_hudglow_log();                                      // periodic count line
+const wchar_t* rbrrtx_apiworld_cycle();                         // key: all -> foliage only -> off
+
+// genmod.cpp: the generated Remix mod <mods>\rbr_rtx_lit\mod.usda (sections "lit", "litparts", "foliage"); Remix reloads
+// it when it changes. init before the backend loads; flush writes now; tick (per Present) writes a change at most
+// every few seconds.
+void rbrrtx_genmod_init(const wchar_t* modsDir);
+const wchar_t* rbrrtx_genmod_dir();                            // <mods>\rbr_rtx_lit ("" before init)
+void rbrrtx_genmod_set(const char* section, const std::string& materials);
+void rbrrtx_genmod_flush(const wchar_t* why);
+void rbrrtx_genmod_tick();
+std::string rbrrtx_genmod_material(unsigned long long hash, const std::string& comment, const std::string& inputs);
+std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as a USD asset path (UTF-8, forward slashes)
+// litparts.cpp: lit car parts (hot brake discs, lit lamp lenses) glow: learnt per car, drawn with a twin texture whose
+// generated material is emissive. Settings: config\materials.ini [lit_parts].
+void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
+void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
+void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world);
+void rbrrtx_litparts_status(wchar_t* out, size_t n);
+void rbrrtx_litparts_destroy();
+// foliage.cpp: swaying foliage textures get Remix thin-opaque (subsurface) materials. Settings: materials.ini [foliage].
+void rbrrtx_foliage_startup();                                 // before the backend loads, after rbrrtx_genmod_init
+void rbrrtx_foliage_draw(void* texture);                       // a swaying foliage draw's stage-0 texture
+void rbrrtx_foliage_frame(bool inMenu);                        // per Present; new foliage reaches the mod in the menu only
+void rbrrtx_foliage_status(wchar_t* out, size_t n);
+// comp.cpp: set a Remix option through the API (logged to rbrrtx_api_options.log; dropped from user.conf at the next start
+// if listed in d3d9_proxy.cpp proxy_owned_option). False before the API is up.
+bool rbrrtx_remix_set(const char* key, const char* value);
+// wetness.cpp: rtx.wet.globalWetness from the stage (track Dry/Damp/Wet, the game's rain over time); wetness.ini
+void rbrrtx_wetness_frame(bool hold);                         // per Present; hold = a sweep owns the options
+float rbrrtx_wetness_now();
+
 // particles.cpp: Remix particles test build (docs/research/particles-remix.md): RBRRTX_EMIT_PROBE logs RBR's
 // CEmitter_Emit calls, RBRRTX_PARTICLE_TEST = Remix dust at the wheels (key dust = 7) and the game's dust never spawned.
 void rbrrtx_particles_init(const remixapi_Interface* api);    // nullptr = no Remix API: probe only
+void rbrrtx_particles_menu_rain(float percent);                // rain in the main menu's weather, percent as the game's intensity; 0 = none
 void rbrrtx_particles_emit(bool sweeping);                     // once per frame at the first BeginScene; none during a sweep
 void rbrrtx_particles_frame_end();                            // per Present: key, probe report
 void rbrrtx_particles_destroy();
@@ -171,10 +286,11 @@ void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed);
 enum RbrKey {
   RBRKEY_DUMP, RBRKEY_LAYER, RBRKEY_SUN, RBRKEY_FOLIAGE, RBRKEY_DUST, RBRKEY_WINDSCREEN, RBRKEY_SKY,
   RBRKEY_DEBUG_SUN, RBRKEY_SUN_LEFT, RBRKEY_SUN_RIGHT, RBRKEY_SUN_DOWN, RBRKEY_SUN_UP, RBRKEY_EXPERIMENT, RBRKEY_CULLING,
-  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_COUNT
+  RBRKEY_SUN_BRIGHTER, RBRKEY_SUN_DIMMER, RBRKEY_FF_SCENERY, RBRKEY_SWEEP, RBRKEY_RAYTRACING, RBRKEY_OPAQUE_ALPHA, RBRKEY_ALPHACUT, RBRKEY_REPORT, RBRKEY_SUN_SAVE, RBRKEY_GROUND_LAYER, RBRKEY_HEADLIGHTS, RBRKEY_FOLIAGE_NORMALS, RBRKEY_RAIN, RBRKEY_BOUNCES, RBRKEY_API_WORLD, RBRKEY_LAMP_MARK, RBRKEY_MENU, RBRKEY_FF_CAR, RBRKEY_COUNT
 };
 // <env> if set, else <proxy dir>\rbr-rtx\config\<file>.
 void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, size_t size);
+void rbrrtx_lights_marked_path(wchar_t* out, size_t size, bool create);  // lights-marked.ini next to lights.ini
 void rbrrtx_keys_load();
 // True once per press (call every frame), only while the game window has the focus, Ctrl is up and Alt is held
 // only for Alt+ keys.
@@ -182,3 +298,28 @@ bool rbrrtx_key_pressed(int action);
 // True while held (same conditions).
 bool rbrrtx_key_held(int action);
 const wchar_t* rbrrtx_key_name(int action);
+const wchar_t* rbrrtx_key_label(int action);                   // what the action does (Info page of the F3 menu)
+// Windows key code of the action (0 = none). withAlt false: 0 as well for an Alt+ key (the F3 menu reads plain key messages).
+int rbrrtx_key_vk(int action, bool withAlt);
+
+// menu/menu.cpp (the F3 menu): hooks pass their calls through while it draws; the wetness driver leaves options alone
+// that the user moved in the menu (key such as "rtx.wet.globalWetness"; value = the menu's).
+extern "C" int rbrrtx_menu_is_drawing(void);
+extern "C" int rbrrtx_menu_option_locked(const char* key, float* value);
+extern "C" void rbrrtx_menu_release_stage_locks(void);
+// comp.cpp: DLL_PROCESS_DETACH through FreeLibrary: the menu and its window subclass go.
+void rbrrtx_comp_shutdown();
+
+// dinput_block.cpp: neutral DirectInput state while the F3 menu is open (vtable patch of GetDeviceState / GetDeviceData;
+// RBRRTX_MENU_BLOCK_INPUT=0 leaves it out). Install after the menu exists; remove at exit.
+void rbrrtx_dinput_block_install();
+
+// custom.cpp (+ custom.hpp): lights and emissives made in the F3 menu (pages Lights, Windows); menu.ini [lights.<stage>], [emissive], [windows].
+void rbrrtx_custom_init(const remixapi_Interface* api);
+void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on);               // per Present: the stage's custom lights
+bool rbrrtx_emit_wanted();                                                         // any emissive texture set (else no per-draw work)
+void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture, float night);   // twin texture to draw instead, or null
+void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value);
+int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* user);
+float rbrrtx_world_lights_night_fraction(float sunElevation);                     // 0..1: how far the street lamps are lit at that sun height
+void rbrrtx_dinput_block_remove();

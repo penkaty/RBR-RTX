@@ -7,6 +7,8 @@
 // Exception: a key written as Alt+<key> fires only while Alt is held (sun brightness Alt+N / Alt+M, user 2026-10-17).
 // Number row for toggles (0 ray tracing, 6 sky, 7 dust, 8 frame dump, 9 experiment; user 2026-10-22).
 // Backslash keeps the current sun for the stage (user 2026-10-22).
+// Letters (user 2026-10-30): every debug key on a letter is Alt+<letter> except L (headlights); where Alt+<letter> was
+// taken, the nearest free key: alpha_cut Alt+9, ff_scenery Alt+Comma, bounces Alt+0.
 //
 // keys.ini:  [keys]  <action> = <key>   key = a letter or digit, F1..F24, a name from kNames below, 0x<VK hex>,
 //            optionally with an Alt+ prefix, or none (action off). Missing file or entry = default.
@@ -22,33 +24,37 @@ constexpr int kAlt = 0x1000;                                 // in Action::vk: t
 // Order = RbrKey enum in common.hpp.
 Action g_actions[RBRKEY_COUNT] = {
   {L"frame_dump", '8', L"frame dump"},
-  {L"layer", 'O', L"RBR-RTX layer"},
+  {L"layer", kAlt | 'O', L"RBR-RTX layer"},
   {L"sun", kAlt | 'L', L"Remix sun"},                       // was L; L = headlights (user 2026-10-22)
-  {L"foliage", 'J', L"foliage mode"},
+  {L"foliage", kAlt | 'J', L"foliage mode"},
   {L"dust", '7', L"dust"},                                  // Remix API dust on/off (user 2026-10-23)
-  {L"windscreen", 'I', L"windscreen"},
+  {L"windscreen", kAlt | 'I', L"windscreen"},
   {L"sky", '6', L"sky mode"},
   {L"debug_sun", VK_OEM_2, L"debug sun"},                     // /  (was H until 2026-10-24, user)
-  {L"debug_sun_left", VK_OEM_4, L"debug sun turn left"},     // [
-  {L"debug_sun_right", VK_OEM_6, L"debug sun turn right"},   // ]
-  {L"debug_sun_down", VK_OEM_1, L"debug sun lower"},         // ;
-  {L"debug_sun_up", VK_OEM_7, L"debug sun raise"},           // '
+  {L"debug_sun_left", VK_OEM_4, L"debug sun: north heading left"},   // [
+  {L"debug_sun_right", VK_OEM_6, L"debug sun: north heading right"}, // ]
+  {L"debug_sun_down", VK_OEM_1, L"debug sun: time earlier"},       // ;
+  {L"debug_sun_up", VK_OEM_7, L"debug sun: time later"},         // '
   {L"experiment", kAlt | 'P', L"performance experiment run"},
-  {L"culling", 'U', L"distance culling on/off"},
+  {L"culling", kAlt | 'U', L"distance culling on/off"},
   {L"sun_brighter", kAlt | 'N', L"sun brightness +10 %"},
   {L"sun_dimmer", kAlt | 'M', L"sun brightness -10 %"},
-  {L"ff_scenery", 'K', L"fixed-function scenery mode"},
+  {L"ff_scenery", kAlt | VK_OEM_COMMA, L"fixed-function scenery mode"},   // Alt+K = sweep
   {L"sweep", kAlt | 'K', L"stage sweep (screenshots, debug views, texture hashes, report)"},
   {L"raytracing", '0', L"ray tracing on/off (raster comparison)"},
   {L"opaque_alpha", 0, L"opaque cut-outs without alpha test on/off"},   // no key: ~0 ms with OMM on (adr-001)
-  {L"alpha_cut", kAlt | 'O', L"alpha-card cut-outs (clipped foliage cards) on/off"},
+  {L"alpha_cut", kAlt | '9', L"alpha-card cut-outs (clipped foliage cards) on/off"},
   {L"report_mark", '9', L"stage report: mark a problem now"},
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
-  {L"ground_layer", kAlt | 'Y', L"ground second layer (two-texture blend decals) on/off"},
+  {L"ground_layer", kAlt | 'Y', L"ground second layer: bake -> decal -> off"},
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},
   {L"foliage_normals", kAlt | 'R', L"radial foliage normals on/off (prototype, foliage-normals.ini)"},
   {L"rain", kAlt | '7', L"game rain/snow cut on/off (rain probe runs)"},
-  {L"bounces", 'P', L"secondary ray bounces 2 <-> 1 (rtx.secondaryRayMaxInteractions)"},   // user 2026-10-24
+  {L"bounces", kAlt | '0', L"ray interactions: rtx.conf -> large (dense-forest test) -> secondary 1"},   // Alt+P = experiment
+  {L"api_world", kAlt | 'W', L"world through the Remix API: all -> foliage only -> off"},
+  {L"lamp_mark", kAlt | VK_PRIOR, L"lamp marker: aim the screen centre at a lamp head (lights-marked.ini)"},   // user 2026-11-02: Alt+PageUp (Alt+Insert before; user 2026-11-01 Alt+B quit the game)
+  {L"menu", VK_F3, L"in-game menu: wetness, texture tags, info (a plain key; read from the window messages)"},   // user 2026-11-02: F3
+  {L"ff_car", kAlt | VK_OEM_PERIOD, L"car without vertex capture on/off (compare the prof log)"},
 };
 bool g_prev[RBRKEY_COUNT] = {};
 wchar_t g_names[RBRKEY_COUNT][24] = {};
@@ -129,6 +135,27 @@ void rbrrtx_config_path(const wchar_t* env, const wchar_t* file, wchar_t* out, s
   swprintf_s(out, size, L"%s\\rbr-rtx\\config\\%s", dir, file);
 }
 
+// lights-marked.ini (the lamp_mark key): the folder lights.ini is loaded from, so a dev run (RBRRTX_LIGHTS = the package
+// config) and an installed game (<game>\rbr-rtx\config) both write where they read. RBRRTX_LIGHTS_MARKED overrides.
+// create = make the folder when it is missing.
+void rbrrtx_lights_marked_path(wchar_t* out, size_t size, bool create) {
+  DWORD n = GetEnvironmentVariableW(L"RBRRTX_LIGHTS_MARKED", out, static_cast<DWORD>(size));
+  if (!(n > 0 && n < size)) {
+    rbrrtx_config_path(L"RBRRTX_LIGHTS", L"lights.ini", out, size);
+    wchar_t* slash = wcsrchr(out, L'\\');
+    swprintf_s(slash ? slash + 1 : out, slash ? size - (slash + 1 - out) : size, L"lights-marked.ini");
+  }
+  if (!create) return;
+  wchar_t dir[MAX_PATH * 2];
+  wcscpy_s(dir, out);
+  wchar_t* slash = wcsrchr(dir, L'\\');
+  if (!slash) return;
+  *slash = 0;
+  for (wchar_t* c = dir + 3; *c; ++c)                          // every level after the drive root
+    if (*c == L'\\') { *c = 0; CreateDirectoryW(dir, nullptr); *c = L'\\'; }
+  CreateDirectoryW(dir, nullptr);
+}
+
 void rbrrtx_keys_load() {
   wchar_t path[MAX_PATH * 2] = {};
   rbrrtx_config_path(L"RBRRTX_KEYS", L"keys.ini", path, MAX_PATH * 2);
@@ -181,4 +208,14 @@ bool rbrrtx_key_held(int action) {
 
 const wchar_t* rbrrtx_key_name(int action) {
   return (action >= 0 && action < RBRKEY_COUNT) ? g_names[action] : L"?";
+}
+
+const wchar_t* rbrrtx_key_label(int action) {
+  return (action >= 0 && action < RBRKEY_COUNT) ? g_actions[action].label : L"";
+}
+
+int rbrrtx_key_vk(int action, bool withAlt) {
+  if (action < 0 || action >= RBRKEY_COUNT) return 0;
+  const int vk = g_actions[action].vk;
+  return (vk & kAlt) && !withAlt ? 0 : (vk & 0xFF);
 }

@@ -628,6 +628,7 @@ void mark(const LARGE_INTEGER& now, const RbrReportFrame& f) {
   ev(line);
   g_rec.markLines.push_back(line);
   rbrrtx_log_to(L"rbrrtx_comp.log", L"report: %s", line);
+  if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_mark();
   if (g_rec.burstAt) write_burst();                        // a second mark before the first burst was written
   g_rec.markFrame = g_rec.ringFrames;
   g_rec.burstAt = g_rec.ringFrames + kBurstAfter;

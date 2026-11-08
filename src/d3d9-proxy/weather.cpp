@@ -3,7 +3,9 @@
 // RBR picks a stage's look from Maps\<id>...\TrackSettings<id>.ini, section [<id><T>_<sky>_<clouds>] or
 // [<id>O_<T>_<sky>_<clouds>] (T = M/N/E). Many stage makers describe what the section really shows: a Comment line
 // ("Rainy night", "Noche Despejada", "Poca Lluvia", "PINK DAWN", "CALIMA") or text after the section name
-// ("[131O_E_lightfog_heavycloud] ; Night"). The user: when a description names a time of day or weather, in English or
+// ("[131O_E_lightfog_heavycloud] ; Night"), or comment lines right above the section header (";late afternoon" above Zlin's
+// first section, "#EVENING heavy fog" above each of Gabiria's; at most two short lines, a long list of the makers' presets
+// above the first section of La Mussara / Vilaplana is not a description of that section). The user: when a description names a time of day or weather, in English or
 // another language, it wins over the three-part name (the game's sky type often says HeavyCloud where the stage was
 // lit for night or fog). The section also holds the game's own fog (UseFog, FogStart, FogEnd, FogRed/Green/Blue): how
 // far one sees in that weather on the original raster image, which comp.cpp's atmosphere uses for rain, snow and fog.
@@ -126,6 +128,7 @@ bool rbrrtx_weather_from_text(const std::wstring& text, int gameSky, WeatherText
   for (size_t i = 0; i < w.size(); ++i) {
     int t = i + 1 < w.size() ? time_of(w[i] + w[i + 1]) : -1;   // "MedioDia" was split into "medio dia"
     if (t < 0) t = time_of(w[i]);
+    if (t == 1 && i > 0 && w[i] == L"afternoon" && w[i - 1] == L"late") t = 2;   // "late afternoon" is the evening light
     if (t >= 0 && out->time < 0) out->time = t;
     const Kind k = kind_of(w[i]);
     const int sPrev = i > 0 ? strength_of(w[i - 1]) : 0;
@@ -165,7 +168,7 @@ bool rbrrtx_weather_from_text(const std::wstring& text, int gameSky, WeatherText
   else if (precip == kSnow) out->sky = dry ? 5 : precipStrength == 2 ? 7 : precipStrength == 1 ? 6 : gameSnow ? gameSky : 6;
   else if (precip == kFog) out->sky = precipStrength == 2 ? 9 : precipStrength == 1 ? 8 : gameFog ? gameSky : 8;
   else if (haze) out->sky = 1;
-  else if (cloud) out->sky = gameSky >= 2 ? gameSky : 2;   // overcast: dry overcast unless the game says more
+  else if (cloud) out->sky = gameSky >= 2 && !gameFog ? gameSky : 2;   // overcast: dry overcast unless the game says rain / snow (fog only when a fog word is there)
   else if (clear) out->sky = 0;
   if (cloud) out->clouds = cloudStrength ? cloudStrength : 3;
   else if (clear && precip == kNone && !haze) out->clouds = 0;
@@ -218,6 +221,7 @@ bool rbrrtx_stage_weather(const RbrStageInfo& si, StageWeather* out) {
   };
   const std::wstring text = widen(all);
   bool inWanted = false;
+  std::vector<std::wstring> above;                     // comment lines directly above the line being read
   size_t pos = 0;
   while (pos < text.size()) {
     size_t e = text.find(L'\n', pos);
@@ -226,8 +230,15 @@ bool rbrrtx_stage_weather(const RbrStageInfo& si, StageWeather* out) {
     pos = e + 1;
     if (!l.empty() && l.back() == L'\r') l.pop_back();
     const size_t b = l.find_first_not_of(L" \t\xFEFF");
-    if (b == std::wstring::npos) continue;
+    if (b == std::wstring::npos) { above.clear(); continue; }
+    if (l[b] == L';' || l[b] == L'#') {
+      const size_t t = l.find_first_not_of(L" \t;#", b);
+      if (!inWanted) above.push_back(t == std::wstring::npos ? std::wstring() : l.substr(t));
+      continue;
+    }
     if (l[b] == L'[') {
+      const std::vector<std::wstring> cmt = above;       // the comment lines right above this header
+      above.clear();
       if (inWanted) break;                             // the wanted section ended
       const size_t c = l.find(L']', b);
       const std::wstring name = l.substr(b + 1, c == std::wstring::npos ? std::wstring::npos : c - b - 1);
@@ -235,13 +246,19 @@ bool rbrrtx_stage_weather(const RbrStageInfo& si, StageWeather* out) {
       if (!inWanted) continue;
       out->found = true;
       out->section = name;
+      size_t chars = 0;
+      for (const std::wstring& a : cmt) chars += a.size();
+      if (!cmt.empty() && cmt.size() <= 2 && chars <= 60) {
+        for (const std::wstring& a : cmt) out->descriptionAbove += (out->descriptionAbove.empty() ? L"" : L" / ") + a;
+      }
       if (c != std::wstring::npos) {                   // "[131O_E_lightfog_heavycloud] ; Night"
         const size_t t = l.find_first_not_of(L" \t;/#", c + 1);
         if (t != std::wstring::npos) out->description = l.substr(t);
       }
       continue;
     }
-    if (!inWanted || l[b] == L';' || l[b] == L'#') continue;
+    above.clear();
+    if (!inWanted) continue;
     const size_t eq = l.find(L'=', b);
     if (eq == std::wstring::npos) continue;
     std::wstring key = l.substr(b, eq - b);
@@ -261,6 +278,10 @@ bool rbrrtx_stage_weather(const RbrStageInfo& si, StageWeather* out) {
     else if (!_wcsicmp(key.c_str(), L"FogRed")) out->fogCol[0] = f;
     else if (!_wcsicmp(key.c_str(), L"FogGreen")) out->fogCol[1] = f;
     else if (!_wcsicmp(key.c_str(), L"FogBlue")) out->fogCol[2] = f;
+  }
+  if (out->found && out->description.empty() && !out->descriptionAbove.empty()) {   // the section's own words win
+    out->description = out->descriptionAbove;
+    out->descAbove = true;
   }
   return out->found;
 }
