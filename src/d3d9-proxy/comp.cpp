@@ -753,6 +753,7 @@ bool g_numosGroundCar = true, g_numosGroundManual = false;
 float g_numosGroundOffset = 0.5f, g_numosGround = 0.0f, g_numosGroundSent = -1.0e9f;
 bool g_numosFogAlbedo = true;                          // [numos] fog_albedo_from_game: albedo from the stage's fog colour
 float g_numosFogExtra = 20.0f;                         // [numos] fog_extra: metres added to every fog visibility (user 2026-10-29)
+bool g_numosOwnsWeather = true;                        // [numos] weather_from_numos: fog, aerosol and weather dimming only from NUMOS's presets (user 2026-11-09)
 bool g_numosFogHalfway = true;                         // [numos] stage_fog_match = halfway (else end)
 // Main menu under NUMOS (user 2026-10-30): the base weather (no preset: "Menu, RBR" binds none unless a preset is made
 // for it) and the menu sun as before (sun_rule rule 4). Coming back from a stage (user, second request: "its time of
@@ -1309,6 +1310,7 @@ void atmo_load() {
     GetPrivateProfileStringW(L"numos", L"ground_offset", L"0.5", v, 32, path);
     g_numosGroundOffset = static_cast<float>(_wtof(v));
     g_numosGroundSent = -1.0e9f;                       // send the ground again
+    g_numosOwnsWeather = GetPrivateProfileIntW(L"numos", L"weather_from_numos", 1, path) != 0;
     g_numosFogAlbedo = GetPrivateProfileIntW(L"numos", L"fog_albedo_from_game", 1, path) != 0;
     GetPrivateProfileStringW(L"numos", L"fog_extra", L"20", v, 32, path);
     g_numosFogExtra = (std::max)(0.0f, static_cast<float>(_wtof(v)));
@@ -1398,13 +1400,18 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
     remix_set("rtx.skyProvider.worldChangeCount", std::to_string(++worldChanges).c_str());
   }
   const float confAerosol = conf_float("rtx.atmosphere.aerosolDensity", 1.1f);
-  atmo_send("rtx.atmosphere.aerosolDensity", fmt1(confAerosol * total.aerosol), fmt1(confAerosol));
+  // NUMOS owns the weather (user 2026-11-09): the proxy only says which weather it is (rtx.weather.gameWeather above) and the
+  // bound preset sets fog, aerosol and clouds. weather_from_numos = 0 brings back the proxy's factors below.
+  const bool own = g_numosOwnsWeather;
+  atmo_send("rtx.atmosphere.aerosolDensity", fmt1(own ? confAerosol : confAerosol * total.aerosol), fmt1(confAerosol));
   const float confFog = conf_float("rtx.atmosphere.fogVisibilityMeters", 0.0f);
   const StageWeather& sw = g_stageWx;
   const float dens = (std::max)(0.01f, total.density);
   float vis = confFog;
   wchar_t fogNote[128] = L"conf value";
-  if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
+  if (own) {
+    // conf value (a preset's fogVisibilityMeters is applied over it)
+  } else if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
     // RBR's raster fog is linear, FogStart..FogEnd; NUMOS's visibility is where contrast falls to 2 % (transmittance
     // exp(-3.912 d / V)). visibility = FogEnd (until 2026-10-30) made NUMOS's fog far thicker on the way: 32 % at a
     // tenth of FogEnd where RBR has 10 %, 86 % at half where RBR has 50 % (user: haze too close to the camera, objects
@@ -1417,7 +1424,7 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
     vis = total.fogVis > 0.0f ? total.fogVis / dens : 0.0f;
     swprintf_s(fogNote, L"fog_visibility %.0f m / density %.2f", total.fogVis, dens);
   }
-  if (vis > 0.0f) {                                    // every fog a little clearer (user 2026-10-29: +20 m); 0 stays no fog
+  if (!own && vis > 0.0f) {                            // every fog a little clearer (user 2026-10-29: +20 m); 0 stays no fog
     vis += g_numosFogExtra;
     swprintf_s(fogNote + wcslen(fogNote), 128 - wcslen(fogNote), L" + %.0f m", g_numosFogExtra);
   }
@@ -1426,10 +1433,10 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
   // near white. NUMOS's own 0.9 lit a night fog into a bright wall. Only when the stage's fog is on.
   const float confAlbedo = conf_float("rtx.atmosphere.fogAlbedo", 0.9f);
   float albedo = confAlbedo;
-  if (g_numosFogAlbedo && sw.found && sw.useFog && sw.fogCol[0] >= 0.0f && sw.fogCol[1] >= 0.0f && sw.fogCol[2] >= 0.0f)
+  if (!own && g_numosFogAlbedo && sw.found && sw.useFog && sw.fogCol[0] >= 0.0f && sw.fogCol[1] >= 0.0f && sw.fogCol[2] >= 0.0f)
     albedo = std::clamp(0.95f * (std::max)({ sw.fogCol[0], sw.fogCol[1], sw.fogCol[2] }), 0.03f, 0.95f);
   atmo_send("rtx.atmosphere.fogAlbedo", fmt1(albedo), fmt1(confAlbedo));
-  g_numosSunWeather = total.sun;
+  g_numosSunWeather = own ? 1.0f : total.sun;
   wchar_t line[1024];
   swprintf_s(line, L"NUMOS: stage %d %s (%S, region %s), sky %s, clouds %s, %s%s -> weather ids \"%S\"; fog visibility %.0f m (%s), "
                    L"fog albedo %.2f, aerosol x%.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
@@ -1509,7 +1516,7 @@ void menu_wx_frame() {
   const float toFog = g_mwToFog;                                  // visibilities blend as extinction, 0 = no fog
   const float e = (g_mwFromFog > 0.0f ? 1.0f / g_mwFromFog : 0.0f) * (1.0f - s) + (toFog > 0.0f ? 1.0f / toFog : 0.0f) * s;
   const float fog = e > 0.0f ? 1.0f / e : 0.0f;
-  if (g_mwSentFog < 0.0f || std::fabs(fog - g_mwSentFog) > 0.03f * (std::max)(g_mwSentFog, 1.0f)) {
+  if (!g_numosOwnsWeather && (g_mwSentFog < 0.0f || std::fabs(fog - g_mwSentFog) > 0.03f * (std::max)(g_mwSentFog, 1.0f))) {
     atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(fog), "");
     g_mwSentFog = fog;
   }
