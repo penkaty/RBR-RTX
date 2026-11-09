@@ -52,10 +52,11 @@ constexpr unsigned kDiscMinPrims = 60, kDiscMaxPrims = 800, kLensMaxPrims = 600,
 // discs, lamps 75 % dimmer; the discs and the brake lenses shared one material per car atlas until then).
 // A brake disc has kDiscLevels glow kinds, one per heat step (kDisc .. kDisc + kDiscLevels - 1; a twin and a material each).
 constexpr int kDiscLevels = 6;
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kKinds = kDisc + kDiscLevels };
+// kLampsOwn: a lamp that glows from its own picture (the mask is the texture), so the lens pattern stays (user 2026-11-09, E30 and aux lamps).
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kLampsOwn = kDisc + kDiscLevels, kKinds = kLampsOwn + 1 };
 const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day", L"brake disc heat 1/6",
                                               L"brake disc heat 2/6", L"brake disc heat 3/6", L"brake disc heat 4/6",
-                                              L"brake disc heat 5/6", L"brake disc heat 6/6" };
+                                              L"brake disc heat 5/6", L"brake disc heat 6/6", L"lamps (own picture)" };
 
 struct Cfg {
   bool enabled = true;
@@ -185,6 +186,7 @@ void load_cfg() {
   c.glow[kReverse] = std::clamp(f(L"reverse_glow", c.glow[kReverse]), 0.0f, 10000.0f);
   c.glow[kTail] = std::clamp(f(L"tail_glow", c.glow[kTail]), 0.0f, 10000.0f);
   c.glow[kLampsDay] = std::clamp(f(L"lamp_glow_day", c.glow[kLampsDay]), 0.0f, 10000.0f);
+  c.glow[kLampsOwn] = std::clamp(f(L"lamp_glow_own", c.glow[kLamps]), 0.0f, 10000.0f);
   c.discGlow = std::clamp(f(L"brake_disc_glow", c.discGlow), 0.0f, 10000.0f);
   c.discRate = std::clamp(f(L"brake_disc_heat_rate", c.discRate), 0.0f, 10.0f);
   c.discCool = std::clamp(f(L"brake_disc_cool_seconds", c.discCool), 1.0f, 3600.0f);
@@ -865,7 +867,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
           // These cars' lamp meshes never switch, so learning finds nothing and they had no glow at all (the E30's head lamps). Lit and
           // unlit meshes are both drawn in the same place: both get the glow, so they cannot show through each other.
           if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
-          const int kind = p.end < 0 ? kTail : kLamps;
+          const int kind = p.end < 0 ? kTail : kLampsOwn;
           if (g_cfg.glow[kind] > 0.0f)
             if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height)) { note_nudge(kind, p.end); return twin; }
         }
@@ -875,6 +877,24 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (world && ((p.mask & (1u << kBrake)) || p.tail) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
     g_drawnAt.push_back({ key, { world[0], world[1], world[2], world[3], world[4], world[5], world[6], world[7],
                                  world[8], world[9], world[10], world[11] } });
+  // Auxiliary lamps (bumper, bonnet, ramp lights): their meshes never switch, so learning finds nothing. The model names them; they
+  // glow while they are on (brights, with extra_lights = 2). Not their glass.
+  if (!glassShader && !p.mask && !p.tail && rbrrtx_headlights_aux_on() && rbrrtx_headlights_is_aux(numV) && prims <= kLensMaxPrims * 4) {
+    if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
+    IDirect3DBaseTexture9* at = nullptr;
+    dev->lpVtbl->GetTexture(dev, 0, &at);
+    if (at && p.end >= 0) {
+      const uint64_t asrc = rbrrtx_texture_hash(at);
+      D3DSURFACE_DESC ad = {};
+      const bool ok2d = at->lpVtbl->GetType(at) == D3DRTYPE_TEXTURE &&
+                        SUCCEEDED(reinterpret_cast<IDirect3DTexture9*>(at)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(at), 0, &ad));
+      at->lpVtbl->Release(at);
+      if (asrc && ok2d && g_cfg.glow[kLampsOwn] > 0.0f)
+        if (void* twin = twin_for(dev, asrc, kLampsOwn, ad.Width, ad.Height)) return twin;
+    } else if (at) {
+      at->lpVtbl->Release(at);
+    }
+  }
   // Which glow: the signal that shows it now (the brake over the lamps on a shared tail lens), else the unlit brake
   // lens as a tail lamp while the lamps are on. g_raw = the last Present's raw states. A brake disc glows by its heat
   // (update_heat; until it is hot it is drawn as the game textures it).

@@ -275,6 +275,59 @@ Thumb draw_thumb(const rbrrtx_menu_pick& pick, float side, const std::vector<std
   return t;
 }
 
+// Editing a box on the thumbnail just drawn (user 2026-11-09): drag inside it to move it, drag an edge or corner to resize it, drag
+// outside it to draw a new one. Call straight after draw_thumb. Returns true when the box changed.
+struct BoxEdit { int mode = 0; float grab[2] = {}, start[4] = {}; };
+bool box_edit(const Thumb& th, float r[4], BoxEdit& s) {
+  if (th.max.x <= th.min.x) return false;
+  const float W = th.max.x - th.min.x, H = th.max.y - th.min.y;
+  const ImVec2 m = ImGui::GetIO().MousePos;
+  const float u = std::clamp((m.x - th.min.x) / W, 0.0f, 1.0f), v = std::clamp((m.y - th.min.y) / H, 0.0f, 1.0f);
+  const float gx = 6.0f / W, gy = 6.0f / H;
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+    const bool inX = u >= r[0] - gx && u <= r[2] + gx, inY = v >= r[1] - gy && v <= r[3] + gy;
+    s.mode = (inY && std::fabs(u - r[0]) < gx ? 1 : 0) | (inY && std::fabs(u - r[2]) < gx ? 2 : 0) |
+             (inX && std::fabs(v - r[1]) < gy ? 4 : 0) | (inX && std::fabs(v - r[3]) < gy ? 8 : 0);
+    if (!s.mode) s.mode = inX && inY ? 16 : 32;
+    s.grab[0] = u; s.grab[1] = v;
+    std::memcpy(s.start, r, sizeof(s.start));
+  }
+  if (!s.mode) return false;
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { s.mode = 0; return false; }
+  const float du = u - s.grab[0], dv = v - s.grab[1], minW = 2.0f / W, minH = 2.0f / H;
+  if (s.mode == 32) {
+    r[0] = (std::min)(s.grab[0], u); r[1] = (std::min)(s.grab[1], v);
+    r[2] = (std::max)(s.grab[0], u); r[3] = (std::max)(s.grab[1], v);
+  } else if (s.mode == 16) {
+    const float w = s.start[2] - s.start[0], h = s.start[3] - s.start[1];
+    r[0] = std::clamp(s.start[0] + du, 0.0f, 1.0f - w); r[1] = std::clamp(s.start[1] + dv, 0.0f, 1.0f - h);
+    r[2] = r[0] + w; r[3] = r[1] + h;
+  } else {
+    if (s.mode & 1) r[0] = std::clamp(s.start[0] + du, 0.0f, s.start[2] - minW);
+    if (s.mode & 2) r[2] = std::clamp(s.start[2] + du, s.start[0] + minW, 1.0f);
+    if (s.mode & 4) r[1] = std::clamp(s.start[1] + dv, 0.0f, s.start[3] - minH);
+    if (s.mode & 8) r[3] = std::clamp(s.start[3] + dv, s.start[1] + minH, 1.0f);
+  }
+  return true;
+}
+
+// Left, top, width and height of a box as sliders. Returns true when one moved.
+bool box_sliders(float r[4]) {
+  float x = r[0], y = r[1], w = r[2] - r[0], h = r[3] - r[1];
+  bool ch = false;
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
+  ch |= ImGui::SliderFloat("left", &x, 0.0f, 1.0f, "%.3f");
+  ch |= ImGui::SliderFloat("top", &y, 0.0f, 1.0f, "%.3f");
+  ch |= ImGui::SliderFloat("width", &w, 0.001f, 1.0f, "%.3f");
+  ch |= ImGui::SliderFloat("height", &h, 0.001f, 1.0f, "%.3f");
+  ImGui::PopItemWidth();
+  if (ch) {
+    x = std::clamp(x, 0.0f, 0.999f); y = std::clamp(y, 0.0f, 0.999f);
+    r[0] = x; r[1] = y; r[2] = (std::min)(x + w, 1.0f); r[3] = (std::min)(y + h, 1.0f);
+  }
+  return ch;
+}
+
 RbrEmit* find_emit(unsigned long long tex, RbrEmit* store) {
   for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i)
     if (rbrrtx_emit_get(i, store) && store->tex == tex) return store;
@@ -317,35 +370,28 @@ void page_emissive(void*) {
     // The part (cyan): starts as the island around the hit (yellow), which on an atlas can be far bigger than the lamp
     // head (run 20261107-055329: a seventh of the atlas, lamps mid-pole and on ground posts). Drag on the picture to draw
     // the part yourself, or fine-tune it with the numbers.
-    static float part[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    static float part[4] = { 0.0f, 0.0f, 1.0f, 1.0f }, lastIsland[4] = {};
     static unsigned long long partTex = 0;
-    static bool dragging = false;
-    static float dragFrom[2] = {};
-    if (pick.hash[0] != partTex && !dragging) {
+    static BoxEdit box;
+    static bool manual = false;                        // the box was moved by hand: aiming elsewhere does not take it away
+    // Only a new texture used to start the box again, so a second lamp on the same texture got the first lamp's box
+    // (user 2026-11-09: "one overwrites the other").
+    const bool newIsland = pick.has_island && std::memcmp(lastIsland, pick.uv_rect, sizeof(lastIsland)) != 0;
+    if (!box.mode && (pick.hash[0] != partTex || (newIsland && !manual))) {
       partTex = pick.hash[0];
+      manual = false;
       if (pick.has_island) std::memcpy(part, pick.uv_rect, sizeof(part));
       else { part[0] = part[1] = 0.0f; part[2] = part[3] = 1.0f; }
     }
+    if (pick.has_island) std::memcpy(lastIsland, pick.uv_rect, sizeof(lastIsland));
     const Thumb th = draw_thumb(pick, ImGui::GetTextLineHeight() * 14.0f, { { part[0], part[1], part[2], part[3] } });
-    if (th.max.x > th.min.x) {
-      const ImVec2 m = ImGui::GetIO().MousePos;
-      const float mu = std::clamp((m.x - th.min.x) / (th.max.x - th.min.x), 0.0f, 1.0f);
-      const float mv = std::clamp((m.y - th.min.y) / (th.max.y - th.min.y), 0.0f, 1.0f);
-      if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) { dragging = true; dragFrom[0] = mu; dragFrom[1] = mv; }
-      if (dragging) {
-        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-          part[0] = (std::min)(dragFrom[0], mu); part[1] = (std::min)(dragFrom[1], mv);
-          part[2] = (std::max)(dragFrom[0], mu); part[3] = (std::max)(dragFrom[1], mv);
-        } else {
-          dragging = false;
-        }
-      }
-    }
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
-    ImGui::DragFloat4("part u0 v0 u1 v1", part, 0.001f, 0.0f, 1.0f, "%.3f");
+    if (box_edit(th, part, box)) manual = true;
     ImGui::SameLine();
-    if (ImGui::SmallButton("Reset to island") && pick.has_island) std::memcpy(part, pick.uv_rect, sizeof(part));
-    ImGui::TextDisabled("Drag on the picture to draw the lamp head's part (cyan); yellow = the island the crosshair hit.");
+    ImGui::BeginGroup();
+    if (box_sliders(part)) manual = true;
+    if (ImGui::SmallButton("Reset to island") && pick.has_island) { std::memcpy(part, pick.uv_rect, sizeof(part)); manual = false; }
+    ImGui::EndGroup();
+    ImGui::TextDisabled("Cyan box: drag inside to move, drag an edge to resize, drag outside to draw a new one. Yellow = the island the crosshair hit.");
     if (pick.hash[0]) ImGui::Text("texture 0x%016llX", pick.hash[0]);
     ImGui::Checkbox("only the part (cyan)", &island_only);
     static int anchor = 0;
@@ -395,6 +441,7 @@ void page_emissive(void*) {
       e.softness = softness;
       pitch_yaw_dir(pitch, yaw, e.dir);
       rbrrtx_emit_set(e);
+      manual = false;                                  // the next lamp starts from its own island
       status("emissive set (Save keeps it); it glows once the generated mod has reloaded, about 10 s");
     }
     ImGui::EndDisabled();
@@ -579,6 +626,10 @@ void page_windows(void*) {
       dragging = false;
     }
     if (!freeze) ImGui::TextDisabled("tick Freeze to draw rectangles");
+    if (!rects.empty()) {
+      ImGui::TextDisabled("Last pane:");
+      box_sliders(rects.back().data());
+    }
     ImGui::Text("%zu pane(s)", rects.size());
     ImGui::SameLine();
     if (ImGui::SmallButton("Undo last") && !rects.empty()) rects.pop_back();

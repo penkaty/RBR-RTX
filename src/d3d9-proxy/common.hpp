@@ -163,6 +163,8 @@ int rbrrtx_headlights_on();                                     // 1 while the c
 int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
 bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
 bool rbrrtx_headlights_forward(float out[3]);                   // the car's forward direction in the world, false before its first pose
+bool rbrrtx_headlights_is_aux(unsigned numV);                   // a draw of this vertex count is one of the model's auxiliary lamp meshes
+bool rbrrtx_headlights_aux_on();                                // the auxiliary lamps are on now
 bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu

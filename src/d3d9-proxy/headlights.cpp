@@ -491,6 +491,7 @@ struct CarModel {
   std::vector<V3> lampPts;                             // vertices of the lamp parts, root frame (lens_front)
   bool hasLens = false;                                // lamp glass / lens / cover meshes of its own: the light is inside them
   std::vector<unsigned> brakeLensVerts;                // vertex counts of the unlit brake lamp lenses (e_light_brake_*, not *_lit)
+  std::vector<unsigned> auxVerts;                      // vertex counts of the auxiliary lamp meshes (not their glass)
 } g_car;
 constexpr size_t kMaxExtra = 16;
 
@@ -832,6 +833,8 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
     std::memcpy(&n, p + a + 136, 4);
     if (n < 3 || n > 20000 || a + 144 + static_cast<size_t>(n) * 24 > d.size()) continue;
     if (!low.compare(0, 13, "e_light_brake") && low.find("_lit") == std::string::npos) g_car.brakeLensVerts.push_back(n);
+    if ((low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos || low.find("bumper_light") != std::string::npos ||
+         low.find("light_ramp") != std::string::npos) && low.find("glass") == std::string::npos) g_car.auxVerts.push_back(n);
     float R[3][3];
     V3 t;
     total_of(nodes, node->second, false, R, t);
@@ -2480,6 +2483,14 @@ void rbrrtx_headlights_write_lit_mod() {
 int rbrrtx_headlights_on() { return g_mode != kOff ? 1 : 0; }
 
 bool rbrrtx_headlights_has_lens() { return g_car.hasLens; }
+
+bool rbrrtx_headlights_is_aux(unsigned numV) {
+  return std::find(g_car.auxVerts.begin(), g_car.auxVerts.end(), numV) != g_car.auxVerts.end();
+}
+
+bool rbrrtx_headlights_aux_on() {                       // as send_lamps: extra_lights = 2 brings them on with the brights only
+  return g_cfg.extra && g_mode != kOff && (g_cfg.extra != 2 || g_mode == kBrights);
+}
 
 bool rbrrtx_headlights_forward(float out[3]) {
   if (!g_haveRoot) return false;

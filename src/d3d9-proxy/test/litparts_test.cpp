@@ -30,6 +30,8 @@ float rbrrtx_sun_shown_elevation() { return 30.0f; }
 bool rbrrtx_player_car_raw(float[20]) { return false; }
 int rbrrtx_headlights_lamp_end(const float*) { return 0; }
 bool rbrrtx_headlights_has_lens() { return false; }
+bool rbrrtx_headlights_is_aux(unsigned) { return false; }
+bool rbrrtx_headlights_aux_on() { return false; }
 bool rbrrtx_headlights_is_brake_lens(unsigned) { return false; }
 bool rbrrtx_headlights_forward(float*) { return false; }
 bool rbrrtx_car_body_draw(float*) { return false; }
