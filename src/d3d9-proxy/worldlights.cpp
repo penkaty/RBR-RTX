@@ -35,6 +35,7 @@
 #include "third_party/remix_c.h"
 #include <algorithm>
 #include <array>
+#include <map>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -79,7 +80,8 @@ struct Lamp {
 
 const remixapi_Interface* g_api = nullptr;
 std::unordered_map<uint64_t, Kind> g_kinds;            // texture hash -> lamp kind
-std::unordered_map<uint64_t, Kind> g_custom;           // F3 emissive props that cast light (custom.cpp); merged last, they win
+std::map<int, std::pair<uint64_t, Kind>> g_custom;     // F3 emissives that cast light, by emissive id (custom.cpp); merged last, they win
+std::unordered_map<uint64_t, std::vector<Kind>> g_more; // the second and later F3 emissives of a texture (kind 1, 2, ..): the first is in g_kinds
 std::vector<Lamp> g_lamps;
 bool g_on = true;
 float g_onBelow = 6.0f, g_fade = 4.0f;
@@ -342,7 +344,14 @@ void load() {
   size_t markedKinds = 0;
   if (GetFileAttributesW(markedPath) != INVALID_FILE_ATTRIBUTES) markedKinds = load_kinds(markedPath, path, true);
   const size_t own = load_kinds(path, nullptr);
-  for (const auto& kv : g_custom) g_kinds[kv.first] = kv.second;
+  g_more.clear();
+  {
+    std::unordered_map<uint64_t, bool> placed;
+    for (const auto& kv : g_custom) {
+      if (placed.emplace(kv.second.first, true).second) g_kinds[kv.second.first] = kv.second.second;
+      else g_more[kv.second.first].push_back(kv.second.second);
+    }
+  }
   glow_refresh();
   rbrrtx_log_to(L"rbrrtx_comp.log", L"world lights (%s): %s, %zu lamp texture(s) (%zu own, %zu found in textures, %zu marked in game), "
                 L"on below sun %.1f deg (fade %.1f), at most %u", path, g_on ? L"on" : L"OFF", g_kinds.size(), own, autoKinds,
@@ -379,13 +388,30 @@ float rbrrtx_world_lights_mark_glow() { return g_markGlow; }
 bool rbrrtx_world_lights_wanted() { return g_api && g_on && !g_kinds.empty(); }
 bool rbrrtx_world_lights_texture(unsigned long long hash) { return g_kinds.count(hash) != 0; }
 
-int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight, int* anchor) {
-  const auto it = g_kinds.find(hash);
-  if (it == g_kinds.end()) return 0;
-  const int n = (std::min)(max, static_cast<int>(it->second.uvs.size()));
-  for (int i = 0; i < n; ++i) std::copy(it->second.uvs[i].begin(), it->second.uvs[i].end(), rects[i]);
-  *poleMinHeight = it->second.pole ? it->second.minHeight : 0.0f;
-  *anchor = it->second.anchor;
+int rbrrtx_world_lights_kinds(unsigned long long hash) {
+  if (!g_kinds.count(hash)) return 0;
+  const auto m = g_more.find(hash);
+  return 1 + (m == g_more.end() ? 0 : static_cast<int>(m->second.size()));
+}
+
+namespace {
+const Kind* kind_at(uint64_t hash, int kind) {
+  if (kind == 0) {
+    const auto it = g_kinds.find(hash);
+    return it == g_kinds.end() ? nullptr : &it->second;
+  }
+  const auto m = g_more.find(hash);
+  return m == g_more.end() || kind < 1 || kind > static_cast<int>(m->second.size()) ? nullptr : &m->second[kind - 1];
+}
+}  // namespace
+
+int rbrrtx_world_lights_uvs(unsigned long long hash, int kind, float rects[][4], int max, float* poleMinHeight, int* anchor) {
+  const Kind* kp = kind_at(hash, kind);
+  if (!kp) return 0;
+  const int n = (std::min)(max, static_cast<int>(kp->uvs.size()));
+  for (int i = 0; i < n; ++i) std::copy(kp->uvs[i].begin(), kp->uvs[i].end(), rects[i]);
+  *poleMinHeight = kp->pole ? kp->minHeight : 0.0f;
+  *anchor = kp->anchor;
   return n;
 }
 
@@ -444,15 +470,15 @@ void* rbrrtx_world_lights_glow(void* device, unsigned long long hash, void* base
 }
 
 // A draw with a lamp texture, its bounding sphere in world space.
-void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu) {
-  const auto it = g_kinds.find(hash);
-  if (it == g_kinds.end()) return;
-  const Kind& k = it->second;
+void rbrrtx_world_lights_seen(unsigned long long hash, int kind, const float c[3], float r, bool inMenu) {
+  const Kind* kp = kind_at(hash, kind);
+  if (!kp) return;
+  const Kind& k = *kp;
   if ((k.where == 1 && !inMenu) || (k.where == 2 && inMenu)) return;
   const float p[3] = { c[0] + k.offset[0], c[1] + (k.anchor == 0 ? r : k.anchor == 2 ? -r : 0.0f) + k.offset[1], c[2] + k.offset[2] };
   for (Lamp& l : g_lamps) {
     const float dx = l.pos[0] - p[0], dy = l.pos[1] - p[1], dz = l.pos[2] - p[2];
-    if (dx * dx + dy * dy + dz * dz < 1.0f) { l.seen = g_frame; return; }
+    if (l.kind == &k && dx * dx + dy * dy + dz * dz < 1.0f) { l.seen = g_frame; return; }   // two emissives of one texture can share a place
   }
   if (g_lamps.size() >= 512) return;
   Lamp l;
@@ -571,15 +597,15 @@ void rbrrtx_world_lights_reset() {
 
 // The lamp kinds read again (after the lamp_mark key wrote lights-marked.ini): the lamps go (they point at their kind) and
 // are found again from the next draws.
-void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
+void rbrrtx_world_lights_set_emit(int id, unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
                                   const float dir[3], int aim, const float aimAt[3], int always, const float offset[3],
                                   const float (*rects)[4], int nrects, int anchor) {
   if (lumens <= 0.0f) {
-    if (!g_custom.erase(tex)) return;
+    if (!g_custom.erase(id)) return;
   } else {
     Kind k;
-    wchar_t n[40];
-    swprintf_s(n, L"emissive_%016llX", tex);
+    wchar_t n[48];
+    swprintf_s(n, L"emissive_%d_%016llX", id, tex);
     k.name = n;
     k.anchor = 1;
     k.lumens = lumens;
@@ -599,7 +625,7 @@ void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], fl
     for (int i = 0; rects && i < nrects && k.uvs.size() < kMaxRects; ++i)
       k.uvs.push_back({ rects[i][0], rects[i][1], rects[i][2], rects[i][3] });
     if (!k.uvs.empty()) k.anchor = std::clamp(anchor, 0, 2);   // top of a lamppost part = its head
-    g_custom[tex] = k;
+    g_custom[id] = { tex, k };
   }
   rbrrtx_world_lights_reload();
 }

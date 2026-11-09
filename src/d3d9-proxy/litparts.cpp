@@ -32,7 +32,9 @@
 #include <cstring>
 #include <cwctype>
 #include <fstream>
+#include <array>
 #include <map>
+#include <set>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -131,7 +133,8 @@ std::map<std::pair<uint64_t, int>, Twin> g_twins;        // (atlas hash, signal)
 struct Entry { uint64_t twin, src; int signal; std::wstring file; unsigned readyFrame = 0; };   // readyFrame: Remix has had time to load its material
 std::map<uint64_t, Entry> g_entries;                     // twin hash -> material (this run + earlier runs)
 std::mutex g_mx;                                         // g_entries, g_pending (worker thread)
-struct Pending { uint64_t twin, src; int signal; std::wstring carDir; UINT w, h; };
+struct Pending { uint64_t twin, src; int signal; std::wstring carDir; UINT w, h; std::vector<std::array<float, 4>> rects; };   // rects: the lamp's faces
+std::set<uint64_t> g_ownChecked;                         // lit atlases whose face mask was looked for this run
 std::vector<Pending> g_pending;
 std::atomic<bool> g_workerBusy{ false };
 std::wstring g_cacheFile;
@@ -292,6 +295,15 @@ std::wstring lamp_dds() {
   return path;
 }
 
+// A lit lamp atlas's mask: the atlas, black outside the lamps' faces (user 2026-11-09: the whole assembly glowed). Named by the atlas.
+std::wstring own_mask_path(uint64_t src) {
+  const wchar_t* dir = rbrrtx_genmod_dir();
+  if (!dir || !dir[0]) return std::wstring();
+  wchar_t name[48];
+  swprintf_s(name, L"\\litparts_face_%016llX.dds", static_cast<unsigned long long>(src));
+  return std::wstring(dir) + name;
+}
+
 std::string material_for(const Entry& e) {
   const std::string a = rbrrtx_genmod_asset(e.file);
   char glow[64];
@@ -304,6 +316,9 @@ std::string material_for(const Entry& e) {
   } else if (e.signal == kLamps) {
     const std::wstring ld = lamp_dds();
     if (!ld.empty()) mask = rbrrtx_genmod_asset(ld);
+  } else if (e.signal == kLampsOwn) {
+    const std::wstring own = own_mask_path(e.src);
+    if (!own.empty() && GetFileAttributesW(own.c_str()) != INVALID_FILE_ATTRIBUTES) mask = rbrrtx_genmod_asset(own);
   }
   const std::string in =
       "                asset inputs:diffuse_texture = @" + a + "@ (\n"
@@ -408,6 +423,11 @@ void resolve_pending() {
     }
     llog(L"lit parts: %s part on atlas %016llX glows with %s (%s), twin %016llX", kSignalName[p.signal],
          static_cast<unsigned long long>(p.src), found->path.c_str(), how, static_cast<unsigned long long>(p.twin));
+    if (!p.rects.empty()) {
+      const std::wstring own = own_mask_path(p.src);
+      const bool ok = !own.empty() && rbrrtx_dds_keep_rects(found->path.c_str(), own.c_str(), reinterpret_cast<const float (*)[4]>(p.rects.data()), static_cast<int>(p.rects.size()));
+      llog(L"lit parts: atlas %016llX glows only on %zu lamp face(s)%s", static_cast<unsigned long long>(p.src), p.rects.size(), ok ? L"" : L" (FAILED to write the mask: the whole atlas glows)");
+    }
     std::lock_guard<std::mutex> g(g_mx);
     // Not drawn for 6 s: written within 4 s (genmod kMinGap), then Remix loads it. Until then the draw stays as the game made it (no noise).
     g_entries[p.twin] = { p.twin, p.src, p.signal, found->path, g_frame + 360 };
@@ -654,7 +674,8 @@ void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsig
 }
 
 // The twin for (texture, kind), once Remix has its material.
-void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h) {
+// rects: the lamp faces (lit atlas): an entry from an earlier run is made again once, when its mask is not there yet.
+void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h, const float (*rects)[4] = nullptr, int nrects = 0) {
   uint64_t th = 0;
   IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
   if (!twin) return nullptr;
@@ -662,13 +683,21 @@ void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h) {
   {
     std::lock_guard<std::mutex> g(g_mx);
     auto en = g_entries.find(th);
-    if (en != g_entries.end()) {
-      published = g_frame >= en->second.readyFrame;
-    } else {
-      published = false;
+    bool queue = en == g_entries.end();
+    if (!queue && rects && nrects > 0 && g_ownChecked.insert(src).second) {
+      const std::wstring own = own_mask_path(src);
+      queue = !own.empty() && GetFileAttributesW(own.c_str()) == INVALID_FILE_ATTRIBUTES;
+    }
+    if (en != g_entries.end()) published = !queue && g_frame >= en->second.readyFrame;
+    else published = false;
+    if (queue) {
       bool queued = false;
       for (const Pending& q : g_pending) queued = queued || q.twin == th;
-      if (!queued) g_pending.push_back({ th, src, kind, car_dir(), w, h });
+      if (!queued) {
+        std::vector<std::array<float, 4>> boxes;
+        for (int i = 0; rects && i < nrects; ++i) boxes.push_back({ rects[i][0], rects[i][1], rects[i][2], rects[i][3] });
+        g_pending.push_back({ th, src, kind, car_dir(), w, h, std::move(boxes) });
+      }
     }
   }
   if (!published) return nullptr;                        // every kind waits for its material (no noise on the part)
@@ -868,8 +897,10 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
           // unlit meshes are both drawn in the same place: both get the glow, so they cannot show through each other.
           if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
           const int kind = p.end < 0 ? kTail : kLampsOwn;
+          int nFaces = 0;
+          const float (*faces)[4] = kind == kLampsOwn ? rbrrtx_headlights_front_rects(&nFaces) : nullptr;
           if (g_cfg.glow[kind] > 0.0f)
-            if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height)) { note_nudge(kind, p.end); return twin; }
+            if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height, faces, nFaces)) { note_nudge(kind, p.end); return twin; }
         }
       }
     }

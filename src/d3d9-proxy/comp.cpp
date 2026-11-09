@@ -5087,25 +5087,29 @@ void world_light_place(IDirect3DDevice9* dev, unsigned long long hx) {
            screen_space_input(dev) ? L" in screen space" : L"");
     return;
   }
-  float rects[8][4], poleMin = 0.0f;
-  int anchor = 1;
-  if (const int nRects = rbrrtx_world_lights_uvs(hx, rects, 8, &poleMin, &anchor)) {
-    if (!g_curInfo || g_drawNumVert == 0) return;
-    const auto* pts = uv_lamp_points(dev, rects, nRects, poleMin, anchor, hx);
-    if (!pts) return;
-    const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
-    const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
-    for (const auto& q : *pts) {
-      float c[3] = { q[0], q[1], q[2] };
-      if (!world)
-        for (int k = 0; k < 3; ++k) c[k] = q[0] * w.m[0][k] + q[1] * w.m[1][k] + q[2] * w.m[2][k] + w.m[3][k];
-      rbrrtx_world_lights_seen(hx, c, 0.0f, g_inMenu);
+  // A texture can carry several lamp kinds (F3: each emissive that casts light has its own part and settings).
+  const int nKinds = rbrrtx_world_lights_kinds(hx);
+  for (int ki = 0; ki < nKinds; ++ki) {
+    float rects[8][4], poleMin = 0.0f;
+    int anchor = 1;
+    if (const int nRects = rbrrtx_world_lights_uvs(hx, ki, rects, 8, &poleMin, &anchor)) {
+      if (!g_curInfo || g_drawNumVert == 0) return;
+      const auto* pts = uv_lamp_points(dev, rects, nRects, poleMin, anchor, hx);
+      if (!pts) continue;
+      const bool world = (g_curInfo->flags & SH_WORLDSPACE) != 0;
+      const D3DMATRIX w = world ? D3DMATRIX{} : to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+      for (const auto& q : *pts) {
+        float c[3] = { q[0], q[1], q[2] };
+        if (!world)
+          for (int k = 0; k < 3; ++k) c[k] = q[0] * w.m[0][k] + q[1] * w.m[1][k] + q[2] * w.m[2][k] + w.m[3][k];
+        rbrrtx_world_lights_seen(hx, ki, c, 0.0f, g_inMenu);
+      }
+      continue;
     }
-    return;
+    if (poleMin > 0) continue;                              // generated kinds place lamps from rectangles only
+    float c[3], r = 0.0f;
+    if (draw_world_sphere(dev, c, &r, true)) rbrrtx_world_lights_seen(hx, ki, c, r, g_inMenu);
   }
-  if (poleMin > 0) return;                                  // generated kinds place lamps from rectangles only
-  float c[3], r = 0.0f;
-  if (draw_world_sphere(dev, c, &r, true)) rbrrtx_world_lights_seen(hx, c, r, g_inMenu);
 }
 
 // Returns the twin texture to draw with (a marked lamp whose glass glows while the lamps are on), else nullptr.
@@ -6333,11 +6337,20 @@ void f3_info_text(char* buf, size_t n) {
   RbrStageInfo si = {};
   wchar_t w[1024];
   int len = 0;
+  // The clock NUMOS is showing, from the sun it was given (user 2026-11-09: on the second line).
+  wchar_t clock[48] = L"NUMOS time: not running";
+  if (rbrrtx_numos_lux_per_unit() > 0.0f) {
+    SolarPath sp = solar_path();
+    const float el = rbrrtx_sun_shown_elevation();
+    if (el > 90.0f - std::fabs(sp.lat - sp.dec) * 57.2958f) sp.lat = sp.dec + (90.0f - (std::min)(el, 89.9f)) * 0.0174533f;   // as the debug line's clock
+    const int minutes = static_cast<int>(std::lround(solar_hour(sp, el, g_inMenu || g_stageSentTime != 0) * 60.0f)) % 1440;
+    swprintf_s(clock, L"NUMOS time: %02d:%02d", minutes / 60, minutes % 60);
+  }
   if (rbrrtx_stage_info(&si) && !g_inMenu)
-    len = swprintf_s(w, L"Stage %d %s\nWeather: %s, %s, %s, track %s\n", si.trackId, si.name, rbrrtx_time_name(si.timeOfDay),
+    len = swprintf_s(w, L"Stage %d %s\n%s\nWeather: %s, %s, %s, track %s\n", si.trackId, si.name, clock, rbrrtx_time_name(si.timeOfDay),
                      rbrrtx_cloud_name(si.clouds), rbrrtx_sky_name(si.skyType), rbrrtx_wetness_name(si.wetness));
   else
-    len = swprintf_s(w, L"In a menu (no stage loaded)\n");
+    len = swprintf_s(w, L"In a menu (no stage loaded)\n%s\n", clock);
   len += swprintf_s(w + len, _countof(w) - len, L"Ground second layer: %s%s\nTerrain baker (rtx.conf): %s\n",
                     g_layerMode == kLayerBake ? L"BAKE" : g_layerMode == kLayerDecal ? L"DECAL" : L"off",
                     g_layerWant != g_layerMode ? (g_layerWant == kLayerBake ? L" (BAKE at the next stage load)" : g_layerWant == kLayerDecal ? L" (DECAL at the next stage load)" : L" (off at the next stage load)") : L"",

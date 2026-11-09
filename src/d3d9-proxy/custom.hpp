@@ -1,4 +1,4 @@
-// custom.hpp - user-made lights and emissives (F3 pages "Lights" and "Windows"), implemented in custom.cpp.
+// custom.hpp - user-made lights and emissives (F3 page "Lamps"), implemented in custom.cpp.
 // Persisted by the menu in menu.ini: [lights.<stage id>] (menu = lights.menu), [emissive], [windows].
 #pragma once
 #include <cstddef>
@@ -17,8 +17,8 @@ struct RbrCustomLight {
   float dir[3];                      // where a cone points
 };
 
-// An emissive texture (keyed by the Remix hash of the game texture, so every draw with it glows): the whole texture or
-// rectangles of it (u0, v0, u1, v1). windows = 1: the rectangles are window panes, each lit by chance (litPercent) with a
+// An emissive on a texture (keyed by the Remix hash of the game texture, so every draw with it glows): the whole texture or
+// rectangles of it (u0, v0, u1, v1). A texture can carry several, each with its own settings (user 2026-11-09). windows = 1: the rectangles are window panes, each lit by chance (litPercent) with a
 // random brightness baked into the mask. mode 0 = at night (fading in with the lamps), 1 = always.
 struct RbrEmit {
   unsigned long long tex;
@@ -40,6 +40,7 @@ struct RbrEmit {
   float aimAt[3];
   float offset[3];                                     // metres added to every lamp of the texture (F3 sliders)
   int anchor;                                          // where in the picked part the lamp sits: 0 top, 1 centre, 2 bottom
+  int id;                                              // this emissive; 0 = a new one (rbrrtx_emit_set gives it an id)
 };
 
 int rbrrtx_custom_light_count();                       // lights of the current stage
@@ -51,9 +52,6 @@ const char* rbrrtx_custom_stage_name();                // "lights.478" / "lights
 
 int rbrrtx_emit_count();
 bool rbrrtx_emit_get(int i, RbrEmit* out);
-void rbrrtx_emit_set(const RbrEmit& e);                // add or replace by texture
-void rbrrtx_emit_remove(unsigned long long tex);
+void rbrrtx_emit_set(const RbrEmit& e);                // id 0 adds a new emissive, otherwise replaces that one
+void rbrrtx_emit_remove(int id);
 void rbrrtx_emit_set_light(const RbrEmit& e);          // only the light fields of an existing emissive (no mod rewrite)
-// Window panes found automatically inside `island` (u0, v0, u1, v1) of the texture: dark / glassy rectangular cells by luminance.
-// `texture` is the game's IDirect3DTexture9 (its mip chain is saved next to the mod first). Returns the number written to out.
-int rbrrtx_emit_auto_windows(unsigned long long tex, void* texture, const float island[4], float out[][4], int max);

@@ -34,6 +34,8 @@ bool rbrrtx_headlights_is_aux(unsigned) { return false; }
 bool rbrrtx_headlights_aux_on() { return false; }
 bool rbrrtx_headlights_is_brake_lens(unsigned) { return false; }
 bool rbrrtx_headlights_forward(float*) { return false; }
+const float (*rbrrtx_headlights_front_rects(int* count))[4] { *count = 0; return nullptr; }
+bool rbrrtx_dds_keep_rects(const wchar_t*, const wchar_t*, const float (*)[4], int) { return false; }
 bool rbrrtx_car_body_draw(float*) { return false; }
 bool rbrrtx_player_car_gear(int*) { return false; }
 

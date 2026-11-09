@@ -52,6 +52,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <array>
 #include <unordered_map>
 #include <vector>
 
@@ -492,6 +493,7 @@ struct CarModel {
   bool hasLens = false;                                // lamp glass / lens / cover meshes of its own: the light is inside them
   std::vector<unsigned> brakeLensVerts;                // vertex counts of the unlit brake lamp lenses (e_light_brake_*, not *_lit)
   std::vector<unsigned> auxVerts;                      // vertex counts of the auxiliary lamp meshes (not their glass)
+  std::vector<std::array<float, 4>> litFront;          // UV boxes of the front lamps' faces on their lit atlas (lit_front_islands)
 } g_car;
 constexpr size_t kMaxExtra = 16;
 
@@ -809,11 +811,46 @@ bool cockpit_quad(float c[4][3]) {                     // camera space (x right,
   return true;
 }
 
+// A lit front lamp mesh's texture regions (user 2026-11-09: the E30's whole lamp glowed, its side wall and bulb too, not only the
+// front). A region is the vertices near each other in UV. Its vertices all face the way the car drives on the lamp's face and disc;
+// the housing's trim and the bulb turn sideways. Regions are per mesh: the bulb of one lamp lies next to the disc of another.
+struct UvIsland { float box[4]; bool side; int count; };
+void lit_front_islands(const char* verts, uint32_t n, const float R[3][3], std::vector<UvIsland>& out) {
+  if (n > 2000) return;                                // a lamp is a few hundred vertices; the search below is n squared
+  constexpr float kJoin = 0.09f;                       // UV distance that keeps a region's rim together, below the gap between regions
+  std::vector<float> uv(static_cast<size_t>(n) * 2);
+  std::memcpy(uv.data(), verts + static_cast<size_t>(n) * 24, uv.size() * sizeof(float));
+  std::vector<int> root(n);
+  for (uint32_t i = 0; i < n; ++i) root[i] = static_cast<int>(i);
+  auto find = [&](int x) { while (root[x] != x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+  for (uint32_t i = 0; i < n; ++i)
+    for (uint32_t j = i + 1; j < n; ++j) {
+      const float du = uv[i * 2] - uv[j * 2], dv = uv[i * 2 + 1] - uv[j * 2 + 1];
+      if (du * du + dv * dv < kJoin * kJoin) root[find(static_cast<int>(i))] = find(static_cast<int>(j));
+    }
+  std::unordered_map<int, UvIsland> byRoot;
+  for (uint32_t i = 0; i < n; ++i) {
+    float v[3];
+    std::memcpy(v, verts + static_cast<size_t>(i) * 24 + 12, 12);
+    const V3 nrm = { R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2], R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2], R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2] };
+    const float facing = std::fabs(nrm.x * g_car.forward.x + nrm.y * g_car.forward.y + nrm.z * g_car.forward.z);
+    const float u0 = uv[i * 2], v0 = uv[i * 2 + 1];
+    auto ins = byRoot.emplace(find(static_cast<int>(i)), UvIsland{ { u0, v0, u0, v0 }, false, 0 });
+    UvIsland& s = ins.first->second;
+    s.box[0] = (std::min)(s.box[0], u0); s.box[1] = (std::min)(s.box[1], v0);
+    s.box[2] = (std::max)(s.box[2], u0); s.box[3] = (std::max)(s.box[3], v0);
+    s.side = s.side || facing < 0.5f;
+    ++s.count;
+  }
+  for (const auto& kv : byRoot) out.push_back(kv.second);
+}
+
 // The vertices of a car's lamp parts (e_light*, e_lamp*, e_bumperlight*, lens or cover glass) in the root frame, for
 // lens_front. Same mesh records as load_windscreen: tag 0xC 0 k 1, size, name\0, +136 count, +144 (position, normal).
 void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsigned, Node>& nodes,
                       const std::unordered_map<std::string, unsigned>& byName) {
   const char* p = d.data();
+  std::vector<UvIsland> islands;
   for (size_t i = 0; i + 20 + 64 + 144 <= d.size() && g_car.lampPts.size() < 60000; ++i) {
     if (p[i] != 0xC) continue;
     uint32_t tag[4];
@@ -838,13 +875,29 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
     float R[3][3];
     V3 t;
     total_of(nodes, node->second, false, R, t);
+    V3 mid = {};
     for (uint32_t k = 0; k < n; ++k) {
       float v[3];
       std::memcpy(v, p + a + 144 + k * 24, 12);
       g_car.lampPts.push_back({ R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2] + t.x,
                                 R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2] + t.y,
                                 R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2] + t.z });
+      mid = mid + g_car.lampPts.back() * (1.0f / n);
     }
+    const float ahead = dot(mid - g_car.lf, g_car.forward);   // near the front lamps' plane: not a brake or reverse lamp
+    if (low.find("_lit") != std::string::npos && ahead > -0.5f && a + 144 + static_cast<size_t>(n) * 32 <= d.size())
+      lit_front_islands(p + a + 144, n, R, islands);
+  }
+  const float pad = 2.0f / 256.0f;
+  for (const UvIsland& s : islands) {
+    if (s.side || s.count < 3) continue;
+    const std::array<float, 4> b = { s.box[0] - pad, s.box[1] - pad, s.box[2] + pad, s.box[3] + pad };
+    bool trim = false;                                 // a texture region one lamp turns sideways is trim on every lamp
+    for (const UvIsland& o : islands)
+      trim = trim || (o.side && o.box[0] <= b[2] && o.box[2] >= b[0] && o.box[1] <= b[3] && o.box[3] >= b[1]);
+    if (trim || g_car.litFront.size() >= 16) continue;
+    g_car.litFront.push_back(b);
+    hlog(L"headlights: lit lamp face on its atlas at u %.3f..%.3f, v %.3f..%.3f (%d vertices)", b[0], b[2], b[1], b[3], s.count);
   }
 }
 
@@ -2483,6 +2536,10 @@ void rbrrtx_headlights_write_lit_mod() {
 int rbrrtx_headlights_on() { return g_mode != kOff ? 1 : 0; }
 
 bool rbrrtx_headlights_has_lens() { return g_car.hasLens; }
+const float (*rbrrtx_headlights_front_rects(int* count))[4] {
+  *count = static_cast<int>(g_car.litFront.size());
+  return g_car.litFront.empty() ? nullptr : reinterpret_cast<const float (*)[4]>(g_car.litFront.data());
+}
 
 bool rbrrtx_headlights_is_aux(unsigned numV) {
   return std::find(g_car.auxVerts.begin(), g_car.auxVerts.end(), numV) != g_car.auxVerts.end();

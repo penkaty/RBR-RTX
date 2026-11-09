@@ -1,4 +1,4 @@
-// custom.cpp - user-made lights and emissives, made in the F3 menu (menu_custom.cpp pages "Lights" and "Windows").
+// custom.cpp - user-made lights and emissives, made in the F3 menu (menu_custom.cpp page "Lamps").
 //
 // Lights: Remix API sphere lights at world positions (placed at the crosshair hit or in front of the camera), kept per stage
 // in menu.ini [lights.<stage id>] (the menu = lights.menu): colour, lumens, radius, flicker (flares, fires), at night or always.
@@ -11,7 +11,10 @@
 // lamps' glass (worldlights.cpp): the game's texture is saved next to the mod (stages are encrypted), a 16x16 twin texture
 // with a hash of its own is drawn instead of the game's while the emissive is on, and the generated mod (genmod.cpp, section
 // "emissive") gives that twin hash the saved texture as albedo plus the mask as emissive mask. Night mode fades in with the
-// street lamps in four steps (rbrrtx_world_lights_night_fraction). menu.ini [emissive] / [windows]: one line per texture.
+// street lamps in four steps (rbrrtx_world_lights_night_fraction). menu.ini [emissive] / [windows]: one line per emissive.
+// A texture can carry several emissives, each with its own colour, strength, mode and light (user 2026-11-09). Remix gives a
+// texture one material, so they share its twin and mask: the mask holds each one's colour and relative strength, and when some
+// are "at night" and others "always" each on-level has a mask of its own.
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
@@ -73,14 +76,15 @@ constexpr ULONGLONG kSettle = 9000, kHold = 1000;
 
 struct EmitState {
   bool tried = false, ok = false;
-  std::wstring dds, mask;
+  std::wstring dds, mask[kLevels + 1];                 // per on-level; level 0 = daylight, only when "at night" and "always" are mixed
   ULONGLONG readyAt = 0;
-  IDirect3DTexture9* twin[kLevels] = {};
-  int lvHeld = 0;
+  IDirect3DTexture9* twin[kLevels + 1] = {};
+  int lvHeld = -1;
   ULONGLONG lowerSince = 0;
   unsigned w = 0, h = 0;
 };
-std::map<uint64_t, RbrEmit> g_emit;
+std::map<uint64_t, std::vector<RbrEmit>> g_emit;     // texture -> its emissives, oldest first
+int g_nextEmit = 1;
 std::map<uint64_t, EmitState> g_state;
 std::set<uint64_t> g_drawnThisStage;                   // F3 lists: emissive textures drawn since the stage loaded
 
@@ -212,104 +216,153 @@ std::wstring solid_path(const std::wstring& mask) {
   const size_t at = s.rfind(L"_mask_");
   if (at == std::wstring::npos) return std::wstring();
   s.replace(at, 6, L"_solid_");
+  const size_t lv = s.rfind(L'L');                     // a level's mask (see mask_name) shares one solid copy
+  if (lv != std::wstring::npos && lv > at && s.size() == lv + 6) s.erase(lv, 2);
   return s;
 }
 
-// The emissive mask: white where the texture glows (props), or the lit panes with their brightness (windows). Named by its
-// content (Remix does not reload a file it has open). Returns the path ("" = failed).
+bool emits_mixed(const std::vector<RbrEmit>& v) {
+  bool night = false, always = false;
+  for (const RbrEmit& e : v) (e.mode == 1 ? always : night) = true;
+  return night && always;
+}
+
+float emits_peak(const std::vector<RbrEmit>& v) {
+  float m = 0.0f;
+  for (const RbrEmit& e : v) m = (std::max)(m, e.intensity);
+  return m;
+}
+
+// The emissive mask of a texture's emissives: white where the texture glows (props), or the lit panes with their brightness
+// (windows). Named by its content (Remix does not reload a file it has open). Returns the path ("" = failed).
 // With the saved texture readable, each glowing texel takes the texture's own colour, weighted by its brightness
 // (user 2026-11-06: emissive lamps came out plain white, windows flat): dark parts of a lamp housing or a window frame
-// stay dark, bright glass glows in its own colour.
-std::wstring write_mask(uint64_t hash, const RbrEmit& e, unsigned tw, unsigned th, const std::wstring& texDds) {
+// stay dark, bright glass glows in its own colour. Where emissives overlap, the newest wins.
+// level -1: one mask for every level. 0..kLevels: the "at night" emissives at that level's share, the "always" ones in full.
+std::wstring write_mask(uint64_t hash, const std::vector<RbrEmit>& list, unsigned tw, unsigned th, const std::wstring& texDds, int level) {
   const std::wstring dir = emit_dir();
   if (dir.empty()) return std::wstring();
   const unsigned W = std::clamp(tw / 2, 256u, 2048u), H = std::clamp(th / 2, 128u, 2048u);
+  const float peak = emits_peak(list);
+  auto share = [&](const RbrEmit& e) {                  // what the material's one intensity leaves to this emissive
+    const float rel = peak > 0.0f ? e.intensity / peak : 0.0f;
+    return level >= 0 && e.mode == 0 ? rel * static_cast<float>(level) / kLevels : rel;
+  };
   uint32_t key = 2166136261u;
   auto mix = [&](uint32_t v) { key ^= v; key *= 16777619u; };
   std::vector<uint32_t> tex;
   unsigned texW = 0, texH = 0;
   const bool textured = read_dds_rgba(texDds, tex, texW, texH);
-  mix(W); mix(H); mix(e.windows); mix(e.seed); mix(static_cast<uint32_t>(e.litPercent)); mix(static_cast<uint32_t>(e.nrects));
-  mix(textured ? 3u : 1u);
-  for (float f : e.rgb) mix(static_cast<uint32_t>(std::lround(f * 1023.0f)));   // the colour is in the mask (below)
-  mix(3u);                                             // file version: older masks (noise textures, the old brightness curve) are not reused
-  for (int i = 0; i < e.nrects; ++i) for (float f : e.rects[i]) mix(static_cast<uint32_t>(std::lround(f * 4096.0f)));
+  mix(W); mix(H); mix(textured ? 3u : 1u);
+  mix(4u);                                             // file version: older masks (noise textures, the old brightness curve) are not reused
+  for (const RbrEmit& e : list) {
+    mix(e.windows); mix(e.seed); mix(static_cast<uint32_t>(e.litPercent)); mix(static_cast<uint32_t>(e.nrects));
+    for (float f : e.rgb) mix(static_cast<uint32_t>(std::lround(f * 1023.0f)));   // the colour is in the mask (below)
+    mix(static_cast<uint32_t>(std::lround(share(e) * 4096.0f)));
+    for (int i = 0; i < e.nrects; ++i) for (float f : e.rects[i]) mix(static_cast<uint32_t>(std::lround(f * 4096.0f)));
+  }
   wchar_t tail[40];
-  swprintf_s(tail, L"_mask_%08X.dds", key);
+  if (level >= 0) swprintf_s(tail, L"_mask_%08XL%d.dds", key, level);
+  else swprintf_s(tail, L"_mask_%08X.dds", key);
   const std::wstring path = dir + L"\\" + hex16(hash) + tail;
   if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES &&
       (!textured || GetFileAttributesW(solid_path(path).c_str()) != INVALID_FILE_ATTRIBUTES)) return path;
-  std::vector<uint32_t> px(static_cast<size_t>(W) * H, e.nrects == 0 && !e.windows ? 0xFFFFFFFFu : 0xFF000000u);
-  for (int i = 0; i < e.nrects; ++i) {
-    unsigned v = 255;
-    if (e.windows) {
-      if (rand01(e.seed, i, 1) * 100.0f >= static_cast<float>(e.litPercent)) continue;   // a dark pane
-      v = static_cast<unsigned>(255.0f * (0.55f + 0.45f * rand01(e.seed, i, 2)));
+  std::vector<uint32_t> px(static_cast<size_t>(W) * H, 0xFF000000u);
+  std::vector<uint8_t> covered(static_cast<size_t>(W) * H, 0);
+  std::vector<uint8_t> part(static_cast<size_t>(W) * H);
+  for (const RbrEmit& e : list) {
+    std::fill(part.begin(), part.end(), static_cast<uint8_t>(e.nrects == 0 && !e.windows ? 255 : 0));
+    for (int i = 0; i < e.nrects; ++i) {
+      unsigned v = 255;
+      if (e.windows) {
+        if (rand01(e.seed, i, 1) * 100.0f >= static_cast<float>(e.litPercent)) continue;   // a dark pane
+        v = static_cast<unsigned>(255.0f * (0.55f + 0.45f * rand01(e.seed, i, 2)));
+      }
+      const float* r = e.rects[i];
+      const int x0 = std::clamp(static_cast<int>(std::floor(r[0] * W)), 0, static_cast<int>(W) - 1), x1 = std::clamp(static_cast<int>(std::ceil(r[2] * W)), 1, static_cast<int>(W));
+      const int y0 = std::clamp(static_cast<int>(std::floor(r[1] * H)), 0, static_cast<int>(H) - 1), y1 = std::clamp(static_cast<int>(std::ceil(r[3] * H)), 1, static_cast<int>(H));
+      for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) part[static_cast<size_t>(y) * W + x] = static_cast<uint8_t>(v);
     }
-    const float* r = e.rects[i];
-    const int x0 = std::clamp(static_cast<int>(std::floor(r[0] * W)), 0, static_cast<int>(W) - 1), x1 = std::clamp(static_cast<int>(std::ceil(r[2] * W)), 1, static_cast<int>(W));
-    const int y0 = std::clamp(static_cast<int>(std::floor(r[1] * H)), 0, static_cast<int>(H) - 1), y1 = std::clamp(static_cast<int>(std::ceil(r[3] * H)), 1, static_cast<int>(H));
-    const uint32_t c = 0xFF000000u | (v << 16) | (v << 8) | v;
-    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) px[static_cast<size_t>(y) * W + x] = c;
+    const float k0 = share(e);
+    for (unsigned y = 0; y < H; ++y) {
+      for (unsigned x = 0; x < W; ++x) {
+        const size_t at = static_cast<size_t>(y) * W + x;
+        if (!part[at]) continue;
+        covered[at] = 1;
+        const float v = static_cast<float>(part[at]) / 255.0f;
+        float c[3] = { v, v, v };
+        if (textured) {
+          const uint32_t t = tex[static_cast<size_t>(y * texH / H) * texW + x * texW / W];
+          const float r = ((t >> 16) & 0xFF) / 255.0f, g = ((t >> 8) & 0xFF) / 255.0f, b = (t & 0xFF) / 255.0f;
+          const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+          // Windows: hue from the texture, brightness 0.35 .. 1 by the texel's own brightness. Lamps (user 2026-11-08): only
+          // light grey to white glows, as poles and housings are dark or medium grey and the white-ish texels are the lamp.
+          const float k = e.windows ? std::clamp((lum - 0.05f) / 0.45f, 0.0f, 1.0f) : std::clamp((lum - 0.5f) / 0.3f, 0.0f, 1.0f);
+          const float curve = k * k * (3.0f - 2.0f * k);
+          const float level01 = v * (e.windows ? 0.35f + 0.65f * curve : curve);
+          const float top = (std::max)({ r, g, b, 0.05f });
+          c[0] = r / top * level01; c[1] = g / top * level01; c[2] = b / top * level01;
+        }
+        // With a mask set, a USD material's emissive colour is the mask's own: Remix ignores emissive_color_constant (only its API
+        // materials can ask for a tint). So the chosen colour goes into the mask; white keeps the texture's hue as before.
+        auto ch = [&](int i) { return static_cast<uint32_t>(std::lround(std::clamp(c[i] * e.rgb[i] * k0, 0.0f, 1.0f) * 255.0f)); };
+        px[at] = 0xFF000000u | (ch(0) << 16) | (ch(1) << 8) | ch(2);
+      }
+    }
   }
-  // The solid copy first: it follows the part, not which texels end up glowing.
+  // The solid copy: it follows the parts, not which texels end up glowing.
   if (textured && texW && texH) {
     std::vector<uint32_t> solid = tex;
     for (unsigned y = 0; y < texH; ++y) {
       for (unsigned x = 0; x < texW; ++x) {
-        if (px[static_cast<size_t>(y * H / texH) * W + x * W / texW] & 0x00FFFFFFu) solid[static_cast<size_t>(y) * texW + x] |= 0xFF000000u;
+        if (covered[static_cast<size_t>(y * H / texH) * W + x * W / texW]) solid[static_cast<size_t>(y) * texW + x] |= 0xFF000000u;
       }
     }
     write_rgba_dds(solid_path(path), texW, texH, solid);
-  }
-  if (textured) {
-    for (unsigned y = 0; y < H; ++y) {
-      for (unsigned x = 0; x < W; ++x) {
-        uint32_t& m = px[static_cast<size_t>(y) * W + x];
-        const float v = static_cast<float>(m & 0xFF) / 255.0f;
-        if (v <= 0.0f) continue;
-        const uint32_t t = tex[static_cast<size_t>(y * texH / H) * texW + x * texW / W];
-        const float r = ((t >> 16) & 0xFF) / 255.0f, g = ((t >> 8) & 0xFF) / 255.0f, b = (t & 0xFF) / 255.0f;
-        const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-        // Windows: hue from the texture, brightness 0.35 .. 1 by the texel's own brightness. Lamps (user 2026-11-08): only
-        // light grey to white glows, as poles and housings are dark or medium grey and the white-ish texels are the lamp.
-        const float k = e.windows ? std::clamp((lum - 0.05f) / 0.45f, 0.0f, 1.0f) : std::clamp((lum - 0.5f) / 0.3f, 0.0f, 1.0f);
-        const float curve = k * k * (3.0f - 2.0f * k);
-        const float level = v * (e.windows ? 0.35f + 0.65f * curve : curve);
-        const float peak = (std::max)({ r, g, b, 0.05f });
-        auto ch = [&](float c) { return static_cast<uint32_t>(std::lround(std::clamp(c / peak * level, 0.0f, 1.0f) * 255.0f)); };
-        m = 0xFF000000u | (ch(r) << 16) | (ch(g) << 8) | ch(b);
-      }
-    }
-  }
-  // With a mask set, a USD material's emissive colour is the mask's own: Remix ignores emissive_color_constant (only its API
-  // materials can ask for a tint). So the chosen colour goes into the mask; white keeps the texture's hue as before.
-  for (uint32_t& m : px) {
-    auto tint = [&](int shift, float c) {
-      return static_cast<uint32_t>(std::lround(std::clamp(static_cast<float>((m >> shift) & 0xFF) * c, 0.0f, 255.0f))) << shift;
-    };
-    m = 0xFF000000u | tint(16, e.rgb[0]) | tint(8, e.rgb[1]) | tint(0, e.rgb[2]);
   }
   if (!write_rgba_dds(path, W, H, px)) return std::wstring();
   return path;
 }
 
-// Section "emissive" of the generated mod: one material per on-level for every saved emissive texture.
+// The masks of a texture from its emissives as they are now. False when one could not be written (the old ones stay).
+bool rebuild_masks(uint64_t tex, EmitState& st) {
+  const std::vector<RbrEmit>& list = g_emit[tex];
+  if (list.empty()) return false;
+  if (emits_mixed(list)) {
+    std::wstring m[kLevels + 1];
+    for (int lv = 0; lv <= kLevels; ++lv) {
+      m[lv] = write_mask(tex, list, st.w, st.h, st.dds, lv);
+      if (m[lv].empty()) return false;
+    }
+    for (int lv = 0; lv <= kLevels; ++lv) st.mask[lv] = m[lv];
+  } else {
+    const std::wstring m = write_mask(tex, list, st.w, st.h, st.dds, -1);
+    if (m.empty()) return false;
+    for (std::wstring& s : st.mask) s = m;
+  }
+  return true;
+}
+
+// Section "emissive" of the generated mod: one material per on-level for every emissive texture.
 void publish() {
   std::string body;
   for (const auto& kv : g_emit) {
     const auto s = g_state.find(kv.first);
-    if (s == g_state.end() || !s->second.ok) continue;
-    const RbrEmit& e = kv.second;
-    const std::wstring solid = solid_path(s->second.mask);
+    if (s == g_state.end() || !s->second.ok || kv.second.empty()) continue;
+    const bool mixed = emits_mixed(kv.second);
+    const float peak = emits_peak(kv.second);
+    const RbrEmit& e = kv.second.front();
+    const std::wstring solid = solid_path(s->second.mask[kLevels]);
     const bool haveSolid = !solid.empty() && GetFileAttributesW(solid.c_str()) != INVALID_FILE_ATTRIBUTES;
-    const std::string dds = rbrrtx_genmod_asset(haveSolid ? solid : s->second.dds), mask = rbrrtx_genmod_asset(s->second.mask);
-    for (int lv = 1; lv <= kLevels; ++lv) {
+    const std::string dds = rbrrtx_genmod_asset(haveSolid ? solid : s->second.dds);
+    for (int lv = mixed ? 0 : 1; lv <= kLevels; ++lv) {
+      const std::string mask = rbrrtx_genmod_asset(s->second.mask[lv]);
       uint32_t px[256];
       const uint64_t th = twin_pixels(kv.first, lv, px);
       char num[200];
+      // Mixed modes: the level is in each mask, as only the "at night" emissives follow it.
       snprintf(num, sizeof(num), "                color3f inputs:emissive_color_constant = (%.3f, %.3f, %.3f)\n"
-                                 "                float inputs:emissive_intensity = %.3f\n", e.rgb[0], e.rgb[1], e.rgb[2], e.intensity * lv / kLevels);
+                                 "                float inputs:emissive_intensity = %.3f\n", e.rgb[0], e.rgb[1], e.rgb[2], mixed ? peak : peak * lv / kLevels);
       const std::string in =
           "                asset inputs:diffuse_texture = @" + dds + "@ (\n"
           "                    colorSpace = \"auto\"\n"
@@ -319,45 +372,29 @@ void publish() {
           "                    colorSpace = \"auto\"\n"
           "                )\n" + num;
       char c[96];
-      snprintf(c, sizeof(c), "%s emissive, texture %016llX, on %d/%d:", e.windows ? "window" : "prop", static_cast<unsigned long long>(kv.first), lv, kLevels);
+      snprintf(c, sizeof(c), "%zu emissive(s), texture %016llX, on %d/%d:", kv.second.size(), static_cast<unsigned long long>(kv.first), lv, kLevels);
       body += rbrrtx_genmod_material(th, std::string(c) + " " + dds, in);
     }
   }
   rbrrtx_genmod_set("emissive", body);
 }
 
-// ---- window panes by luminance: a luminance value per 4x4 block of the saved DXT texture
-bool dds_luma(const std::wstring& path, int* bw, int* bh, std::vector<uint8_t>& luma) {
-  FILE* fp = nullptr;
-  if (_wfopen_s(&fp, path.c_str(), L"rb") || !fp) return false;
-  DWORD hdr[32] = {};
-  if (fread(hdr, sizeof(hdr), 1, fp) != 1 || hdr[0] != 0x20534444) { fclose(fp); return false; }
-  const int w = static_cast<int>(hdr[4]), h = static_cast<int>(hdr[3]);
-  const DWORD fcc = hdr[21];
-  const int blockBytes = fcc == 0x31545844 ? 8 : (fcc == 0x33545844 || fcc == 0x35545844) ? 16 : 0;   // DXT1 / DXT3 / DXT5
-  if (!blockBytes || w < 4 || h < 4 || w > 16384 || h > 16384) { fclose(fp); return false; }
-  *bw = (w + 3) / 4;
-  *bh = (h + 3) / 4;
-  luma.assign(static_cast<size_t>(*bw) * *bh, 0);
-  std::vector<uint8_t> row(static_cast<size_t>(*bw) * blockBytes);
-  for (int by = 0; by < *bh; ++by) {
-    if (fread(row.data(), 1, row.size(), fp) != row.size()) { fclose(fp); return false; }
-    for (int bx = 0; bx < *bw; ++bx) {
-      const uint8_t* c = row.data() + static_cast<size_t>(bx) * blockBytes + (blockBytes == 16 ? 8 : 0);
-      float l = 0;
-      for (int k = 0; k < 2; ++k) {
-        const unsigned v = c[k * 2] | (c[k * 2 + 1] << 8);
-        const float r = ((v >> 11) & 31) / 31.0f, g = ((v >> 5) & 63) / 63.0f, b = (v & 31) / 31.0f;
-        l += 0.299f * r + 0.587f * g + 0.114f * b;
-      }
-      luma[static_cast<size_t>(by) * *bw + bx] = static_cast<uint8_t>(std::clamp(l * 0.5f * 255.0f, 0.0f, 255.0f));
-    }
-  }
-  fclose(fp);
-  return true;
-}
-
 }  // namespace
+
+// A copy of a DDS as 32-bit pixels, black outside the rectangles (u0, v0, u1, v1): litparts.cpp, the part of a lit lamp atlas that glows.
+bool rbrrtx_dds_keep_rects(const wchar_t* src, const wchar_t* dst, const float (*rects)[4], int nrects) {
+  std::vector<uint32_t> px;
+  unsigned w = 0, h = 0;
+  if (!read_dds_rgba(src, px, w, h)) return false;
+  std::vector<uint8_t> keep(static_cast<size_t>(w) * h, 0);
+  for (int i = 0; i < nrects; ++i) {
+    const int x0 = std::clamp(static_cast<int>(std::floor(rects[i][0] * w)), 0, static_cast<int>(w)), x1 = std::clamp(static_cast<int>(std::ceil(rects[i][2] * w)), 0, static_cast<int>(w));
+    const int y0 = std::clamp(static_cast<int>(std::floor(rects[i][1] * h)), 0, static_cast<int>(h)), y1 = std::clamp(static_cast<int>(std::ceil(rects[i][3] * h)), 0, static_cast<int>(h));
+    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) keep[static_cast<size_t>(y) * w + x] = 1;
+  }
+  for (size_t i = 0; i < px.size(); ++i) px[i] = keep[i] ? (px[i] | 0xFF000000u) : 0xFF000000u;
+  return write_rgba_dds(dst, w, h, px);
+}
 
 // ================================================================================================ public
 
@@ -466,41 +503,59 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on) {
 void push_light(const RbrEmit& e, bool remove = false) {
   // The emissive's rectangles go along: a lamp only on the vertex groups drawn with that part of the texture, not one at
   // the centre of every mesh sharing the texture (run 20261107-051117: a lamppost's light under every barrier post).
-  rbrrtx_world_lights_set_emit(e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1, e.offset,
+  rbrrtx_world_lights_set_emit(e.id, e.tex, e.rgb, remove ? 0.0f : e.lumens, e.cone, e.softness, e.dir, e.aim, e.aimAt, e.mode == 1, e.offset,
                                e.windows ? nullptr : e.rects, e.windows ? 0 : e.nrects, e.anchor);
 }
 
-int rbrrtx_emit_count() { return static_cast<int>(g_emit.size()); }
-
-bool rbrrtx_emit_get(int i, RbrEmit* out) {
-  if (i < 0 || i >= static_cast<int>(g_emit.size()) || !out) return false;
-  auto it = g_emit.begin();
-  std::advance(it, i);
-  *out = it->second;
-  return true;
+int rbrrtx_emit_count() {
+  size_t n = 0;
+  for (const auto& kv : g_emit) n += kv.second.size();
+  return static_cast<int>(n);
 }
 
-void rbrrtx_emit_set(const RbrEmit& e) {
-  if (!e.tex) return;
-  g_emit[e.tex] = e;
-  EmitState& st = g_state[e.tex];
-  if (st.ok) {                                         // the mask follows the edit; the twin comes back after the mod reloads
-    const std::wstring m = write_mask(e.tex, e, st.w, st.h, st.dds);
-    if (!m.empty()) { st.mask = m; st.readyAt = GetTickCount64() + kSettle; }
+bool rbrrtx_emit_get(int i, RbrEmit* out) {
+  if (i < 0 || !out) return false;
+  for (const auto& kv : g_emit) {
+    if (static_cast<size_t>(i) < kv.second.size()) { *out = kv.second[i]; return true; }
+    i -= static_cast<int>(kv.second.size());
   }
+  return false;
+}
+
+namespace {
+RbrEmit* find_emit_id(int id) {
+  for (auto& kv : g_emit)
+    for (RbrEmit& e : kv.second) if (e.id == id) return &e;
+  return nullptr;
+}
+}  // namespace
+
+void rbrrtx_emit_set(const RbrEmit& in) {
+  if (!in.tex) return;
+  RbrEmit* d = in.id ? find_emit_id(in.id) : nullptr;
+  if (!d) {
+    g_emit[in.tex].push_back(in);
+    d = &g_emit[in.tex].back();
+    d->id = in.id ? in.id : g_nextEmit++;
+  } else {
+    *d = in;
+  }
+  const RbrEmit e = *d;
+  EmitState& st = g_state[e.tex];
+  if (st.ok && rebuild_masks(e.tex, st)) st.readyAt = GetTickCount64() + kSettle;   // the masks follow the edit; the twin comes back after the mod reloads
   publish();
   push_light(e);
-  clog2(L"emissive %016llX set: %s, %s, intensity %.2f, colour %.2f %.2f %.2f, %d rectangle(s)%s", e.tex, e.windows ? L"windows" : L"prop",
+  clog2(L"emissive %d on %016llX set: %s, %s, intensity %.2f, colour %.2f %.2f %.2f, %d rectangle(s)%s", e.id, e.tex, e.windows ? L"windows" : L"prop",
         e.mode ? L"always" : L"at night", e.intensity, e.rgb[0], e.rgb[1], e.rgb[2], e.nrects, e.windows ? L" (lit fraction baked into the mask)" : L"");
   if (e.lumens > 0.0f)
-    clog2(L"emissive %016llX casts light: %.0f lm, %s %.0f deg, %s (%.2f %.2f %.2f)", e.tex, e.lumens, e.cone > 0.0f ? L"cone" : L"omni", e.cone,
+    clog2(L"emissive %d casts light: %.0f lm, %s %.0f deg, %s (%.2f %.2f %.2f)", e.id, e.lumens, e.cone > 0.0f ? L"cone" : L"omni", e.cone,
           e.aim ? L"aimed at" : L"direction", e.aim ? e.aimAt[0] : e.dir[0], e.aim ? e.aimAt[1] : e.dir[1], e.aim ? e.aimAt[2] : e.dir[2]);
 }
 
 void rbrrtx_emit_set_light(const RbrEmit& e) {
-  const auto it = g_emit.find(e.tex);
-  if (it == g_emit.end()) return;
-  RbrEmit& d = it->second;
+  RbrEmit* found = find_emit_id(e.id);
+  if (!found) return;
+  RbrEmit& d = *found;
   d.lumens = e.lumens;
   d.cone = e.cone;
   d.softness = e.softness;
@@ -510,15 +565,24 @@ void rbrrtx_emit_set_light(const RbrEmit& e) {
   std::memcpy(d.offset, e.offset, sizeof(d.offset));   // the list's offset sliders were dropped here before 2026-11-07
   d.anchor = e.anchor;
   push_light(d, d.lumens <= 0.0f);
-  clog2(L"emissive %016llX light: %.0f lm, cone %.0f deg, %s", e.tex, d.lumens, d.cone, d.aim ? L"aimed at a point" : L"along a direction");
+  clog2(L"emissive %d light: %.0f lm, cone %.0f deg, %s", e.id, d.lumens, d.cone, d.aim ? L"aimed at a point" : L"along a direction");
 }
 
-void rbrrtx_emit_remove(unsigned long long tex) {
-  const auto it = g_emit.find(tex);
-  if (it != g_emit.end() && it->second.lumens > 0.0f) push_light(it->second, true);
-  g_emit.erase(tex);
+void rbrrtx_emit_remove(int id) {
+  const RbrEmit* found = find_emit_id(id);
+  if (!found) return;
+  const RbrEmit e = *found;
+  if (e.lumens > 0.0f) push_light(e, true);
+  std::vector<RbrEmit>& list = g_emit[e.tex];
+  list.erase(std::remove_if(list.begin(), list.end(), [&](const RbrEmit& x) { return x.id == id; }), list.end());
+  if (list.empty()) {
+    g_emit.erase(e.tex);
+  } else {
+    EmitState& st = g_state[e.tex];
+    if (st.ok && rebuild_masks(e.tex, st)) st.readyAt = GetTickCount64() + kSettle;
+  }
   publish();
-  clog2(L"emissive %016llX removed", tex);
+  clog2(L"emissive %d on %016llX removed", id, e.tex);
 }
 
 bool rbrrtx_emit_wanted() { return !g_emit.empty(); }
@@ -529,8 +593,10 @@ void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture,
   const auto it = g_emit.find(hash);
   if (it == g_emit.end()) return nullptr;
   g_drawnThisStage.insert(hash);
-  const RbrEmit& e = it->second;
-  if (e.mode == 0 && night <= 0.02f) return nullptr;
+  const std::vector<RbrEmit>& list = it->second;
+  if (list.empty()) return nullptr;
+  const bool mixed = emits_mixed(list), always = list.front().mode == 1;   // not mixed: all as the first
+  if (!mixed && !always && night <= 0.02f) return nullptr;
   EmitState& st = g_state[hash];
   if (!st.tried) {
     st.tried = true;
@@ -542,25 +608,25 @@ void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture,
     if (bt && SUCCEEDED(bt->lpVtbl->GetLevelDesc(bt, 0, &desc))) { st.w = desc.Width; st.h = desc.Height; }
     const bool have = rbrrtx_dds_is_texture(st.dds.c_str(), hash);   // false too for a noise file of an older build: saved anew
     if (!dir.empty() && st.w && (have || rbrrtx_save_texture_dds_mips(baseTexture, st.dds.c_str()))) {
-      st.mask = write_mask(hash, e, st.w, st.h, st.dds);
-      st.ok = !st.mask.empty();
+      st.ok = rebuild_masks(hash, st);
     }
     st.readyAt = GetTickCount64() + kSettle;
-    clog2(L"emissive %016llX (%s): texture %s %s%s", hash, e.windows ? L"windows" : L"prop", st.ok ? L"saved" : L"FAILED to save", st.dds.c_str(),
+    clog2(L"emissive %016llX (%zu of them): texture %s %s%s", hash, list.size(), st.ok ? L"saved" : L"FAILED to save", st.dds.c_str(),
           st.ok ? L"; it glows once the generated mod has reloaded" : L"");
     if (st.ok) publish();
   }
   const ULONGLONG now = GetTickCount64();
   if (!st.ok || now < st.readyAt) return nullptr;
-  const int want = e.mode == 1 ? kLevels : std::clamp(static_cast<int>(std::ceil(night * kLevels - 0.001f)), 1, kLevels);
-  if (st.lvHeld == 0 || want > st.lvHeld) { st.lvHeld = want; st.lowerSince = 0; }
+  const int nightLevel = std::clamp(static_cast<int>(std::ceil(night * kLevels - 0.001f)), 1, kLevels);
+  const int want = mixed ? (night <= 0.02f ? 0 : nightLevel) : always ? kLevels : nightLevel;
+  if (st.lvHeld < 0 || want > st.lvHeld) { st.lvHeld = want; st.lowerSince = 0; }
   else if (want < st.lvHeld) {                         // up at once, down after a second (a sun sweeping through dusk)
     if (!st.lowerSince) st.lowerSince = now;
     else if (now - st.lowerSince >= kHold) { st.lvHeld = want; st.lowerSince = 0; }
   } else {
     st.lowerSince = 0;
   }
-  IDirect3DTexture9*& t = st.twin[st.lvHeld - 1];
+  IDirect3DTexture9*& t = st.twin[st.lvHeld];
   if (!t) {
     IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
     uint32_t px[256];
@@ -579,68 +645,9 @@ void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture,
   return t;
 }
 
-// Window panes: dark / glassy rectangular cells inside the island, by the luminance of the saved texture's 4x4 blocks.
-int rbrrtx_emit_auto_windows(unsigned long long tex, void* texture, const float island[4], float out[][4], int max) {
-  const std::wstring dir = emit_dir();
-  if (dir.empty() || !texture) return 0;
-  CreateDirectoryW(dir.c_str(), nullptr);
-  const std::wstring dds = dir + L"\\" + hex16(tex) + L".dds";
-  if (!rbrrtx_dds_is_texture(dds.c_str(), tex) && !rbrrtx_save_texture_dds_mips(texture, dds.c_str())) {
-    clog2(L"auto windows %016llX: could not save the texture", tex);
-    return 0;
-  }
-  int bw = 0, bh = 0;
-  std::vector<uint8_t> L;
-  if (!dds_luma(dds, &bw, &bh, L)) { clog2(L"auto windows %016llX: not a DXT1/3/5 texture, no luminance map", tex); return 0; }
-  const int x0 = std::clamp(static_cast<int>(island[0] * bw), 0, bw - 1), x1 = std::clamp(static_cast<int>(std::ceil(island[2] * bw)), x0 + 1, bw);
-  const int y0 = std::clamp(static_cast<int>(island[1] * bh), 0, bh - 1), y1 = std::clamp(static_cast<int>(std::ceil(island[3] * bh)), y0 + 1, bh);
-  const int rw = x1 - x0, rh = y1 - y0;
-  if (rw < 4 || rh < 4) return 0;
-  double mean = 0, var = 0;
-  for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) mean += L[static_cast<size_t>(y) * bw + x];
-  mean /= static_cast<double>(rw) * rh;
-  for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) { const double d = L[static_cast<size_t>(y) * bw + x] - mean; var += d * d; }
-  const double sd = std::sqrt(var / (static_cast<double>(rw) * rh)), thr = mean - 0.4 * sd;
-  std::vector<char> dark(static_cast<size_t>(rw) * rh), seen(static_cast<size_t>(rw) * rh, 0);
-  for (int y = 0; y < rh; ++y) for (int x = 0; x < rw; ++x) dark[static_cast<size_t>(y) * rw + x] = L[static_cast<size_t>(y0 + y) * bw + x0 + x] < thr;
-  int n = 0;
-  std::vector<int> stack;
-  for (int sy = 0; sy < rh && n < max; ++sy)
-    for (int sx = 0; sx < rw && n < max; ++sx) {
-      const size_t si = static_cast<size_t>(sy) * rw + sx;
-      if (!dark[si] || seen[si]) continue;
-      int mnx = sx, mxx = sx, mny = sy, mxy = sy, cells = 0;
-      stack.assign(1, static_cast<int>(si));
-      seen[si] = 1;
-      while (!stack.empty()) {
-        const int c = stack.back();
-        stack.pop_back();
-        const int cx = c % rw, cy = c / rw;
-        ++cells;
-        mnx = (std::min)(mnx, cx); mxx = (std::max)(mxx, cx); mny = (std::min)(mny, cy); mxy = (std::max)(mxy, cy);
-        const int nx[4] = { cx - 1, cx + 1, cx, cx }, ny[4] = { cy, cy, cy - 1, cy + 1 };
-        for (int k = 0; k < 4; ++k) {
-          if (nx[k] < 0 || ny[k] < 0 || nx[k] >= rw || ny[k] >= rh) continue;
-          const size_t ni = static_cast<size_t>(ny[k]) * rw + nx[k];
-          if (dark[ni] && !seen[ni]) { seen[ni] = 1; stack.push_back(static_cast<int>(ni)); }
-        }
-      }
-      const int cw = mxx - mnx + 1, ch = mxy - mny + 1;
-      const double fill = static_cast<double>(cells) / (static_cast<double>(cw) * ch), aspect = static_cast<double>((std::max)(cw, ch)) / (std::min)(cw, ch);
-      if (cw < 2 || ch < 2 || fill < 0.55 || aspect > 5.0 || static_cast<double>(cw) * ch > 0.4 * rw * rh) continue;
-      out[n][0] = static_cast<float>(x0 + mnx) / bw;
-      out[n][1] = static_cast<float>(y0 + mny) / bh;
-      out[n][2] = static_cast<float>(x0 + mxx + 1) / bw;
-      out[n][3] = static_cast<float>(y0 + mxy + 1) / bh;
-      ++n;
-    }
-  clog2(L"auto windows %016llX: %d pane(s) found in the island (%dx%d blocks, dark below luminance %.0f of mean %.0f)", tex, n, rw, rh, thr, mean);
-  return n;
-}
-
 // ---- menu.ini sections
 // [lights.<stage>] l<id> = x, y, z, r, g, b, lumens, radius, flicker, mode[, cone, softness, dx, dy, dz]   (older lines: spheres)
-// [emissive] / [windows] <hex16> = mode, intensity, r, g, b, litPercent, seed, u0 v0 u1 v1; u0 v0 u1 v1; ...
+// [emissive] / [windows] <hex16>[_<n>] = mode, intensity, r, g, b, litPercent, seed, u0 v0 u1 v1; u0 v0 u1 v1; ...
 //   [| light=lumens, cone, softness, dx, dy, dz, aim, ax, ay, az]   (an emissive prop that casts light)
 void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value) {
   if (!section || !key || !value) return;
@@ -676,7 +683,8 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
       sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f , %f , %d", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
                &e.aimAt[0], &e.aimAt[1], &e.aimAt[2], &e.offset[0], &e.offset[1], &e.offset[2], &e.anchor);   // offset, anchor: since 2026-11-07, older lines lack them
     }
-    g_emit[e.tex] = e;
+    e.id = g_nextEmit++;
+    g_emit[e.tex].push_back(e);                        // one line per emissive: <hex16>, then <hex16>_2, _3 for the same texture
     g_state[e.tex];
     if (e.lumens > 0.0f) push_light(e);
   }
@@ -704,10 +712,14 @@ int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* use
   for (int pass = 0; pass < 2; ++pass) {
     bool head = false;
     for (const auto& kv : g_emit) {
-      const RbrEmit& e = kv.second;
+      int nth = 0;
+      for (const RbrEmit& e : kv.second) {
       if ((e.windows != 0) != (pass == 1)) continue;
       if (!head) { emit(pass ? "[windows]" : "[emissive]", user); head = true; }
-      int len = snprintf(b, sizeof(b), "%016llX=%d, %.3f, %.4f, %.4f, %.4f, %d, %u, ", static_cast<unsigned long long>(kv.first), e.mode, e.intensity, e.rgb[0], e.rgb[1],
+      char key[40];
+      if (++nth == 1) snprintf(key, sizeof(key), "%016llX", static_cast<unsigned long long>(kv.first));
+      else snprintf(key, sizeof(key), "%016llX_%d", static_cast<unsigned long long>(kv.first), nth);
+      int len = snprintf(b, sizeof(b), "%s=%d, %.3f, %.4f, %.4f, %.4f, %d, %u, ", key, e.mode, e.intensity, e.rgb[0], e.rgb[1],
                          e.rgb[2], e.litPercent, e.seed);
       for (int i = 0; i < e.nrects && len < static_cast<int>(sizeof(b)) - 80; ++i)
         len += snprintf(b + len, sizeof(b) - len, "%.5f %.5f %.5f %.5f; ", e.rects[i][0], e.rects[i][1], e.rects[i][2], e.rects[i][3]);
@@ -716,6 +728,7 @@ int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* use
                  e.dir[2], e.aim, e.aimAt[0], e.aimAt[1], e.aimAt[2], e.offset[0], e.offset[1], e.offset[2], e.anchor);
       emit(b, user);
       ++items;
+      }
     }
     if (head) emit("", user);
   }

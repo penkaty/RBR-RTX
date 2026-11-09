@@ -163,6 +163,8 @@ int rbrrtx_headlights_on();                                     // 1 while the c
 int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
 bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
 bool rbrrtx_headlights_forward(float out[3]);                   // the car's forward direction in the world, false before its first pose
+const float (*rbrrtx_headlights_front_rects(int* count))[4];     // the UV boxes of the front lamps' flat faces on their lit atlas (headlights.cpp)
+bool rbrrtx_dds_keep_rects(const wchar_t* src, const wchar_t* dst, const float (*rects)[4], int nrects);   // custom.cpp
 bool rbrrtx_headlights_is_aux(unsigned numV);                   // a draw of this vertex count is one of the model's auxiliary lamp meshes
 bool rbrrtx_headlights_aux_on();                                // the auxiliary lamps are on now
 bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses
@@ -182,16 +184,17 @@ bool rbrrtx_world_lights_wanted();                              // any lamp text
 bool rbrrtx_world_lights_texture(unsigned long long hash);
 // Lamp in an atlas: its TEXCOORD0 rectangles (count, up to max); poleMinHeight > 0 = keep only groups on a pole;
 // anchor: 0 top, 1 centre, 2 bottom of each group.
-int rbrrtx_world_lights_uvs(unsigned long long hash, float rects[][4], int max, float* poleMinHeight, int* anchor);
-void rbrrtx_world_lights_seen(unsigned long long hash, const float c[3], float r, bool inMenu);   // world bounding sphere
+int rbrrtx_world_lights_kinds(unsigned long long hash);          // lamp kinds on this texture (F3: one per emissive that casts light)
+int rbrrtx_world_lights_uvs(unsigned long long hash, int kind, float rects[][4], int max, float* poleMinHeight, int* anchor);
+void rbrrtx_world_lights_seen(unsigned long long hash, int kind, const float c[3], float r, bool inMenu);   // world bounding sphere
 void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool layerOn);           // per Present
 void rbrrtx_world_lights_reset();                               // menu <-> stage: the last scene's lamps go
 void rbrrtx_world_lights_reload();
 // rbrhud.cpp: the cockpit windscreen with RBRHUD's F4 opacity / threshold (rbrhud.ini [windscreen]); nullptr = unchanged.
 bool rbrrtx_rbrhud_windscreen(float* opacity, float* threshold, bool* regionsOnly);   // RBRHUD F4 windscreen settings, while opacity < 1
-// An F3 emissive prop that casts light (custom.cpp): a lamp kind for its texture; lumens <= 0 removes it. Lamps go and are
+// An F3 emissive that casts light (custom.cpp): a lamp kind of its own on its texture; lumens <= 0 removes it. Lamps go and are
 // found again from the next draws.
-void rbrrtx_world_lights_set_emit(unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
+void rbrrtx_world_lights_set_emit(int id, unsigned long long tex, const float rgb[3], float lumens, float cone, float softness,
                                   const float dir[3], int aim, const float aimAt[3], int always, const float offset[3],
                                   const float (*rects)[4] = nullptr, int nrects = 0, int anchor = 1);                              // lights*.ini read again (after the lamp_mark key; lamps go)
 float rbrrtx_world_lights_mark_glow();                         // lights.ini [lights] mark_glow: the glow a new lamp mark gets

@@ -46,7 +46,8 @@ void status(const char* t) { rbrrtx_menu_set_status(t); }
 // User 2026-11-08 (saved 14:04): strong sodium = 125000 lm, cone 50, softness 0.15 (softer dims the lamp), glow 0.2 (the glow
 // only has to look right and not clip; the lumens light the road). The others scaled from it. kelvin 0 = the rgb below.
 // User 2026-11-09: sodium 3200 K, the LED and white lamps 750 K above their first values.
-struct LampPreset { const char* name; float kelvin; float rgb[3]; float lumens, cone, softness, intensity; };
+// window: glow only, with the window brightness curve (user 2026-11-09: this replaces the Windows page).
+struct LampPreset { const char* name; float kelvin; float rgb[3]; float lumens, cone, softness, intensity; bool window; };
 constexpr LampPreset kLampPresets[] = {
   { "Streetlamp (sodium)",         3200.0f, { 1.0f, 1.0f, 1.0f }, 50000.0f,  50.0f, 0.15f, 0.2f },
   { "Strong streetlamp (sodium)",  3200.0f, { 1.0f, 1.0f, 1.0f }, 125000.0f, 50.0f, 0.15f, 0.2f },
@@ -56,6 +57,7 @@ constexpr LampPreset kLampPresets[] = {
   { "Stadium light",               6350.0f, { 1.0f, 1.0f, 1.0f }, 400000.0f, 40.0f, 0.15f, 0.4f },
   { "Coloured spot",               0.0f,    { 1.0f, 0.2f, 0.1f }, 125000.0f, 25.0f, 0.10f, 0.2f },
   { "Point light (every way)",     2700.0f, { 1.0f, 1.0f, 1.0f }, 31000.0f,  0.0f,  0.0f,  0.2f },
+  { "Windows (glow only)",         3000.0f, { 1.0f, 1.0f, 1.0f }, 0.0f,      0.0f,  0.15f, 0.3f, true },
 };
 
 float nearest_kelvin(const float rgb[3]) {             // a saved lamp's colour on the temperature slider
@@ -102,8 +104,6 @@ void add_preset(const float pos[3], int preset) {
   add_light(pos, rgb, preset == 2 ? 1800.0f : 4000.0f, preset == 2 ? 0.25f : 0.1f, preset == 2 ? 0.15f : 0.0f, 0);
 }
 
-RbrEmit* find_emit(unsigned long long tex, RbrEmit* store);
-
 void page_lights(void*) {
   ImGui::TextWrapped("Lights at world positions, kept per stage (%s in menu.ini). Aim the middle of the screen at a surface "
                      "and add one at the hit point (nudged back toward you), or place one at the camera. Spheres light every way, "
@@ -142,7 +142,7 @@ void page_lights(void*) {
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
   if (ImGui::BeginCombo("lamp type", kLampPresets[conePreset].name)) {
     for (int p = 0; p < static_cast<int>(std::size(kLampPresets)); ++p)
-      if (ImGui::Selectable(kLampPresets[p].name, p == conePreset)) conePreset = p;
+      if (!kLampPresets[p].window && ImGui::Selectable(kLampPresets[p].name, p == conePreset)) conePreset = p;
     ImGui::EndCombo();
   }
   auto add_cone = [&](const float pos[3]) {
@@ -222,10 +222,11 @@ void page_lights(void*) {
       // The lamp's own mesh glows too: aim at the lamp head (its glass, or the whole mesh) and press.
       ImGui::BeginDisabled(!pick.found || !pick.hash[0]);
       if (ImGui::Button("Make the part at the crosshair glow in this colour")) {
-        RbrEmit e = {};
-        if (!find_emit(pick.hash[0], &e) || e.windows) { e = {}; e.intensity = 0.2f; e.dir[1] = -1.0f; e.softness = 0.2f; }
+        RbrEmit e = {};                                 // a new emissive with its own settings, also on a texture that has some
+        e.intensity = 0.2f;
+        e.dir[1] = -1.0f;
+        e.softness = 0.2f;
         e.tex = pick.hash[0];
-        e.windows = 0;
         e.mode = l.mode;
         std::memcpy(e.rgb, l.rgb, sizeof(e.rgb));
         if (pick.has_island && e.nrects < kEmitMaxRects) std::memcpy(e.rects[e.nrects++], pick.uv_rect, sizeof(float) * 4);
@@ -328,19 +329,13 @@ bool box_sliders(float r[4]) {
   return ch;
 }
 
-RbrEmit* find_emit(unsigned long long tex, RbrEmit* store) {
-  for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i)
-    if (rbrrtx_emit_get(i, store) && store->tex == tex) return store;
-  return nullptr;
-}
-
-
 // ---- Emissive (props) ------------------------------------------------------------------------------------------------
 void page_emissive(void*) {
   ImGui::TextWrapped("Aim the middle of the screen at a lamp head; the yellow box is the part of the texture around the hit point. "
                      "With \"only the highlighted part\" the glow AND the lamps go only where that part of the texture is drawn, so "
                      "other objects sharing the texture stay dark. Every lamp head drawn with that part gets one lamp at its centre "
-                     "(move it with the offset in the list). Window facades: Windows page.");
+                     "(move it with the offset in the list). Every press adds a new emissive with its own settings, also on a texture that already has one. "
+                     "Lit windows: the Windows preset, with the box over the panes.");
   static bool freeze = false, island_only = true;
   static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 3200.0f;
   static const int rgbFromKelvin = (kelvin_rgb(kelvin, rgb), 0);
@@ -357,7 +352,9 @@ void page_emissive(void*) {
         const LampPreset& lp = kLampPresets[p];
         if (lp.kelvin > 0.0f) { kelvin = lp.kelvin; kelvin_rgb(kelvin, rgb); }
         else std::memcpy(rgb, lp.rgb, sizeof(rgb));
-        lumens = lp.lumens; cone = lp.cone; softness = lp.softness; intensity = lp.intensity;
+        if (lp.window) cast = false;
+        else { lumens = lp.lumens; cone = lp.cone; softness = lp.softness; }
+        intensity = lp.intensity;
       }
     ImGui::EndCombo();
   }
@@ -397,9 +394,6 @@ void page_emissive(void*) {
     static int anchor = 0;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
     ImGui::Combo("lamp sits at the part's", &anchor, "top\0centre\0bottom\0");
-    static bool addPart = true;                        // user 2026-11-09: a second lamp on the same texture replaced the first
-    ImGui::SameLine();
-    ImGui::Checkbox("add to the texture's other parts", &addPart);
     if (ImGui::SliderFloat("temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 3200 K, LED 4750-5750 K.");
     if (ImGui::TreeNode("colour instead of temperature")) {
@@ -421,21 +415,18 @@ void page_emissive(void*) {
     }
     ImGui::BeginDisabled(!pick.hash[0]);
     if (ImGui::Button(cast ? "Make this a lamp" : "Make emissive")) {
-      RbrEmit store = {};
-      RbrEmit e = {};
-      if (find_emit(pick.hash[0], &store) && !store.windows) e = store;     // another part of the same texture: more rectangles
+      RbrEmit e = {};                                  // always a new one (user 2026-11-09: each emissive has its own settings)
       e.tex = pick.hash[0];
-      e.windows = 0;
+      e.windows = kLampPresets[preset].window ? 1 : 0;
+      e.litPercent = 100;
+      e.seed = 12345;
       e.mode = mode;
       e.intensity = intensity;
       std::memcpy(e.rgb, rgb, sizeof(e.rgb));
       e.anchor = anchor;
       if (island_only && part[2] > part[0] && part[3] > part[1]) {
-        if (!addPart) e.nrects = 0;                      // a new part replaces the old ones unless asked to add
-        if (e.nrects < kEmitMaxRects) std::memcpy(e.rects[e.nrects++], part, sizeof(float) * 4);
-      } else {
-        e.nrects = 0;                                    // the whole texture
-      }
+        std::memcpy(e.rects[e.nrects++], part, sizeof(float) * 4);
+      }                                                // no box: the whole texture
       e.lumens = cast ? lumens : 0.0f;
       e.cone = cone;
       e.softness = softness;
@@ -452,15 +443,15 @@ void page_emissive(void*) {
   // rbrrtx_emit_get refills e every frame, which threw a drag away (user 2026-11-08: the sliders went back to the value
   // the lamp was made with). The row being dragged keeps its own copy until the release applies it.
   static RbrEmit s_drag = {};
-  static unsigned long long s_dragTex = 0;
+  static int s_dragId = 0;
   ImGui::TextDisabled("Only the lamps on this stage are listed.");
   for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i) {
-    if (!rbrrtx_emit_get(i, &e) || e.windows || !rbrrtx_emit_on_stage(e.tex)) continue;
-    if (e.tex == s_dragTex) e = s_drag;
-    ImGui::PushID(i);
-    ImGui::Text("0x%016llX  %s  intensity %.2f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
+    if (!rbrrtx_emit_get(i, &e) || !rbrrtx_emit_on_stage(e.tex)) continue;
+    if (e.id == s_dragId) e = s_drag;
+    ImGui::PushID(e.id);
+    ImGui::Text("#%d  0x%016llX  %s%s  intensity %.2f  %d part(s)", e.id, e.tex, e.windows ? "window, " : "", e.mode ? "always" : "night", e.intensity, e.nrects);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Remove")) remove = static_cast<int>(i);
+    if (ImGui::SmallButton("Remove")) remove = e.id;
     if (e.nrects > 1) {                                // one part of the texture at a time
       for (int r = 0; r < e.nrects; ++r) {
         ImGui::PushID(1000 + r);
@@ -482,9 +473,9 @@ void page_emissive(void*) {
     // values change the material, so it comes back after the generated mod has reloaded, about 10 s.
     bool edit = false, held = false, glowEdit = false;
     if (ImGui::TreeNode("glow")) {                     // what "Make this a lamp" set (user 2026-11-08: all of it editable)
-      static std::map<unsigned long long, float> s_kelvin;
-      auto kIt = s_kelvin.find(e.tex);
-      if (kIt == s_kelvin.end()) kIt = s_kelvin.emplace(e.tex, nearest_kelvin(e.rgb)).first;
+      static std::map<int, float> s_kelvin;
+      auto kIt = s_kelvin.find(e.id);
+      if (kIt == s_kelvin.end()) kIt = s_kelvin.emplace(e.id, nearest_kelvin(e.rgb)).first;
       if (ImGui::SliderFloat("temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kIt->second, e.rgb);
       glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
       held |= ImGui::IsItemActive();
@@ -556,8 +547,8 @@ void page_emissive(void*) {
       pitch_yaw_dir(pitch, yaw, e.dir);
       rbrrtx_emit_set_light(e);
     }
-    if (held) { s_drag = e; s_dragTex = e.tex; }
-    else if (s_dragTex == e.tex) s_dragTex = 0;
+    if (held) { s_drag = e; s_dragId = e.id; }
+    else if (s_dragId == e.id) s_dragId = 0;
     if (glowEdit) {
       rbrrtx_emit_set(e);
       status("glow changed (Save keeps it); it returns once the generated mod has reloaded, about 10 s");
@@ -566,7 +557,7 @@ void page_emissive(void*) {
       status("light changed (Save keeps it)");
     }
     ImGui::PopID();
-    if (remove == i) { rbrrtx_emit_remove(e.tex); break; }
+    if (remove == e.id) { rbrrtx_emit_remove(e.id); break; }
   }
 }
 
@@ -574,113 +565,6 @@ void page_emissive(void*) {
 void page_lamps(void*) {
   if (ImGui::CollapsingHeader("Lamp heads: glow + light from a part of a texture", ImGuiTreeNodeFlags_DefaultOpen)) page_emissive(nullptr);
   if (ImGui::CollapsingHeader("Free lights at a point (flares, crowd, doorway)")) page_lights(nullptr);
-}
-
-// ---- Windows ----------------------------------------------------------------------------------------------------------
-void page_windows(void*) {
-  ImGui::TextWrapped("Light the windows of a wall. Aim at the facade, tick Freeze, then drag rectangles over the panes in the thumbnail "
-                     "(cyan) or press Auto to find the dark / glassy cells inside the yellow island. Apply bakes a random lit fraction "
-                     "and brightness per pane into a night-only emissive mask with a warm glow. The mask belongs to the texture: every "
-                     "building with it shows the same lit windows.");
-  static bool freeze = false;
-  static unsigned long long s_tex = 0;
-  static std::vector<std::array<float, 4>> rects;
-  static float kelvin = 3000.0f, intensity = 5.0f;
-  static int lit = 40, mode = 0;
-  static unsigned seed = 12345;
-  static ImVec2 drag0;
-  static bool dragging = false;
-  ImGui::Checkbox("Freeze (keep the last hit)", &freeze);
-  rbrrtx_menu_pick pick = {};
-  rbrrtx_menu_probe(&pick, freeze ? 0 : 1);
-  if (!pick.found || !pick.hash[0]) { ImGui::TextDisabled("nothing under the crosshair"); }
-  else {
-    if (pick.hash[0] != s_tex) {                         // another texture: the working set starts from what was applied for it
-      s_tex = pick.hash[0];
-      rects.clear();
-      RbrEmit store = {};
-      if (find_emit(s_tex, &store) && store.windows) {
-        for (int i = 0; i < store.nrects; ++i) rects.push_back({ store.rects[i][0], store.rects[i][1], store.rects[i][2], store.rects[i][3] });
-        lit = store.litPercent; kelvin = 3000.0f; intensity = store.intensity; mode = store.mode; seed = store.seed;
-      }
-    }
-    ImGui::Text("%s, %s, %.1f m, texture 0x%016llX", pick.kind, pick.shader, pick.distance, pick.hash[0]);
-    const Thumb t = draw_thumb(pick, ImGui::GetTextLineHeight() * 20.0f, rects);
-    if (freeze && pick.texture[0] && ImGui::IsItemHovered()) {          // drag a rectangle over a pane
-      const ImVec2 m = ImGui::GetIO().MousePos;
-      const auto uv = [&](ImVec2 p) { return ImVec2(std::clamp((p.x - t.min.x) / (t.max.x - t.min.x), 0.0f, 1.0f), std::clamp((p.y - t.min.y) / (t.max.y - t.min.y), 0.0f, 1.0f)); };
-      if (ImGui::IsMouseClicked(0)) { drag0 = uv(m); dragging = true; }
-      if (dragging && ImGui::IsMouseReleased(0)) {
-        const ImVec2 a = drag0, b = uv(m);
-        dragging = false;
-        const float x0 = (std::min)(a.x, b.x), x1 = (std::max)(a.x, b.x), y0 = (std::min)(a.y, b.y), y1 = (std::max)(a.y, b.y);
-        if (x1 - x0 > 0.0005f && y1 - y0 > 0.0005f && rects.size() < kEmitMaxRects) rects.push_back({ x0, y0, x1, y1 });
-      }
-      if (dragging) {
-        const ImVec2 a = drag0, b = uv(m);
-        ImGui::GetWindowDrawList()->AddRect(ImVec2(t.min.x + (t.max.x - t.min.x) * (std::min)(a.x, b.x), t.min.y + (t.max.y - t.min.y) * (std::min)(a.y, b.y)),
-                                            ImVec2(t.min.x + (t.max.x - t.min.x) * (std::max)(a.x, b.x), t.min.y + (t.max.y - t.min.y) * (std::max)(a.y, b.y)),
-                                            IM_COL32(255, 255, 255, 255));
-      }
-    } else if (!ImGui::IsMouseDown(0)) {
-      dragging = false;
-    }
-    if (!freeze) ImGui::TextDisabled("tick Freeze to draw rectangles");
-    if (!rects.empty()) {
-      ImGui::TextDisabled("Last pane:");
-      box_sliders(rects.back().data());
-    }
-    ImGui::Text("%zu pane(s)", rects.size());
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Undo last") && !rects.empty()) rects.pop_back();
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Clear")) rects.clear();
-    ImGui::BeginDisabled(!pick.has_island || !pick.texture[0]);
-    if (ImGui::Button("Auto (dark cells in the island)")) {
-      float out[kEmitMaxRects][4];
-      const int n = rbrrtx_emit_auto_windows(pick.hash[0], pick.texture[0], pick.uv_rect, out, kEmitMaxRects);
-      for (int i = 0; i < n && rects.size() < kEmitMaxRects; ++i) rects.push_back({ out[i][0], out[i][1], out[i][2], out[i][3] });
-      char b[100];
-      std::snprintf(b, sizeof(b), "auto: %d pane(s) found", n);
-      status(b);
-    }
-    ImGui::EndDisabled();
-    ImGui::SliderInt("lit fraction (%)", &lit, 0, 100);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Re-roll")) seed = seed * 1664525u + 1013904223u;
-    ImGui::SliderFloat("warmth (K)", &kelvin, 2000.0f, 4500.0f, "%.0f");
-    ImGui::SliderFloat("intensity", &intensity, 0.5f, 40.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-    ImGui::RadioButton("at night", &mode, 0);
-    ImGui::SameLine();
-    ImGui::RadioButton("always", &mode, 1);
-    ImGui::BeginDisabled(rects.empty());
-    if (ImGui::Button("Apply windows")) {
-      RbrEmit e = {};
-      e.tex = pick.hash[0];
-      e.windows = 1;
-      e.mode = mode;
-      e.intensity = intensity;
-      kelvin_rgb(kelvin, e.rgb);
-      e.litPercent = lit;
-      e.seed = seed;
-      e.nrects = static_cast<int>((std::min)(rects.size(), static_cast<size_t>(kEmitMaxRects)));
-      for (int i = 0; i < e.nrects; ++i) std::memcpy(e.rects[i], rects[i].data(), sizeof(float) * 4);
-      rbrrtx_emit_set(e);
-      status("windows applied (Save keeps them); they glow after the generated mod has reloaded, about 10 s");
-    }
-    ImGui::EndDisabled();
-  }
-  ImGui::SeparatorText("Window textures");
-  RbrEmit e = {};
-  for (int i = 0, n = rbrrtx_emit_count(); i < n; ++i) {
-    if (!rbrrtx_emit_get(i, &e) || !e.windows || !rbrrtx_emit_on_stage(e.tex)) continue;
-    ImGui::PushID(i);
-    ImGui::Text("0x%016llX  %d pane(s), %d %% lit, %s", e.tex, e.nrects, e.litPercent, e.mode ? "always" : "night");
-    ImGui::SameLine();
-    const bool rm = ImGui::SmallButton("Remove");
-    ImGui::PopID();
-    if (rm) { rbrrtx_emit_remove(e.tex); s_tex = 0; break; }
-  }
 }
 
 // ---- ini editor pages: Atmosphere (atmosphere.ini), Headlights (headlights.ini) --------------------------------------
@@ -879,5 +763,4 @@ extern "C" void rbrrtx_menu_register_custom_pages(void) {
   // One page for lamps (user 2026-11-07: "combine lights and emissives into one in F3"): lamp heads (emissive part +
   // its lamps, with presets) first, free-standing lights below.
   rbrrtx_menu_add_page("Lamps", page_lamps, nullptr);
-  rbrrtx_menu_add_page("Windows", page_windows, nullptr);
 }
