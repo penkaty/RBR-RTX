@@ -112,6 +112,7 @@ float g_sunEl = 90.0f;                                   // sun height at the la
 struct Side { bool valid = false; unsigned frame = 0; int st[kSignals] = {}; std::vector<uint64_t> keys; };
 Side g_side[kSignals];                                   // per signal: the last judged frame with it settled
 unsigned g_switches = 0, g_switchesRefused = 0;
+bool g_lampSwitchClean = false;                          // this car: a clean switch of the lamp signal was seen
 std::wstring g_carFile;
 
 // Signal state per frame: +1 clearly on, -1 clearly off, 0 changing (the game fades lamps over 0.02-0.05 s and its
@@ -473,6 +474,7 @@ void switch_seen(int i, const Side& before, const std::vector<uint64_t>& now, co
   }
   if (common * 4 < off.size() * 3 || common * 4 < lit.size() * 3) { ++g_switchesRefused; return; }
   ++g_switches;
+  if (i == kLamps) g_lampSwitchClean = true;
   const unsigned bit = 1u << i;
   auto other_on = [&](const Part& p) {                 // another of its signals is on: this switch says nothing
     for (int j = 0; j < kSignals; ++j) if (j != i && (p.mask & (1u << j)) && st[j] > 0) return true;
@@ -656,6 +658,7 @@ void forget_car() {
   g_drawn.clear();
   g_drawnAt.clear();
   g_discPrims.clear();
+  g_lampSwitchClean = false;
   for (Side& s : g_side) s = Side();
 }
 
@@ -787,6 +790,12 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
   p.prims = prims;
   g_drawn.push_back(key);
+  // The unlit brake lens glows as a tail lamp from the start: the model names it, without waiting for the first brake press
+  // (user 2026-11-09: rear lights only came on after toggling L). A part drawn while braking stops being one (judge_frame).
+  if (!p.tail && !p.mask && !p.everOn[kBrake] && prims <= kLensMaxPrims && rbrrtx_headlights_is_brake_lens(numV)) {
+    p.tail = true;
+    llog(L"lit parts: a %u-triangle part is an unlit brake lens by the car's model: it glows as a tail lamp while the lamps are on", prims);
+  }
   if ((p.mask || p.tail) && !p.classed) class_part(dev, p, base, minIdx, numV, world);
   if (!g_litAtlas.empty()) {                             // the always-drawn lit lamp atlas follows the lamps
     IDirect3DBaseTexture9* cur = nullptr;
@@ -859,11 +868,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   return twin;
 }
 
-int rbrrtx_litparts_lamp_parts() {
-  int n = 0;
-  for (const auto& kv : g_parts) if (kv.second.mask & (1u << kLamps)) ++n;
-  return n;
-}
+bool rbrrtx_litparts_lamps_done() { return g_lampSwitchClean; }
 
 void rbrrtx_litparts_status(wchar_t* out, size_t n) {
   size_t entries;

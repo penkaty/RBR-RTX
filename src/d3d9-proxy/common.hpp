@@ -162,6 +162,7 @@ int rbrrtx_headlights_game_lamps();                             // the game's la
 int rbrrtx_headlights_on();                                     // 1 while the car's lamps are on for the player (L, automatic), whatever the pulse sends
 int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
 bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
+bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
 float rbrrtx_sun_shown_elevation();                             // the sun's height as lit now (comp.cpp; debug sun, night hold)
@@ -234,7 +235,7 @@ std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as
 void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
 void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world);
-int rbrrtx_litparts_lamp_parts();                               // this car's parts known to light with the lamps
+bool rbrrtx_litparts_lamps_done();                              // the lamp signal gave a clean switch for this car: no more learning pulses
 void rbrrtx_litparts_status(wchar_t* out, size_t n);
 void rbrrtx_litparts_destroy();
 // A car's <name>_lit.dds (hash) and its unlit <name>.dds file: with the lamps off that mesh is drawn with the unlit one.

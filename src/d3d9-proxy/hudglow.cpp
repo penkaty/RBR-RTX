@@ -59,7 +59,7 @@ struct RtInfo { bool rt = false; UINT w = 0, h = 0; unsigned blended = 0, opaque
 std::unordered_map<const void*, RtInfo> g_isRt;       // s0 texture -> render target? (RBRHUD's display copy or layer)
 constexpr unsigned kCounters = 4096, kLayerDraws = 8;  // hashes per size; blended draws before a target counts as a layer
 bool g_uiLayers = true, g_snapshot = true;
-float g_uiEmissiveOn = 0.4f, g_uiEmissiveOff = 0.0f;   // rtx.worldSpaceUiEmissiveIntensity with the lamps on / off
+float g_uiEmissiveOn = 0.05f, g_uiEmissiveOff = 0.0f;   // rtx.worldSpaceUiEmissiveIntensity with the lamps on / off
 struct LayerCopy { IDirect3DTexture9* tex = nullptr; unsigned frame = ~0u; };
 std::unordered_map<const void*, LayerCopy> g_copies;  // gauge render target -> its snapshot
 unsigned g_copiesMade = 0;
@@ -138,7 +138,7 @@ void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol) {
   g_uiLayers = GetPrivateProfileIntW(L"hud_glow", L"ui_layers", 1, path) != 0;
   g_snapshot = GetPrivateProfileIntW(L"hud_glow", L"snapshot", 1, path) != 0;
   wchar_t e[32] = {};
-  GetPrivateProfileStringW(L"hud_glow", L"ui_emissive_lamps_on", L"0.4", e, 32, path);
+  GetPrivateProfileStringW(L"hud_glow", L"ui_emissive_lamps_on", L"0.05", e, 32, path);
   g_uiEmissiveOn = static_cast<float>(_wtof(e));
   GetPrivateProfileStringW(L"hud_glow", L"ui_emissive_lamps_off", L"0", e, 32, path);
   g_uiEmissiveOff = static_cast<float>(_wtof(e));
@@ -215,6 +215,7 @@ const char* rbrrtx_hudglow_ui_list() {
 
 void rbrrtx_hudglow_before(void* device) {
   if (!g_on || !g_s15 || !g_setTexture) return;
+  if (!rbrrtx_headlights_on()) return;                   // user 2026-11-09: "inside display does not turn-off glow when lights are off"
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   if (!s0_render_target(dev)) return;
   // Layers drawn over the gauge face (the E30's 2048x512 needle layer: transparent but for the needles) are blended or

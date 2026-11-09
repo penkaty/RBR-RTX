@@ -490,6 +490,7 @@ struct CarModel {
   std::vector<Extra> extras;
   std::vector<V3> lampPts;                             // vertices of the lamp parts, root frame (lens_front)
   bool hasLens = false;                                // lamp glass / lens / cover meshes of its own: the light is inside them
+  std::vector<unsigned> brakeLensVerts;                // vertex counts of the unlit brake lamp lenses (e_light_brake_*, not *_lit)
 } g_car;
 constexpr size_t kMaxExtra = 16;
 
@@ -830,6 +831,7 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
     if (a + 148 > d.size()) continue;
     std::memcpy(&n, p + a + 136, 4);
     if (n < 3 || n > 20000 || a + 144 + static_cast<size_t>(n) * 24 > d.size()) continue;
+    if (!low.compare(0, 13, "e_light_brake") && low.find("_lit") == std::string::npos) g_car.brakeLensVerts.push_back(n);
     float R[3][3];
     V3 t;
     total_of(nodes, node->second, false, R, t);
@@ -1537,7 +1539,7 @@ int pulsed_lamps(int real) {
   if (g_track < 0 || !g_cfg.lampPulse) return real == 1 && f < kLampHoldCarFrames ? 0 : real;
   if (f < kPulseAt[0]) return 0;
   for (int a = 0; a < 3; ++a) {
-    if (a && rbrrtx_litparts_lamp_parts() > 0) break;
+    if (a && rbrrtx_litparts_lamps_done()) break;      // judged: more pulses would only blink the lamps
     if (f + kPulseOff >= kPulseAt[a] && f < kPulseAt[a]) return 0;
     if (f >= kPulseAt[a] && f < kPulseAt[a] + kPulseOn) return 1;
   }
@@ -2478,6 +2480,10 @@ void rbrrtx_headlights_write_lit_mod() {
 int rbrrtx_headlights_on() { return g_mode != kOff ? 1 : 0; }
 
 bool rbrrtx_headlights_has_lens() { return g_car.hasLens; }
+
+bool rbrrtx_headlights_is_brake_lens(unsigned numV) {
+  return std::find(g_car.brakeLensVerts.begin(), g_car.brakeLensVerts.end(), numV) != g_car.brakeLensVerts.end();
+}
 
 int rbrrtx_headlights_lamp_end(const float worldPos[3]) {
   if (!g_haveRoot || !g_car.lamps || !g_car.rear) return 0;

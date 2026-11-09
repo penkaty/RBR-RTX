@@ -6372,6 +6372,37 @@ LRESULT CALLBACK f3_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
   return g_f3Unicode ? CallWindowProcW(g_f3NextProc, w, m, wp, lp) : CallWindowProcA(g_f3NextProc, w, m, wp, lp);
 }
 
+// Plugins subclass the window after the menu is installed and see the mouse before it: DirectorsCut's freecam reads WM_INPUT in its
+// own window procedure (user 2026-11-09: "mouse is still controlling the in-game freecam with F3 open, and I cant scroll"), and
+// the game's DirectInput path was never involved. This procedure goes on top when the menu first opens; it only acts while the menu
+// is open, and takes the mouse there. WM_INPUT still goes to DefWindowProc, which the system needs to clean up after it.
+WNDPROC g_f3TopNext = nullptr;
+
+LRESULT CALLBACK f3_top_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+  if (rbrrtx_menu_is_open()) {
+    if (m == WM_INPUT) {
+      RAWINPUT ri;
+      UINT size = sizeof(ri);
+      if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != static_cast<UINT>(-1) &&
+          ri.header.dwType == RIM_TYPEMOUSE) {
+        if (ri.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) rbrrtx_menu_add_wheel(static_cast<SHORT>(ri.data.mouse.usButtonData));
+        return g_f3Unicode ? DefWindowProcW(w, m, wp, lp) : DefWindowProcA(w, m, wp, lp);
+      }
+    } else if (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST && rbrrtx_menu_wndproc(w, m, wp, lp)) {
+      return 0;
+    }
+  }
+  return g_f3Unicode ? CallWindowProcW(g_f3TopNext, w, m, wp, lp) : CallWindowProcA(g_f3TopNext, w, m, wp, lp);
+}
+
+void f3_top_install() {
+  if (g_f3TopNext || !g_f3Wnd || !rbrrtx_menu_is_open()) return;
+  const LONG_PTR prev = g_f3Unicode ? SetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(f3_top_wndproc))
+                                    : SetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(f3_top_wndproc));
+  if (prev) g_f3TopNext = reinterpret_cast<WNDPROC>(prev);
+  clog(L"menu: mouse taken ahead of the plugins' window procedures (previous %p)", reinterpret_cast<void*>(prev));
+}
+
 // At CreateDevice: callbacks, toggle key, ImGui context and the window subclass. RBRRTX_MENU=0 leaves the menu out.
 // The Remix bridge detours SetWindowLong(GWLP_WNDPROC): once it has installed its own proc (RemixWndProc) our subclass
 // is stored behind it (it forwards to "the game's proc" = ours), so Remix sees a key first and the Remix panel (Alt+X,
@@ -6434,6 +6465,7 @@ void f3_after_reset(IDirect3DDevice9* dev, HRESULT hr) {
 // per-scene bookkeeping does not see it). Only on the primary target; closed = a few loads and compares.
 void f3_present(IDirect3DDevice9* dev) {
   rbrrtx_menu_tick();
+  f3_top_install();
   f3_tags_frame();
   f3_probe_frame();
   if (!rbrrtx_menu_is_open() || !g_primaryRT) return;
@@ -7250,6 +7282,13 @@ bool rbrrtx_remix_plus() { return g_remixPlus; }
 
 // DLL_PROCESS_DETACH by FreeLibrary (not at process exit): the menu goes and the window gets its procedure back.
 void rbrrtx_comp_shutdown() {
+  if (g_f3Wnd && g_f3TopNext) {
+    const LONG_PTR cur = g_f3Unicode ? GetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC) : GetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC);
+    if (cur == reinterpret_cast<LONG_PTR>(f3_top_wndproc)) {
+      if (g_f3Unicode) SetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_f3TopNext));
+      else SetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_f3TopNext));
+    }
+  }
   if (g_f3Wnd && g_f3NextProc) {
     const LONG_PTR cur = g_f3Unicode ? GetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC) : GetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC);
     if (cur == reinterpret_cast<LONG_PTR>(f3_wndproc)) {

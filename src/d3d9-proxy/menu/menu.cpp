@@ -790,7 +790,7 @@ int rbrrtx_menu_wndproc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 1;
   }
   if (!g_open) return 0;
-  if (msg == WM_MOUSEWHEEL) g_wm_wheel_tick = GetTickCount64();
+  if (msg == WM_MOUSEWHEEL) { g_wm_wheel_tick = GetTickCount64(); g_di_wheel = 0; }
 
   ImGui_ImplWin32_WndProcHandler(wnd, msg, wp, lp);   // feeds ImGui's io (mouse position, keys, text)
   return is_input_message(msg) ? 1 : 0;
