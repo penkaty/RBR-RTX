@@ -163,8 +163,10 @@ int rbrrtx_headlights_on();                                     // 1 while the c
 int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
 bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
 bool rbrrtx_headlights_forward(float out[3]);                   // the car's forward direction in the world, false before its first pose
-const float (*rbrrtx_headlights_front_rects(int* count))[4];     // the UV boxes of the front lamps' flat faces on their lit atlas (headlights.cpp)
-bool rbrrtx_dds_keep_rects(const wchar_t* src, const wchar_t* dst, const float (*rects)[4], int nrects);   // custom.cpp
+bool rbrrtx_headlights_is_lamp_glass(unsigned numV);            // a draw of this vertex count is one of the model's front lamp glass meshes
+bool rbrrtx_headlights_is_aux_glass(unsigned numV);             // the same for the auxiliary lamps' glass
+bool rbrrtx_headlights_has_aux_glass();                         // this model's auxiliary lamps have glass of their own
+bool rbrrtx_dds_neutral_mask(const wchar_t* src, const wchar_t* dst);   // custom.cpp: an emission mask of a DDS's brightness, near white
 bool rbrrtx_headlights_is_aux(unsigned numV);                   // a draw of this vertex count is one of the model's auxiliary lamp meshes
 bool rbrrtx_headlights_aux_on();                                // the auxiliary lamps are on now
 bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses

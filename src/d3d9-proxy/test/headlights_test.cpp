@@ -8,7 +8,8 @@
 // The drawn body must be found among the wrong 3rd-person body, and a car drawn 70 ms behind its object must give a
 // measured lag of 70 ms (pose rewrite 2026-10-30).
 // Prints each car's lamps (model frame) and body frame.
-void rbrrtx_litparts_note_lit_atlas(unsigned long long, const wchar_t*) {}
+bool g_e30LitNoted = false;
+void rbrrtx_litparts_note_lit_atlas(unsigned long long h, const wchar_t*) { g_e30LitNoted = g_e30LitNoted || h == 0xAE5889DDDA655C65ull; }
 bool rbrrtx_litparts_lamps_done() { return false; }
 #include "../headlights.cpp"
 #include "../genmod.cpp"
@@ -379,14 +380,8 @@ int wmain(int argc, wchar_t** argv) {
   // Lit lamp textures: the E30's lights_lit.dds must come out as Remix's 0xAE5889DDDA655C65 (harvest, 2026-10-23).
   {
     const std::filesystem::path game = std::filesystem::path(argv[1]).parent_path();
-    const std::filesystem::path mods = std::filesystem::temp_directory_path() / L"rbrrtx_lit_test";
-    std::filesystem::create_directories(mods);
-    rbrrtx_genmod_init(mods.c_str());
     const size_t lit = write_lit_mod_for(game.wstring() + L"\\", 3.0f);
-    rbrrtx_genmod_flush(L"test");
-    std::ifstream in(mods / L"rbr_rtx_lit" / L"mod.usda");
-    const std::string usda((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const bool litOk = lit >= 1 && usda.find("mat_AE5889DDDA655C65") != std::string::npos;
+    const bool litOk = lit >= 1 && g_e30LitNoted;
     wprintf(L"lit lamp textures: %zu, E30 lights_lit hash %s\n", lit, litOk ? L"ok" : L"FAIL");
     if (!litOk) ++fails;
   }

@@ -55,10 +55,11 @@ constexpr unsigned kDiscMinPrims = 60, kDiscMaxPrims = 800, kLensMaxPrims = 600,
 // A brake disc has kDiscLevels glow kinds, one per heat step (kDisc .. kDisc + kDiscLevels - 1; a twin and a material each).
 constexpr int kDiscLevels = 6;
 // kLampsOwn: a lamp that glows from its own picture (the mask is the texture), so the lens pattern stays (user 2026-11-09, E30 and aux lamps).
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kLampsOwn = kDisc + kDiscLevels, kKinds = kLampsOwn + 1 };
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kLampsOwn = kDisc + kDiscLevels, kLampBody = kLampsOwn + 1, kLampGlass = kLampBody + 1, kKinds = kLampGlass + 1 };
+// kLampBody: a lit lamp's body on its own lit picture, no glow. kLampGlass: the lamp's flat glass front, the part that glows (user 2026-11-09).
 const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day", L"brake disc heat 1/6",
                                               L"brake disc heat 2/6", L"brake disc heat 3/6", L"brake disc heat 4/6",
-                                              L"brake disc heat 5/6", L"brake disc heat 6/6", L"lamps (own picture)" };
+                                              L"brake disc heat 5/6", L"brake disc heat 6/6", L"lamps (own picture)", L"lamp body", L"lamp glass" };
 
 struct Cfg {
   bool enabled = true;
@@ -133,8 +134,8 @@ std::map<std::pair<uint64_t, int>, Twin> g_twins;        // (atlas hash, signal)
 struct Entry { uint64_t twin, src; int signal; std::wstring file; unsigned readyFrame = 0; };   // readyFrame: Remix has had time to load its material
 std::map<uint64_t, Entry> g_entries;                     // twin hash -> material (this run + earlier runs)
 std::mutex g_mx;                                         // g_entries, g_pending (worker thread)
-struct Pending { uint64_t twin, src; int signal; std::wstring carDir; UINT w, h; std::vector<std::array<float, 4>> rects; };   // rects: the lamp's faces
-std::set<uint64_t> g_ownChecked;                         // lit atlases whose face mask was looked for this run
+struct Pending { uint64_t twin, src; int signal; std::wstring carDir; UINT w, h; };
+bool g_carLitAtlas = false;                              // this car's lamps have a lit picture of their own (its body draws say so)
 std::vector<Pending> g_pending;
 std::atomic<bool> g_workerBusy{ false };
 std::wstring g_cacheFile;
@@ -190,6 +191,8 @@ void load_cfg() {
   c.glow[kTail] = std::clamp(f(L"tail_glow", c.glow[kTail]), 0.0f, 10000.0f);
   c.glow[kLampsDay] = std::clamp(f(L"lamp_glow_day", c.glow[kLampsDay]), 0.0f, 10000.0f);
   c.glow[kLampsOwn] = std::clamp(f(L"lamp_glow_own", c.glow[kLamps]), 0.0f, 10000.0f);
+  c.glow[kLampBody] = 1.0f;                              // only has to pass the "is it on" tests: its material has no emission
+  c.glow[kLampGlass] = c.glow[kLampsOwn];
   c.discGlow = std::clamp(f(L"brake_disc_glow", c.discGlow), 0.0f, 10000.0f);
   c.discRate = std::clamp(f(L"brake_disc_heat_rate", c.discRate), 0.0f, 10.0f);
   c.discCool = std::clamp(f(L"brake_disc_cool_seconds", c.discCool), 1.0f, 3600.0f);
@@ -295,12 +298,12 @@ std::wstring lamp_dds() {
   return path;
 }
 
-// A lit lamp atlas's mask: the atlas, black outside the lamps' faces (user 2026-11-09: the whole assembly glowed). Named by the atlas.
-std::wstring own_mask_path(uint64_t src) {
+// Lamp glass: the atlas's brightness in a near-white tint, so the lens pattern shows and the glow is not the picture's colour.
+std::wstring glass_mask_path(uint64_t src) {
   const wchar_t* dir = rbrrtx_genmod_dir();
   if (!dir || !dir[0]) return std::wstring();
   wchar_t name[48];
-  swprintf_s(name, L"\\litparts_face_%016llX.dds", static_cast<unsigned long long>(src));
+  swprintf_s(name, L"\\litparts_glass_%016llX.dds", static_cast<unsigned long long>(src));
   return std::wstring(dir) + name;
 }
 
@@ -316,9 +319,17 @@ std::string material_for(const Entry& e) {
   } else if (e.signal == kLamps) {
     const std::wstring ld = lamp_dds();
     if (!ld.empty()) mask = rbrrtx_genmod_asset(ld);
-  } else if (e.signal == kLampsOwn) {
-    const std::wstring own = own_mask_path(e.src);
-    if (!own.empty() && GetFileAttributesW(own.c_str()) != INVALID_FILE_ATTRIBUTES) mask = rbrrtx_genmod_asset(own);
+  } else if (e.signal == kLampGlass) {
+    const std::wstring gm = glass_mask_path(e.src);
+    if (!gm.empty() && GetFileAttributesW(gm.c_str()) != INVALID_FILE_ATTRIBUTES) mask = rbrrtx_genmod_asset(gm);
+  } else if (e.signal == kLampBody) {
+    char c[96];
+    sprintf_s(c, "lit lamp body, atlas %016llX:", static_cast<unsigned long long>(e.src));
+    return rbrrtx_genmod_material(e.twin, std::string(c) + " " + a,
+                                  "                asset inputs:diffuse_texture = @" + a + "@ (\n"
+                                  "                    colorSpace = \"auto\"\n"
+                                  "                )\n"
+                                  "                bool inputs:enable_emission = 0\n");
   }
   const std::string in =
       "                asset inputs:diffuse_texture = @" + a + "@ (\n"
@@ -423,10 +434,10 @@ void resolve_pending() {
     }
     llog(L"lit parts: %s part on atlas %016llX glows with %s (%s), twin %016llX", kSignalName[p.signal],
          static_cast<unsigned long long>(p.src), found->path.c_str(), how, static_cast<unsigned long long>(p.twin));
-    if (!p.rects.empty()) {
-      const std::wstring own = own_mask_path(p.src);
-      const bool ok = !own.empty() && rbrrtx_dds_keep_rects(found->path.c_str(), own.c_str(), reinterpret_cast<const float (*)[4]>(p.rects.data()), static_cast<int>(p.rects.size()));
-      llog(L"lit parts: atlas %016llX glows only on %zu lamp face(s)%s", static_cast<unsigned long long>(p.src), p.rects.size(), ok ? L"" : L" (FAILED to write the mask: the whole atlas glows)");
+    if (p.signal == kLampGlass) {
+      const std::wstring gm = glass_mask_path(p.src);
+      if (gm.empty() || !rbrrtx_dds_neutral_mask(found->path.c_str(), gm.c_str()))
+        llog(L"lit parts: FAILED to write the glass mask of atlas %016llX: it glows in the atlas's colours", static_cast<unsigned long long>(p.src));
     }
     std::lock_guard<std::mutex> g(g_mx);
     // Not drawn for 6 s: written within 4 s (genmod kMinGap), then Remix loads it. Until then the draw stays as the game made it (no noise).
@@ -674,8 +685,7 @@ void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsig
 }
 
 // The twin for (texture, kind), once Remix has its material.
-// rects: the lamp faces (lit atlas): an entry from an earlier run is made again once, when its mask is not there yet.
-void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h, const float (*rects)[4] = nullptr, int nrects = 0) {
+void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h) {
   uint64_t th = 0;
   IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
   if (!twin) return nullptr;
@@ -683,21 +693,13 @@ void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h, co
   {
     std::lock_guard<std::mutex> g(g_mx);
     auto en = g_entries.find(th);
-    bool queue = en == g_entries.end();
-    if (!queue && rects && nrects > 0 && g_ownChecked.insert(src).second) {
-      const std::wstring own = own_mask_path(src);
-      queue = !own.empty() && GetFileAttributesW(own.c_str()) == INVALID_FILE_ATTRIBUTES;
-    }
-    if (en != g_entries.end()) published = !queue && g_frame >= en->second.readyFrame;
-    else published = false;
-    if (queue) {
+    if (en != g_entries.end()) {
+      published = g_frame >= en->second.readyFrame;
+    } else {
+      published = false;
       bool queued = false;
       for (const Pending& q : g_pending) queued = queued || q.twin == th;
-      if (!queued) {
-        std::vector<std::array<float, 4>> boxes;
-        for (int i = 0; rects && i < nrects; ++i) boxes.push_back({ rects[i][0], rects[i][1], rects[i][2], rects[i][3] });
-        g_pending.push_back({ th, src, kind, car_dir(), w, h, std::move(boxes) });
-      }
+      if (!queued) g_pending.push_back({ th, src, kind, car_dir(), w, h });
     }
   }
   if (!published) return nullptr;                        // every kind waits for its material (no noise on the part)
@@ -718,6 +720,7 @@ void note_nudge(int kind, int end) {
 }
 
 void forget_car() {
+  g_carLitAtlas = false;
   for (auto& kv : g_litAtlas) if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
   g_heat = 0.0f;
   g_discLevel = 0;
@@ -896,11 +899,10 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
           // These cars' lamp meshes never switch, so learning finds nothing and they had no glow at all (the E30's head lamps). Lit and
           // unlit meshes are both drawn in the same place: both get the glow, so they cannot show through each other.
           if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
-          const int kind = p.end < 0 ? kTail : kLampsOwn;
-          int nFaces = 0;
-          const float (*faces)[4] = kind == kLampsOwn ? rbrrtx_headlights_front_rects(&nFaces) : nullptr;
+          const int kind = p.end < 0 ? kTail : kLampBody;
+          if (kind == kLampBody) g_carLitAtlas = true;
           if (g_cfg.glow[kind] > 0.0f)
-            if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height, faces, nFaces)) { note_nudge(kind, p.end); return twin; }
+            if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height)) { note_nudge(kind, p.end); return twin; }
         }
       }
     }
@@ -908,9 +910,26 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (world && ((p.mask & (1u << kBrake)) || p.tail) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
     g_drawnAt.push_back({ key, { world[0], world[1], world[2], world[3], world[4], world[5], world[6], world[7],
                                  world[8], world[9], world[10], world[11] } });
+  // The flat glass front of a lamp glows, not the body behind it (user 2026-11-09, E30: lamps with a lit picture of their own, and
+  // auxiliary lamps with glass). A low-alpha glass still glows in full: Remix adds emission before opacity.
+  if (glassShader && g_cfg.glow[kLampGlass] > 0.0f && ((g_carLitAtlas && g_raw[kLamps] > 0 && rbrrtx_headlights_is_lamp_glass(numV)) ||
+                                                       (rbrrtx_headlights_aux_on() && rbrrtx_headlights_is_aux_glass(numV)))) {
+    if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
+    IDirect3DBaseTexture9* gt = nullptr;
+    dev->lpVtbl->GetTexture(dev, 0, &gt);
+    if (gt) {
+      const uint64_t gsrc = rbrrtx_texture_hash(gt);
+      D3DSURFACE_DESC gd = {};
+      const bool ok2d = gt->lpVtbl->GetType(gt) == D3DRTYPE_TEXTURE &&
+                        SUCCEEDED(reinterpret_cast<IDirect3DTexture9*>(gt)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(gt), 0, &gd));
+      gt->lpVtbl->Release(gt);
+      if (p.end >= 0 && gsrc && ok2d)
+        if (void* twin = twin_for(dev, gsrc, kLampGlass, gd.Width, gd.Height)) return twin;
+    }
+  }
   // Auxiliary lamps (bumper, bonnet, ramp lights): their meshes never switch, so learning finds nothing. The model names them; they
-  // glow while they are on (brights, with extra_lights = 2). Not their glass.
-  if (!glassShader && !p.mask && !p.tail && rbrrtx_headlights_aux_on() && rbrrtx_headlights_is_aux(numV) && prims <= kLensMaxPrims * 4) {
+  // glow while they are on (brights, with extra_lights = 2). Their body only when they have no glass to glow.
+  if (!glassShader && !rbrrtx_headlights_has_aux_glass() && !p.mask && !p.tail && rbrrtx_headlights_aux_on() && rbrrtx_headlights_is_aux(numV) && prims <= kLensMaxPrims * 4) {
     if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
     IDirect3DBaseTexture9* at = nullptr;
     dev->lpVtbl->GetTexture(dev, 0, &at);

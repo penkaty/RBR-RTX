@@ -381,22 +381,19 @@ void publish() {
 
 }  // namespace
 
-// A copy of a DDS as 32-bit pixels, black outside the rectangles (u0, v0, u1, v1): litparts.cpp, the part of a lit lamp atlas that glows.
-bool rbrrtx_dds_keep_rects(const wchar_t* src, const wchar_t* dst, const float (*rects)[4], int nrects) {
+// An emission mask from a DDS: its brightness in a near-white tint, so the picture's pattern stays and its colour does not.
+bool rbrrtx_dds_neutral_mask(const wchar_t* src, const wchar_t* dst) {
   std::vector<uint32_t> px;
   unsigned w = 0, h = 0;
   if (!read_dds_rgba(src, px, w, h)) return false;
-  std::vector<uint8_t> keep(static_cast<size_t>(w) * h, 0);
-  for (int i = 0; i < nrects; ++i) {
-    const int x0 = std::clamp(static_cast<int>(std::floor(rects[i][0] * w)), 0, static_cast<int>(w)), x1 = std::clamp(static_cast<int>(std::ceil(rects[i][2] * w)), 0, static_cast<int>(w));
-    const int y0 = std::clamp(static_cast<int>(std::floor(rects[i][1] * h)), 0, static_cast<int>(h)), y1 = std::clamp(static_cast<int>(std::ceil(rects[i][3] * h)), 0, static_cast<int>(h));
-    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) keep[static_cast<size_t>(y) * w + x] = 1;
+  for (uint32_t& p : px) {
+    // Glass pictures are mostly dark (the E30's about 43 of 255): the floor makes sure the whole pane glows, the rest keeps the pattern.
+    const float lum = 140.0f + 115.0f / 255.0f * (0.2126f * ((p >> 16) & 0xFF) + 0.7152f * ((p >> 8) & 0xFF) + 0.0722f * (p & 0xFF));
+    auto ch = [&](float tint) { return static_cast<uint32_t>(std::lround(std::clamp(lum * tint, 0.0f, 255.0f))); };
+    p = 0xFF000000u | (ch(1.0f) << 16) | (ch(0.98f) << 8) | ch(0.94f);
   }
-  for (size_t i = 0; i < px.size(); ++i) px[i] = keep[i] ? (px[i] | 0xFF000000u) : 0xFF000000u;
   return write_rgba_dds(dst, w, h, px);
 }
-
-// ================================================================================================ public
 
 void rbrrtx_custom_init(const remixapi_Interface* api) { g_api = api; }
 
