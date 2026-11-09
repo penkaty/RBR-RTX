@@ -125,7 +125,7 @@ D3DMATRIX identity() {
 // ---------------------------------------------------------------- shader identification
 
 enum : unsigned { SH_KNOWN = 1, SH_WORLDSPACE = 2, SH_USES_C8 = 4, SH_CAR = 8, SH_SKY = 16, SH_GLASS = 32, SH_SCENERY = 64, SH_PARTICLE = 128,
-           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024, SH_DOUBLE = 2048 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87); DOUBLE: RLDouble* two-texture blend
+           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024, SH_DOUBLE = 2048, SH_GLASS_VS = 4096 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87); DOUBLE: RLDouble* two-texture blend
 
 // A matrix constant of a D3DX-compiled shader, found by name in its constant table. HLSL packs column_major by
 // default: then register r+i holds column i, so the D3D (row-vector) matrix is the transpose of the registers.
@@ -224,6 +224,7 @@ unsigned flags_for(const std::wstring& rel) {
   if (n.find(L"Anim") != std::wstring::npos) f |= SH_ANIM;
   if (starts_with(n, L"RLDouble")) f |= SH_DOUBLE;
   if (n == L"Particle.vso") f |= SH_PARTICLE;   // dust, smoke, spray, rain sprites (and the ignored car shadow quad)
+  if (n == L"CarGlass.vso") f |= SH_GLASS_VS;   // lit parts: a lens drawn with the glass shader stays clear
   if (n == L"CarGlassInternal.vso") f |= SH_GLASS;   // windscreen seen from the cockpit (CarGlass.vso = outside + mirrors)
   static const wchar_t* uses_c8[] = { L"CarGlass.vso", L"CarPaint1.vso", L"CarPaintInternal.vso", L"CarPlastic.vso",
                                       L"CarRim.vso", L"CloudsDoubleTexture.vso", L"CloudsSingleTexture.vso",
@@ -5964,6 +5965,16 @@ void send_decal_list() {
 void f3_tags_frame() {
   if (!g_apiOk) return;
   if (const char* ui = rbrrtx_hudglow_ui_list()) remix_set_raw("override:rtx.worldSpaceUiTextures", ui);   // RBRHUD gauge layers, not saved
+  {                                                    // emissive is in scene units and exposure rises with the dark: a day gain keeps lamps visible by day
+    static float sentGain = -1.0f;
+    const float gain = std::round(rbrrtx_hudglow_emissive_gain(rbrrtx_sun_shown_elevation()) * 10.0f) / 10.0f;
+    if (gain != sentGain) {
+      sentGain = gain;
+      char v[32];
+      sprintf_s(v, "%.3f", gain);
+      remix_set_raw("override:rtx.emissiveIntensity", v);
+    }
+  }
   {                                                    // the gauge layers glow with the lamps (user 2026-11-09: "should be dark when the lights turn off")
     static int sentOn = -1;
     const int on = rbrrtx_headlights_on();
@@ -6396,7 +6407,9 @@ LRESULT CALLBACK f3_top_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 }
 
 void f3_top_install() {
-  if (g_f3TopNext || !g_f3Wnd || !rbrrtx_menu_is_open()) return;
+  if (!rbrrtx_menu_is_open()) return;
+  rbrrtx_menu_block_plugin_mouse();
+  if (g_f3TopNext || !g_f3Wnd) return;
   const LONG_PTR prev = g_f3Unicode ? SetWindowLongPtrW(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(f3_top_wndproc))
                                     : SetWindowLongPtrA(g_f3Wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(f3_top_wndproc));
   if (prev) g_f3TopNext = reinterpret_cast<WNDPROC>(prev);
@@ -6963,11 +6976,20 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   // Lit car parts (litparts.cpp): a hot brake disc or a lit lamp lens is drawn with its twin texture, which the generated
   // mod makes emissive (albedo and glow from the car's atlas file). Swaying foliage: its texture becomes thin opaque.
   IDirect3DBaseTexture9* litPrev = nullptr;
-  bool litSwap = false;
+  bool litSwap = false, litMoved = false;
+  D3DMATRIX litWorld = {};
   if (g_litOn && g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid) {
-    if (void* twin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, g_carWorld)) {
+    if (void* twin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, g_carWorld, (g_curInfo->flags & SH_GLASS_VS) != 0)) {
       dev->lpVtbl->GetTexture(dev, 0, &litPrev);
       litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(twin)));
+      float nudge[3];
+      if (litSwap && carFf && rbrrtx_litparts_nudge(nudge)) {   // off the surface it would z-fight with (user 2026-11-09, Renault 5 tail lamps)
+        litWorld = *reinterpret_cast<const D3DMATRIX*>(g_carWorld);
+        D3DMATRIX moved = litWorld;
+        moved._41 += nudge[0]; moved._42 += nudge[1]; moved._43 += nudge[2];
+        set_xf(dev, 0, moved);
+        litMoved = true;
+      }
     }
   }
   if (g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_SWAY)) {
@@ -7014,6 +7036,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     if (gaugePrev) { dev->lpVtbl->SetTexture(dev, 0, gaugePrev); gaugePrev->lpVtbl->Release(gaugePrev); }
   }
   ground_base_end(dev, groundBase);
+  if (litMoved) set_xf(dev, 0, litWorld);
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
   if (litPrev) litPrev->lpVtbl->Release(litPrev);
   if (SUCCEEDED(hr)) { RBR_ZONE(PZ_DRAW_EXTRA); if (ff && !carFf) layer_draw(dev, draw); else dirt_draw(dev, draw); }

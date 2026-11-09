@@ -41,6 +41,42 @@ void kelvin_rgb(float k, float out[3]) {
 
 void status(const char* t) { rbrrtx_menu_set_status(t); }
 
+// ---- Lamp presets (the old Alt+X lamp creator's, rtx_light_authoring.cpp, user 2026-11-07: "presets in F3") ------------
+// Sodium lamps orange, LED / metal halide white. Lumens as the sphere/spot light's output; cone 0 = every way.
+// User 2026-11-08 (saved 14:04): strong sodium = 125000 lm, cone 50, softness 0.15 (softer dims the lamp), glow 0.2 (the glow
+// only has to look right and not clip; the lumens light the road). The others scaled from it. kelvin 0 = the rgb below.
+// User 2026-11-09: sodium 3200 K, the LED and white lamps 750 K above their first values.
+struct LampPreset { const char* name; float kelvin; float rgb[3]; float lumens, cone, softness, intensity; };
+constexpr LampPreset kLampPresets[] = {
+  { "Streetlamp (sodium)",         3200.0f, { 1.0f, 1.0f, 1.0f }, 50000.0f,  50.0f, 0.15f, 0.2f },
+  { "Strong streetlamp (sodium)",  3200.0f, { 1.0f, 1.0f, 1.0f }, 125000.0f, 50.0f, 0.15f, 0.2f },
+  { "Modern streetlamp (LED)",     4750.0f, { 1.0f, 1.0f, 1.0f }, 62000.0f,  50.0f, 0.15f, 0.2f },
+  { "Modern strong streetlamp",    5750.0f, { 1.0f, 1.0f, 1.0f }, 156000.0f, 50.0f, 0.15f, 0.2f },
+  { "Floodlight",                  4750.0f, { 1.0f, 1.0f, 1.0f }, 250000.0f, 35.0f, 0.15f, 0.3f },
+  { "Stadium light",               6350.0f, { 1.0f, 1.0f, 1.0f }, 400000.0f, 40.0f, 0.15f, 0.4f },
+  { "Coloured spot",               0.0f,    { 1.0f, 0.2f, 0.1f }, 125000.0f, 25.0f, 0.10f, 0.2f },
+  { "Point light (every way)",     2700.0f, { 1.0f, 1.0f, 1.0f }, 31000.0f,  0.0f,  0.0f,  0.2f },
+};
+
+float nearest_kelvin(const float rgb[3]) {             // a saved lamp's colour on the temperature slider
+  float best = 3000.0f, bestErr = 1e9f;
+  for (float k = 1500.0f; k <= 9000.0f; k += 50.0f) {
+    float c[3];
+    kelvin_rgb(k, c);
+    const float err = (c[0] - rgb[0]) * (c[0] - rgb[0]) + (c[1] - rgb[1]) * (c[1] - rgb[1]) + (c[2] - rgb[2]) * (c[2] - rgb[2]);
+    if (err < bestErr) { bestErr = err; best = k; }
+  }
+  return best;
+}
+
+// Pitch (degrees below horizontal, 90 = straight down) and yaw (degrees around y, 0 = +z) to a world direction (y up).
+void pitch_yaw_dir(float pitch, float yaw, float out[3]) {
+  const float p = pitch * 3.14159265f / 180.0f, y = yaw * 3.14159265f / 180.0f;
+  out[0] = std::cos(p) * std::sin(y);
+  out[1] = -std::sin(p);
+  out[2] = std::cos(p) * std::cos(y);
+}
+
 // ---- Lights --------------------------------------------------------------------------------------------------------
 float g_front_dist = 4.0f;
 
@@ -69,27 +105,26 @@ void add_preset(const float pos[3], int preset) {
 RbrEmit* find_emit(unsigned long long tex, RbrEmit* store);
 
 void page_lights(void*) {
-  ImGui::TextWrapped("Sphere lights at world positions, kept per stage (%s in menu.ini). Aim the middle of the screen at a surface "
-                     "and add one at the hit point (nudged back toward you), or place one in front of the camera. For crowd lights, "
-                     "flares, a lit doorway.", rbrrtx_custom_stage_name());
+  ImGui::TextWrapped("Lights at world positions, kept per stage (%s in menu.ini). Aim the middle of the screen at a surface "
+                     "and add one at the hit point (nudged back toward you), or place one at the camera. Spheres light every way, "
+                     "cones point somewhere: use cones for lamps that share a texture, one per lamp.", rbrrtx_custom_stage_name());
   rbrrtx_menu_pick pick = {};
   rbrrtx_menu_probe(&pick, 1);
   float cam[3], fwd[3];
   const bool haveCam = rbrrtx_menu_camera(cam, fwd) != 0;
+  auto off_surface = [&](float pos[3]) {                // nudge 0.3 m toward the camera, off the surface
+    pos[0] = pick.point[0]; pos[1] = pick.point[1]; pos[2] = pick.point[2];
+    if (!haveCam) return;
+    float d[3] = { cam[0] - pos[0], cam[1] - pos[1], cam[2] - pos[2] };
+    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len > 1e-3f) for (int k = 0; k < 3; ++k) pos[k] += d[k] / len * 0.3f;
+  };
   ImGui::SliderFloat("distance in front of the camera (m)", &g_front_dist, 1.0f, 40.0f, "%.1f");
   static const char* const kName[3] = { "warm lamp", "flare (flicker, always)", "crowd / camp light" };
   for (int p = 0; p < 3; ++p) {
     ImGui::PushID(p);
     ImGui::BeginDisabled(!pick.found);
-    if (ImGui::Button("Add at crosshair")) {
-      float pos[3] = { pick.point[0], pick.point[1], pick.point[2] };
-      if (haveCam) {                                      // nudge 0.3 m toward the camera, off the surface
-        float d[3] = { cam[0] - pos[0], cam[1] - pos[1], cam[2] - pos[2] };
-        const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        if (len > 1e-3f) for (int k = 0; k < 3; ++k) pos[k] += d[k] / len * 0.3f;
-      }
-      add_preset(pos, p);
-    }
+    if (ImGui::Button("Add at crosshair")) { float pos[3]; off_surface(pos); add_preset(pos, p); }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!haveCam);
@@ -102,35 +137,93 @@ void page_lights(void*) {
     ImGui::TextUnformatted(kName[p]);
     ImGui::PopID();
   }
+  ImGui::SeparatorText("Cone light");
+  static int conePreset = 1;
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
+  if (ImGui::BeginCombo("lamp type", kLampPresets[conePreset].name)) {
+    for (int p = 0; p < static_cast<int>(std::size(kLampPresets)); ++p)
+      if (ImGui::Selectable(kLampPresets[p].name, p == conePreset)) conePreset = p;
+    ImGui::EndCombo();
+  }
+  auto add_cone = [&](const float pos[3]) {
+    const LampPreset& lp = kLampPresets[conePreset];
+    float rgb[3];
+    if (lp.kelvin > 0.0f) kelvin_rgb(lp.kelvin, rgb); else std::memcpy(rgb, lp.rgb, sizeof(rgb));
+    const int id = rbrrtx_custom_light_add(pos, rgb);
+    RbrCustomLight n = {};
+    for (int i = 0, c = rbrrtx_custom_light_count(); i < c; ++i)
+      if (rbrrtx_custom_light_get(i, &n) && n.id == id) {
+        n.lumens = lp.lumens; n.radius = 0.1f; n.cone = lp.cone; n.softness = lp.softness;
+        n.dir[0] = 0.0f; n.dir[1] = -1.0f; n.dir[2] = 0.0f;
+        rbrrtx_custom_light_set(n);
+        break;
+      }
+    status("cone light added, pointing straight down (Save keeps it for this stage)");
+  };
+  ImGui::BeginDisabled(!pick.found);
+  if (ImGui::Button("Add cone at crosshair")) { float pos[3]; off_surface(pos); add_cone(pos); }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!haveCam);
+  if (ImGui::Button("Add cone at camera")) add_cone(cam);
+  ImGui::EndDisabled();
   if (!pick.found) ImGui::TextDisabled("no surface under the crosshair (needs a world draw; foliage included)");
   ImGui::SeparatorText("Lights of this stage");
-  int remove = -1;
+  int remove = -1, duplicate = -1;
   RbrCustomLight l = {};
+  static std::map<int, float> s_kelvin;                  // per light: the temperature slider of one light never moved another's
   for (int i = 0, n = rbrrtx_custom_light_count(); i < n; ++i) {
     if (!rbrrtx_custom_light_get(i, &l)) break;
     ImGui::PushID(l.id);
-    char head[96];
-    std::snprintf(head, sizeof(head), "light %d  (%.1f, %.1f, %.1f)  %.0f lm%s", l.id, l.pos[0], l.pos[1], l.pos[2], l.lumens, l.mode ? " always" : "");
+    char head[128];
+    // "###" keeps one ID for the header: the text changes with every slider, and a new ID closed the section (user 2026-11-09).
+    std::snprintf(head, sizeof(head), "%s %d  (%.1f, %.1f, %.1f)  %.0f lm%s###light", l.cone > 0.0f ? "cone" : "light", l.id, l.pos[0], l.pos[1], l.pos[2], l.lumens, l.mode ? " always" : "");
     if (ImGui::CollapsingHeader(head)) {
       bool ch = false;
       ch |= ImGui::ColorEdit3("colour", l.rgb, ImGuiColorEditFlags_Float);
-      static float kelvin = 3000.0f;
-      if (ImGui::SliderFloat("or temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) { kelvin_rgb(kelvin, l.rgb); ch = true; }
-      ch |= ImGui::SliderFloat("lumens", &l.lumens, 10.0f, 200000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+      auto kIt = s_kelvin.find(l.id);
+      if (kIt == s_kelvin.end()) kIt = s_kelvin.emplace(l.id, nearest_kelvin(l.rgb)).first;
+      if (ImGui::SliderFloat("or temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) { kelvin_rgb(kIt->second, l.rgb); ch = true; }
+      ch |= ImGui::SliderFloat("lumens", &l.lumens, 10.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
       ch |= ImGui::SliderFloat("radius (m)", &l.radius, 0.02f, 2.0f, "%.2f");
+      ch |= ImGui::SliderFloat("cone half angle (0 = every way)", &l.cone, 0.0f, 90.0f, "%.0f deg");
+      if (l.cone > 0.0f) {
+        ch |= ImGui::SliderFloat("cone softness", &l.softness, 0.0f, 1.0f, "%.2f");
+        ImGui::BeginDisabled(!pick.found);
+        if (ImGui::Button("Aim at crosshair")) {
+          const float d[3] = { pick.point[0] - l.pos[0], pick.point[1] - l.pos[1], pick.point[2] - l.pos[2] };
+          const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+          if (len > 1e-3f) { for (int k = 0; k < 3; ++k) l.dir[k] = d[k] / len; ch = true; }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!haveCam);
+        if (ImGui::Button("Aim where the camera looks")) { std::memcpy(l.dir, fwd, sizeof(l.dir)); ch = true; }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Straight down")) { l.dir[0] = 0.0f; l.dir[1] = -1.0f; l.dir[2] = 0.0f; ch = true; }
+      }
       ch |= ImGui::SliderFloat("flicker", &l.flicker, 0.0f, 1.0f, "%.2f");
       ch |= ImGui::RadioButton("at night", &l.mode, 0);
       ImGui::SameLine();
       ch |= ImGui::RadioButton("always", &l.mode, 1);
       ch |= ImGui::DragFloat3("position", l.pos, 0.05f);
-      if (ImGui::Button("Move to crosshair") && pick.found) { for (int k = 0; k < 3; ++k) l.pos[k] = pick.point[k]; ch = true; }
+      ImGui::BeginDisabled(!pick.found);
+      if (ImGui::Button("Move to crosshair")) { off_surface(l.pos); ch = true; }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!haveCam);
+      if (ImGui::Button("Place at camera position")) { std::memcpy(l.pos, cam, sizeof(l.pos)); ch = true; }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::Button("Duplicate")) duplicate = l.id;
       ImGui::SameLine();
       if (ImGui::Button("Delete")) remove = l.id;
       // The lamp's own mesh glows too: aim at the lamp head (its glass, or the whole mesh) and press.
       ImGui::BeginDisabled(!pick.found || !pick.hash[0]);
       if (ImGui::Button("Make the part at the crosshair glow in this colour")) {
         RbrEmit e = {};
-        if (!find_emit(pick.hash[0], &e) || e.windows) { e = {}; e.intensity = 6.0f; e.dir[1] = -1.0f; e.softness = 0.2f; }
+        if (!find_emit(pick.hash[0], &e) || e.windows) { e = {}; e.intensity = 0.2f; e.dir[1] = -1.0f; e.softness = 0.2f; }
         e.tex = pick.hash[0];
         e.windows = 0;
         e.mode = l.mode;
@@ -145,6 +238,17 @@ void page_lights(void*) {
       if (ch) rbrrtx_custom_light_set(l);
     }
     ImGui::PopID();
+  }
+  if (duplicate >= 0) {
+    RbrCustomLight src = {};
+    for (int i = 0, n = rbrrtx_custom_light_count(); i < n; ++i)
+      if (rbrrtx_custom_light_get(i, &src) && src.id == duplicate) {
+        const int id = rbrrtx_custom_light_add(src.pos, src.rgb);
+        src.id = id;
+        rbrrtx_custom_light_set(src);
+        status("light duplicated in the same place: move it with Move to crosshair or Place at camera position");
+        break;
+      }
   }
   if (remove >= 0) rbrrtx_custom_light_remove(remove);
   if (!rbrrtx_custom_light_count()) ImGui::TextDisabled("none on this stage");
@@ -177,40 +281,6 @@ RbrEmit* find_emit(unsigned long long tex, RbrEmit* store) {
   return nullptr;
 }
 
-// Pitch (degrees below horizontal, 90 = straight down) and yaw (degrees around y, 0 = +z) to a world direction (y up).
-void pitch_yaw_dir(float pitch, float yaw, float out[3]) {
-  const float p = pitch * 3.14159265f / 180.0f, y = yaw * 3.14159265f / 180.0f;
-  out[0] = std::cos(p) * std::sin(y);
-  out[1] = -std::sin(p);
-  out[2] = std::cos(p) * std::cos(y);
-}
-
-// ---- Lamp presets (the old Alt+X lamp creator's, rtx_light_authoring.cpp, user 2026-11-07: "presets in F3") ------------
-// Sodium lamps orange, LED / metal halide white. Lumens as the sphere/spot light's output; cone 0 = every way.
-// User 2026-11-08 (saved 14:04): strong sodium = 125000 lm, cone 50, softness 0.15 (softer dims the lamp), glow 0.2 (the glow
-// only has to look right and not clip; the lumens light the road). The others scaled from it. kelvin 0 = the rgb below.
-struct LampPreset { const char* name; float kelvin; float rgb[3]; float lumens, cone, softness, intensity; };
-constexpr LampPreset kLampPresets[] = {
-  { "Streetlamp (sodium)",         2200.0f, { 1.0f, 1.0f, 1.0f }, 50000.0f,  50.0f, 0.15f, 0.2f },
-  { "Strong streetlamp (sodium)",  2200.0f, { 1.0f, 1.0f, 1.0f }, 125000.0f, 50.0f, 0.15f, 0.2f },
-  { "Modern streetlamp (LED)",     4000.0f, { 1.0f, 1.0f, 1.0f }, 62000.0f,  50.0f, 0.15f, 0.2f },
-  { "Modern strong streetlamp",    5000.0f, { 1.0f, 1.0f, 1.0f }, 156000.0f, 50.0f, 0.15f, 0.2f },
-  { "Floodlight",                  4000.0f, { 1.0f, 1.0f, 1.0f }, 250000.0f, 35.0f, 0.15f, 0.3f },
-  { "Stadium light",               5600.0f, { 1.0f, 1.0f, 1.0f }, 400000.0f, 40.0f, 0.15f, 0.4f },
-  { "Coloured spot",               0.0f,    { 1.0f, 0.2f, 0.1f }, 125000.0f, 25.0f, 0.10f, 0.2f },
-  { "Point light (every way)",     2700.0f, { 1.0f, 1.0f, 1.0f }, 31000.0f,  0.0f,  0.0f,  0.2f },
-};
-
-float nearest_kelvin(const float rgb[3]) {             // a saved lamp's colour on the temperature slider
-  float best = 3000.0f, bestErr = 1e9f;
-  for (float k = 1500.0f; k <= 9000.0f; k += 50.0f) {
-    float c[3];
-    kelvin_rgb(k, c);
-    const float err = (c[0] - rgb[0]) * (c[0] - rgb[0]) + (c[1] - rgb[1]) * (c[1] - rgb[1]) + (c[2] - rgb[2]) * (c[2] - rgb[2]);
-    if (err < bestErr) { bestErr = err; best = k; }
-  }
-  return best;
-}
 
 // ---- Emissive (props) ------------------------------------------------------------------------------------------------
 void page_emissive(void*) {
@@ -219,12 +289,12 @@ void page_emissive(void*) {
                      "other objects sharing the texture stay dark. Every lamp head drawn with that part gets one lamp at its centre "
                      "(move it with the offset in the list). Window facades: Windows page.");
   static bool freeze = false, island_only = true;
-  static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 2200.0f;
+  static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 3200.0f;
   static const int rgbFromKelvin = (kelvin_rgb(kelvin, rgb), 0);
   (void)rgbFromKelvin;
   static int mode = 0, preset = 0;
   // Light the prop casts (user 2026-11-05: stadium floodlights): a lamp at every place the picked part is drawn.
-  static bool cast = true;
+  static bool cast = false;                            // user 2026-11-09: lights are placed one by one, a part can be drawn on many meshes
   static float lumens = 50000.0f, cone = 50.0f, softness = 0.15f, pitch = 90.0f, yaw = 0.0f;
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
   if (ImGui::BeginCombo("preset", kLampPresets[preset].name)) {
@@ -235,7 +305,6 @@ void page_emissive(void*) {
         if (lp.kelvin > 0.0f) { kelvin = lp.kelvin; kelvin_rgb(kelvin, rgb); }
         else std::memcpy(rgb, lp.rgb, sizeof(rgb));
         lumens = lp.lumens; cone = lp.cone; softness = lp.softness; intensity = lp.intensity;
-        cast = true;
       }
     ImGui::EndCombo();
   }
@@ -282,11 +351,11 @@ void page_emissive(void*) {
     static int anchor = 0;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
     ImGui::Combo("lamp sits at the part's", &anchor, "top\0centre\0bottom\0");
-    static bool addPart = false;
+    static bool addPart = true;                        // user 2026-11-09: a second lamp on the same texture replaced the first
     ImGui::SameLine();
     ImGui::Checkbox("add to the texture's other parts", &addPart);
     if (ImGui::SliderFloat("temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 2200 K, warm LED 3000 K, LED 4000-5000 K.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 3200 K, LED 4750-5750 K.");
     if (ImGui::TreeNode("colour instead of temperature")) {
       ImGui::ColorEdit3("colour", rgb, ImGuiColorEditFlags_Float);
       ImGui::TreePop();
@@ -342,9 +411,26 @@ void page_emissive(void*) {
     if (!rbrrtx_emit_get(i, &e) || e.windows || !rbrrtx_emit_on_stage(e.tex)) continue;
     if (e.tex == s_dragTex) e = s_drag;
     ImGui::PushID(i);
-    ImGui::Text("0x%016llX  %s  intensity %.1f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
+    ImGui::Text("0x%016llX  %s  intensity %.2f  %d part(s)", e.tex, e.mode ? "always" : "night", e.intensity, e.nrects);
     ImGui::SameLine();
     if (ImGui::SmallButton("Remove")) remove = static_cast<int>(i);
+    if (e.nrects > 1) {                                // one part of the texture at a time
+      for (int r = 0; r < e.nrects; ++r) {
+        ImGui::PushID(1000 + r);
+        ImGui::SameLine();
+        char label[16];
+        std::snprintf(label, sizeof(label), "x %d", r + 1);
+        if (ImGui::SmallButton(label)) {
+          RbrEmit cut = e;
+          for (int k = r + 1; k < cut.nrects; ++k) std::memcpy(cut.rects[k - 1], cut.rects[k], sizeof(float) * 4);
+          --cut.nrects;
+          rbrrtx_emit_set(cut);
+          status("that part no longer glows after the generated mod has reloaded (about 10 s)");
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove part %d (u %.3f..%.3f, v %.3f..%.3f)", r + 1, e.rects[r][0], e.rects[r][2], e.rects[r][1], e.rects[r][3]);
+        ImGui::PopID();
+      }
+    }
     // Edits apply on release: each one reloads the lamps (and the drag would otherwise do it every frame). The glow's
     // values change the material, so it comes back after the generated mod has reloaded, about 10 s.
     bool edit = false, held = false, glowEdit = false;

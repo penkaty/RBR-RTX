@@ -27,6 +27,7 @@
 #define CINTERFACE
 #include "common.hpp"
 #include <d3d9.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cwchar>
@@ -63,6 +64,7 @@ float g_uiEmissiveOn = 0.05f, g_uiEmissiveOff = 0.0f;   // rtx.worldSpaceUiEmiss
 struct LayerCopy { IDirect3DTexture9* tex = nullptr; unsigned frame = ~0u; };
 std::unordered_map<const void*, LayerCopy> g_copies;  // gauge render target -> its snapshot
 unsigned g_copiesMade = 0;
+float g_dayGain = 8.0f, g_gainFrom = 0.0f, g_gainTo = 25.0f;   // [hud_glow] emissive_day_gain, emissive_gain_from_sun, emissive_gain_to_sun
 std::set<std::pair<UINT, UINT>> g_uiSizes;            // sizes already in the list
 std::string g_uiList;
 bool g_uiDirty = false;
@@ -142,6 +144,12 @@ void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol) {
   g_uiEmissiveOn = static_cast<float>(_wtof(e));
   GetPrivateProfileStringW(L"hud_glow", L"ui_emissive_lamps_off", L"0", e, 32, path);
   g_uiEmissiveOff = static_cast<float>(_wtof(e));
+  GetPrivateProfileStringW(L"hud_glow", L"emissive_day_gain", L"8", e, 32, path);
+  g_dayGain = (std::max)(static_cast<float>(_wtof(e)), 0.01f);
+  GetPrivateProfileStringW(L"hud_glow", L"emissive_gain_from_sun", L"0", e, 32, path);
+  g_gainFrom = static_cast<float>(_wtof(e));
+  GetPrivateProfileStringW(L"hud_glow", L"emissive_gain_to_sun", L"25", e, 32, path);
+  g_gainTo = static_cast<float>(_wtof(e));
   wlog(L"hud glow (materials.ini [hud_glow]): %s; RBRHUD emissive masks (s15) -> stage %lu, tint %06lX",
        g_on ? L"ON" : runtimeHasProtocol ? L"off" : L"off (runtime without the material protocol)", g_slot, g_tint);
   if (!g_on || !device) return;
@@ -164,6 +172,12 @@ void rbrrtx_hudglow_car_draw(void* device) {
 }
 
 float rbrrtx_hudglow_ui_emissive(bool lampsOn) { return lampsOn ? g_uiEmissiveOn : g_uiEmissiveOff; }
+
+// The multiplier on every emissive for the sun's height: 1 at or below emissive_gain_from_sun, emissive_day_gain at or above ..._to_sun.
+float rbrrtx_hudglow_emissive_gain(float sunElevation) {
+  const float t = std::clamp((sunElevation - g_gainFrom) / (std::max)(g_gainTo - g_gainFrom, 0.1f), 0.0f, 1.0f);
+  return 1.0f + (g_dayGain - 1.0f) * t * t * (3.0f - 2.0f * t);
+}
 
 // A gauge render target about to be drawn on the car: copies it (once per frame) and binds the copy at stage 0. Returns the
 // game's texture, referenced, for the caller to put back after the draw; null when nothing was bound.

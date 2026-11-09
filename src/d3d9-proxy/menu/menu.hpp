@@ -134,6 +134,7 @@ void* rbrrtx_menu_font_texture(void);
 // Open state. F3 toggles it. The proxy can also force it.
 int  rbrrtx_menu_is_open(void);
 void rbrrtx_menu_set_open(int open);
+void rbrrtx_menu_block_plugin_mouse(void);              // plugins' mouse imports go through the menu (first opening)
 void rbrrtx_menu_add_wheel(int delta);                  // DirectInput wheel travel while the menu is open (RBR's exclusive mouse sends no WM_MOUSEWHEEL)
 
 // 1 while the menu is drawing. The proxy's draw/state hooks must pass calls through untouched when this is 1

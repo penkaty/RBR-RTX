@@ -13,6 +13,8 @@ struct RbrCustomLight {
   float rgb[3];                      // linear colour
   float lumens, radius, flicker;
   int mode;
+  float cone, softness;              // cone half angle in degrees, 0 = lit every way (a sphere); edge softness 0..1
+  float dir[3];                      // where a cone points
 };
 
 // An emissive texture (keyed by the Remix hash of the game texture, so every draw with it glows): the whole texture or

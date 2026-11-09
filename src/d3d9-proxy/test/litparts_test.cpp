@@ -27,6 +27,11 @@ unsigned long long rbrrtx_texture_hash(void*) { return 0; }
 unsigned long long rbrrtx_xxh3(const void*, size_t) { return 0; }
 bool rbrrtx_player_car_brake(float*) { return false; }
 float rbrrtx_sun_shown_elevation() { return 30.0f; }
+bool rbrrtx_player_car_raw(float[20]) { return false; }
+int rbrrtx_headlights_lamp_end(const float*) { return 0; }
+bool rbrrtx_headlights_has_lens() { return false; }
+bool rbrrtx_headlights_is_brake_lens(unsigned) { return false; }
+bool rbrrtx_headlights_forward(float*) { return false; }
 bool rbrrtx_car_body_draw(float*) { return false; }
 bool rbrrtx_player_car_gear(int*) { return false; }
 

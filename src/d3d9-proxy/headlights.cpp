@@ -2481,6 +2481,13 @@ int rbrrtx_headlights_on() { return g_mode != kOff ? 1 : 0; }
 
 bool rbrrtx_headlights_has_lens() { return g_car.hasLens; }
 
+bool rbrrtx_headlights_forward(float out[3]) {
+  if (!g_haveRoot) return false;
+  const V3 f = norm(row(g_lastRoot, 2) * g_car.forward.z);
+  out[0] = f.x; out[1] = f.y; out[2] = f.z;
+  return true;
+}
+
 bool rbrrtx_headlights_is_brake_lens(unsigned numV) {
   return std::find(g_car.brakeLensVerts.begin(), g_car.brakeLensVerts.end(), numV) != g_car.brakeLensVerts.end();
 }

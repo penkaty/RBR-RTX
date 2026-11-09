@@ -646,7 +646,44 @@ void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsig
   p.end = rbrrtx_headlights_lamp_end(w);
   if (!p.end) return;
   p.classed = true;
+  // Equal vertex counts matched small parts at the front of the car too (run 20261109-180308): a brake lens sits at the rear.
+  if (p.end > 0 && p.tail && !p.everOn[kBrake]) { p.tail = false; }
   llog(L"lit parts: a %u-triangle lit part is at the %s of the car%s", p.prims, p.end > 0 ? L"front" : L"rear", p.blended ? L", blended" : L"");
+}
+
+// The twin for (texture, kind), once Remix has its material.
+void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h) {
+  uint64_t th = 0;
+  IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
+  if (!twin) return nullptr;
+  bool published = true;
+  {
+    std::lock_guard<std::mutex> g(g_mx);
+    auto en = g_entries.find(th);
+    if (en != g_entries.end()) {
+      published = g_frame >= en->second.readyFrame;
+    } else {
+      published = false;
+      bool queued = false;
+      for (const Pending& q : g_pending) queued = queued || q.twin == th;
+      if (!queued) g_pending.push_back({ th, src, kind, car_dir(), w, h });
+    }
+  }
+  if (!published) return nullptr;                        // every kind waits for its material (no noise on the part)
+  ++g_swapped;
+  return twin;
+}
+
+// A glowing lens moves a few millimetres out of the car, in front of a coplanar lens or body panel it would z-fight with.
+constexpr float kLitNudge = 0.005f;
+float g_nudge[3] = {};
+bool g_haveNudge = false;
+void note_nudge(int kind, int end) {
+  g_haveNudge = false;
+  float f[3];
+  if (kind >= kDisc || !end || !rbrrtx_headlights_forward(f)) return;
+  for (int i = 0; i < 3; ++i) g_nudge[i] = f[i] * static_cast<float>(end) * kLitNudge;
+  g_haveNudge = true;
 }
 
 void forget_car() {
@@ -772,11 +809,18 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
 
 // A car draw (DrawIndexedPrimitive, primary target, Remix on). Returns the texture to bind at stage 0 for it (a lit
 // part's twin), else nullptr.
+bool rbrrtx_litparts_nudge(float out[3]) {
+  if (!g_haveNudge) return false;
+  std::memcpy(out, g_nudge, sizeof(g_nudge));
+  return true;
+}
+
 void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims,
-                           const float* world) {
+                           const float* world, bool glassShader) {
   if (!g_cfg.enabled || g_carFile.empty()) return nullptr;
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   ++g_carDrawsThisFrame;
+  g_haveNudge = false;
   IDirect3DVertexBuffer9* vb = nullptr;
   IDirect3DIndexBuffer9* ib = nullptr;
   UINT off = 0, stride = 0;
@@ -792,7 +836,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   g_drawn.push_back(key);
   // The unlit brake lens glows as a tail lamp from the start: the model names it, without waiting for the first brake press
   // (user 2026-11-09: rear lights only came on after toggling L). A part drawn while braking stops being one (judge_frame).
-  if (!p.tail && !p.mask && !p.everOn[kBrake] && prims <= kLensMaxPrims && rbrrtx_headlights_is_brake_lens(numV)) {
+  if (!p.tail && !p.mask && !p.everOn[kBrake] && p.end <= 0 && prims <= kLensMaxPrims && rbrrtx_headlights_is_brake_lens(numV)) {
     p.tail = true;
     llog(L"lit parts: a %u-triangle part is an unlit brake lens by the car's model: it glows as a tail lamp while the lamps are on", prims);
   }
@@ -802,12 +846,30 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
     dev->lpVtbl->GetTexture(dev, 0, &cur);
     if (cur) {
       const uint64_t h = rbrrtx_texture_hash(cur);
+      uint64_t litSrc = 0;                               // the lit atlas of this draw: its own, or its unlit sibling's
       for (auto& kv : g_litAtlas)
-        if (kv.second.unlit == h && !kv.second.unlitTex) { cur->lpVtbl->AddRef(cur); kv.second.unlitTex = cur; }
-      auto lit = g_litAtlas.find(h);
-      IDirect3DBaseTexture9* unlit = lit != g_litAtlas.end() && g_raw[kLamps] < 0 ? lit->second.unlitTex : nullptr;
+        if (kv.second.unlit == h) {
+          if (!kv.second.unlitTex) { cur->lpVtbl->AddRef(cur); kv.second.unlitTex = cur; }
+          litSrc = kv.first;
+        }
+      const auto lit = g_litAtlas.find(h);
+      if (lit != g_litAtlas.end()) litSrc = h;
+      D3DSURFACE_DESC ad = {};
+      if (litSrc && cur->lpVtbl->GetType(cur) == D3DRTYPE_TEXTURE) reinterpret_cast<IDirect3DTexture9*>(cur)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(cur), 0, &ad);
       cur->lpVtbl->Release(cur);
-      if (unlit) return unlit;
+      // A brake or reverse part has its own signal (run 20261109-180308: the E30's lit brake mesh got the unlit texture with the lamps off).
+      if (litSrc && !(p.mask & ((1u << kBrake) | (1u << kReverse)))) {
+        if (g_raw[kLamps] < 0) {
+          if (lit != g_litAtlas.end() && lit->second.unlitTex) return lit->second.unlitTex;
+        } else if (g_raw[kLamps] > 0 && ad.Width) {
+          // These cars' lamp meshes never switch, so learning finds nothing and they had no glow at all (the E30's head lamps). Lit and
+          // unlit meshes are both drawn in the same place: both get the glow, so they cannot show through each other.
+          if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
+          const int kind = p.end < 0 ? kTail : kLamps;
+          if (g_cfg.glow[kind] > 0.0f)
+            if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height)) { note_nudge(kind, p.end); return twin; }
+        }
+      }
     }
   }
   if (world && ((p.mask & (1u << kBrake)) || p.tail) && p.onBody + p.offBody < 600)   // lens or disc (litparts_frame)
@@ -832,10 +894,11 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims &&
       std::find(g_discPrims.begin(), g_discPrims.end(), p.prims) == g_discPrims.end()) kind = kTail;
   if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
-  // Two kinds of car (user 2026-11-09): with lamp glass of its own the light is inside and the blended glass stays clear;
-  // with lamps painted on the blended part is all there is, so it glows. A rear lamp keeps its own colour (atlas mask), the
+  // Two kinds of car (user 2026-11-09): with lamp glass of its own the light is inside and the glass stays clear; with lamps
+  // painted on, the blended part is all there is, so it glows. Glass means the glass shader: blending alone also marked the
+  // E30's lit brake lamps (run 20261109-180308), which then never glowed. A rear lamp keeps its own colour (atlas mask), the
   // solid warm white of a head lamp over a red lens read as hazy white glass.
-  if (kind >= 0 && kind < kDisc && p.blended && rbrrtx_headlights_has_lens()) return nullptr;
+  if (kind >= 0 && kind < kDisc && glassShader && rbrrtx_headlights_has_lens()) return nullptr;
   if (kind == kLamps && p.end < 0) kind = kTail;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
@@ -847,24 +910,8 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
                     SUCCEEDED(reinterpret_cast<IDirect3DTexture9*>(t0)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(t0), 0, &d));
   t0->lpVtbl->Release(t0);
   if (!src || !is2d) { if (++g_noHash == 1) llog(L"lit parts: a lit part's texture has no known hash: not made to glow"); return nullptr; }
-  uint64_t th = 0;
-  IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
-  if (!twin) return nullptr;
-  bool published = true;
-  {
-    std::lock_guard<std::mutex> g(g_mx);
-    auto en = g_entries.find(th);
-    if (en != g_entries.end()) {
-      published = g_frame >= en->second.readyFrame;
-    } else {
-      published = false;
-      bool queued = false;
-      for (const Pending& q : g_pending) queued = queued || q.twin == th;
-      if (!queued) g_pending.push_back({ th, src, kind, car_dir(), d.Width, d.Height });
-    }
-  }
-  if (!published) return nullptr;                      // every kind waits for its material (no noise on the part)
-  ++g_swapped;
+  void* twin = twin_for(dev, src, kind, d.Width, d.Height);
+  if (twin) note_nudge(kind, p.end);
   return twin;
 }
 

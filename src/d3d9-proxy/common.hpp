@@ -162,6 +162,7 @@ int rbrrtx_headlights_game_lamps();                             // the game's la
 int rbrrtx_headlights_on();                                     // 1 while the car's lamps are on for the player (L, automatic), whatever the pulse sends
 int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
 bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
+bool rbrrtx_headlights_forward(float out[3]);                   // the car's forward direction in the world, false before its first pose
 bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
@@ -212,6 +213,7 @@ void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol); // materials.in
 void rbrrtx_hudglow_car_draw(void* device);                     // car draw: render target layers over the gauges become world-space UI
 void* rbrrtx_hudglow_layer_bind(void* device, unsigned frame);  // binds a snapshot of a gauge render target; returns the game's texture to restore
 void rbrrtx_hudglow_device_lost();                              // releases the snapshots
+float rbrrtx_hudglow_emissive_gain(float sunElevation);         // rtx.emissiveIntensity for the sun's height
 float rbrrtx_hudglow_ui_emissive(bool lampsOn);                 // rtx.worldSpaceUiEmissiveIntensity for the lamp state
 const char* rbrrtx_hudglow_ui_list();                           // the hashes for rtx.worldSpaceUiTextures once they grew, else null
 void rbrrtx_hudglow_before(void* device);                       // around each D3D9 draw sent to Remix
@@ -234,7 +236,8 @@ std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as
 // generated material is emissive. Settings: config\materials.ini [lit_parts].
 void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
-void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world);
+void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world, bool glassShader);
+bool rbrrtx_litparts_nudge(float out[3]);                       // world offset for the twin just returned, off a coplanar surface
 bool rbrrtx_litparts_lamps_done();                              // the lamp signal gave a clean switch for this car: no more learning pulses
 void rbrrtx_litparts_status(wchar_t* out, size_t n);
 void rbrrtx_litparts_destroy();

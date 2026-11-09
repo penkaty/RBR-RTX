@@ -15,7 +15,9 @@
 #include "common.hpp"
 #include "menu/menu.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <cwchar>
 #include <initializer_list>
 #include <map>
 #include <mutex>
@@ -119,6 +121,71 @@ HRESULT STDMETHODCALLTYPE hk_GetDeviceData(void* self, DWORD cbObj, void* rgdod,
   return hr;
 }
 
+// ---- plugins that read the mouse themselves (user 2026-11-09: DirectorsCut's freecam moved and zoomed with F3 open). Its imports
+// of GetRawInputData, GetCursorPos and SetCursorPos are redirected: while the menu is open the raw mouse reads as still, the cursor
+// as where it was, and warps are dropped. Only modules under ...\Plugins\ are patched, so ImGui's own cursor reads are untouched.
+typedef UINT(WINAPI* PFN_GetRawInputData)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
+typedef BOOL(WINAPI* PFN_GetCursorPos)(LPPOINT);
+typedef BOOL(WINAPI* PFN_SetCursorPos)(int, int);
+PFN_GetRawInputData g_realRawData = nullptr;
+PFN_GetCursorPos g_realCursorPos = nullptr;
+PFN_SetCursorPos g_realSetCursor = nullptr;
+POINT g_frozenCursor = {};
+bool g_cursorFrozen = false;
+struct IatPatch { void** slot; void* orig; };
+std::vector<IatPatch> g_iat;
+
+UINT WINAPI hk_raw_data(HRAWINPUT h, UINT cmd, LPVOID data, PUINT size, UINT hdr) {
+  const UINT r = g_realRawData(h, cmd, data, size, hdr);
+  if (data && cmd == RID_INPUT && r != static_cast<UINT>(-1) && rbrrtx_menu_is_open()) {
+    RAWINPUT* ri = static_cast<RAWINPUT*>(data);
+    if (ri->header.dwType == RIM_TYPEMOUSE) {
+      ri->data.mouse.lLastX = ri->data.mouse.lLastY = 0;
+      ri->data.mouse.usButtonFlags = 0;
+      ri->data.mouse.ulRawButtons = 0;
+    }
+  }
+  return r;
+}
+
+BOOL WINAPI hk_cursor_pos(LPPOINT p) {
+  if (!rbrrtx_menu_is_open()) { g_cursorFrozen = false; return g_realCursorPos(p); }
+  if (!g_cursorFrozen) { g_cursorFrozen = g_realCursorPos(&g_frozenCursor) != FALSE; }
+  if (p) *p = g_frozenCursor;
+  return TRUE;
+}
+
+BOOL WINAPI hk_set_cursor(int x, int y) { return rbrrtx_menu_is_open() ? TRUE : g_realSetCursor(x, y); }
+
+void patch_module_imports(HMODULE m) {
+  BYTE* base = reinterpret_cast<BYTE*>(m);
+  const IMAGE_DOS_HEADER* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+  const IMAGE_NT_HEADERS* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+  const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+  if (!dir.VirtualAddress) return;
+  for (auto* d = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress); d->Name; ++d) {
+    if (_stricmp(reinterpret_cast<const char*>(base + d->Name), "user32.dll") || !d->OriginalFirstThunk) continue;
+    auto* names = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + d->OriginalFirstThunk);
+    auto* slots = reinterpret_cast<IMAGE_THUNK_DATA*>(base + d->FirstThunk);
+    for (; names->u1.AddressOfData; ++names, ++slots) {
+      if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
+      const char* fn = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData)->Name;
+      void* hook = nullptr;
+      if (!std::strcmp(fn, "GetRawInputData")) hook = reinterpret_cast<void*>(&hk_raw_data);
+      else if (!std::strcmp(fn, "GetCursorPos")) hook = reinterpret_cast<void*>(&hk_cursor_pos);
+      else if (!std::strcmp(fn, "SetCursorPos")) hook = reinterpret_cast<void*>(&hk_set_cursor);
+      if (!hook) continue;
+      void** slot = reinterpret_cast<void**>(&slots->u1.Function);
+      DWORD old = 0;
+      if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old)) continue;
+      g_iat.push_back({ slot, *slot });
+      *slot = hook;
+      VirtualProtect(slot, sizeof(void*), old, &old);
+    }
+  }
+}
+
 // Replaces slot `i` of `vtbl` (read-only memory in dinput8.dll: the page is opened for the write).
 bool write_slot(void** vtbl, int i, void* value) {
   DWORD old = 0;
@@ -199,7 +266,39 @@ void rbrrtx_dinput_block_install() {
 }
 
 // Puts the slots back (exit). A hook still running on another thread finishes on its own copy of the pointers.
+// At the menu's first opening: the plugins are loaded by then.
+void rbrrtx_menu_block_plugin_mouse() {
+  if (!g_iat.empty()) return;
+  HMODULE user = GetModuleHandleW(L"user32.dll");
+  if (!user) return;
+  g_realRawData = reinterpret_cast<PFN_GetRawInputData>(GetProcAddress(user, "GetRawInputData"));
+  g_realCursorPos = reinterpret_cast<PFN_GetCursorPos>(GetProcAddress(user, "GetCursorPos"));
+  g_realSetCursor = reinterpret_cast<PFN_SetCursorPos>(GetProcAddress(user, "SetCursorPos"));
+  if (!g_realRawData || !g_realCursorPos || !g_realSetCursor) return;
+  HMODULE mods[512];
+  DWORD need = 0;
+  typedef BOOL(WINAPI* PFN_EnumMods)(HANDLE, HMODULE*, DWORD, LPDWORD);
+  const auto enumMods = reinterpret_cast<PFN_EnumMods>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "K32EnumProcessModules"));
+  if (!enumMods || !enumMods(GetCurrentProcess(), mods, sizeof(mods), &need)) return;
+  int patched = 0;
+  for (DWORD i = 0, n = (std::min)(need / static_cast<DWORD>(sizeof(HMODULE)), 512ul); i < n; ++i) {
+    wchar_t path[MAX_PATH * 2] = {};
+    if (!GetModuleFileNameW(mods[i], path, MAX_PATH * 2)) continue;
+    _wcslwr_s(path);
+    if (!wcsstr(path, L"\\plugins\\")) continue;
+    const size_t before = g_iat.size();
+    patch_module_imports(mods[i]);
+    if (g_iat.size() != before) ++patched;
+  }
+  rbrrtx_log_to(L"rbrrtx_comp.log", L"menu: mouse imports of %d plugin(s) go through the menu now (%zu functions)", patched, g_iat.size());
+}
+
 void rbrrtx_dinput_block_remove() {
+  for (const IatPatch& p : g_iat) {
+    DWORD old = 0;
+    if (VirtualProtect(p.slot, sizeof(void*), PAGE_READWRITE, &old)) { *p.slot = p.orig; VirtualProtect(p.slot, sizeof(void*), old, &old); }
+  }
+  g_iat.clear();
   if (!g_active) return;
   g_active = false;
   for (const Patched& p : g_patched) {

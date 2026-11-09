@@ -381,6 +381,8 @@ int rbrrtx_custom_light_add(const float pos[3], const float rgb[3]) {
   l.d.radius = 0.1f;
   l.d.flicker = 0.0f;
   l.d.mode = 0;
+  l.d.dir[1] = -1.0f;
+  l.d.softness = 0.15f;
   cur().push_back(l);
   clog2(L"custom light %d added on %S at (%.2f %.2f %.2f)", l.d.id, rbrrtx_custom_stage_name(), pos[0], pos[1], pos[2]);
   return l.d.id;
@@ -432,12 +434,18 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on) {
     const bool posMoved = l.sentPos[0] != d.pos[0] || l.sentPos[1] != d.pos[1] || l.sentPos[2] != d.pos[2];
     if (isNew || posMoved || std::fabs(k - l.sentK) > 0.001f) {
       if (!rbrrtx_remix_plus()) destroy_light(l);
-      const float rad = k * d.lumens / (4.0f * 3.14159265f) / (unitLux * 3.14159265f * d.radius * d.radius);
+      // A cone's lumens leave through its solid angle, as in worldlights.cpp.
+      const float solid = d.cone > 0.0f ? 2.0f * 3.14159265f * (1.0f - std::cos(d.cone * 3.14159265f / 180.0f)) : 4.0f * 3.14159265f;
+      const float rad = k * d.lumens / solid / (unitLux * 3.14159265f * d.radius * d.radius);
       remixapi_LightInfoSphereEXT sphere = {};
       sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
       sphere.position = { d.pos[0], d.pos[1], d.pos[2] };
       sphere.radius = d.radius;
-      sphere.shaping_hasvalue = false;
+      sphere.shaping_hasvalue = d.cone > 0.0f;
+      sphere.shaping_value.direction = { d.dir[0], d.dir[1], d.dir[2] };
+      sphere.shaping_value.coneAngleDegrees = d.cone;
+      sphere.shaping_value.coneSoftness = d.softness;
+      sphere.shaping_value.focusExponent = 0.0f;
       sphere.volumetricRadianceScale = 1.0f;
       remixapi_LightInfo info = {};
       info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
@@ -631,7 +639,7 @@ int rbrrtx_emit_auto_windows(unsigned long long tex, void* texture, const float 
 }
 
 // ---- menu.ini sections
-// [lights.<stage>] l<id> = x, y, z, r, g, b, lumens, radius, flicker, mode
+// [lights.<stage>] l<id> = x, y, z, r, g, b, lumens, radius, flicker, mode[, cone, softness, dx, dy, dz]   (older lines: spheres)
 // [emissive] / [windows] <hex16> = mode, intensity, r, g, b, litPercent, seed, u0 v0 u1 v1; u0 v0 u1 v1; ...
 //   [| light=lumens, cone, softness, dx, dy, dz, aim, ax, ay, az]   (an emissive prop that casts light)
 void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value) {
@@ -641,8 +649,10 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
     CL l;
     l.d.id = g_nextId++;
     int mode = 0;
-    if (sscanf_s(value, " %f , %f , %f , %f , %f , %f , %f , %f , %f , %d", &l.d.pos[0], &l.d.pos[1], &l.d.pos[2], &l.d.rgb[0], &l.d.rgb[1],
-                 &l.d.rgb[2], &l.d.lumens, &l.d.radius, &l.d.flicker, &mode) < 10) return;
+    l.d.dir[1] = -1.0f;
+    l.d.softness = 0.15f;
+    if (sscanf_s(value, " %f , %f , %f , %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f", &l.d.pos[0], &l.d.pos[1], &l.d.pos[2], &l.d.rgb[0], &l.d.rgb[1],
+                 &l.d.rgb[2], &l.d.lumens, &l.d.radius, &l.d.flicker, &mode, &l.d.cone, &l.d.softness, &l.d.dir[0], &l.d.dir[1], &l.d.dir[2]) < 10) return;
     l.d.mode = mode;
     g_lights[stage].push_back(l);
   } else if (!std::strcmp(section, "emissive") || !std::strcmp(section, "windows")) {
@@ -684,8 +694,8 @@ int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* use
       const RbrCustomLight& d = l.d;
       char key[32];
       snprintf(key, sizeof(key), "l%d", ++i);
-      snprintf(b, sizeof(b), "%s=%.3f, %.3f, %.3f, %.4f, %.4f, %.4f, %.1f, %.3f, %.2f, %d", key, d.pos[0], d.pos[1], d.pos[2], d.rgb[0], d.rgb[1], d.rgb[2],
-               d.lumens, d.radius, d.flicker, d.mode);
+      snprintf(b, sizeof(b), "%s=%.3f, %.3f, %.3f, %.4f, %.4f, %.4f, %.1f, %.3f, %.2f, %d, %.1f, %.2f, %.4f, %.4f, %.4f", key, d.pos[0], d.pos[1], d.pos[2], d.rgb[0], d.rgb[1], d.rgb[2],
+               d.lumens, d.radius, d.flicker, d.mode, d.cone, d.softness, d.dir[0], d.dir[1], d.dir[2]);
       emit(b, user);
       ++items;
     }
