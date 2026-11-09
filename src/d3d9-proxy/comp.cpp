@@ -4678,8 +4678,27 @@ unsigned lamp_island(const PickDraw& d, size_t hitTri, const double hp[3], float
   return count;
 }
 
-// The screen-centre ray through g_V / g_P into a LampPick.
+// Remix's free camera (Alt+X), published by our runtime in a named section (rtx_camera.cpp). While it is on, the F3 picker
+// and light placing look where the player looks, not along the game's camera (user 2026-11-09: main menu lamps).
+struct RemixFreeCamera { volatile LONG seq; int enabled; float pos[3], right[3], up[3], forward[3]; };
+const RemixFreeCamera* remix_free_camera() {
+  static const RemixFreeCamera* view = nullptr;
+  if (!view) {
+    HANDLE map = OpenFileMappingA(FILE_MAP_READ, FALSE, "RBRRTX_RemixFreeCamera");
+    if (!map) return nullptr;
+    view = static_cast<const RemixFreeCamera*>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, sizeof(RemixFreeCamera)));
+    if (!view) { CloseHandle(map); return nullptr; }
+  }
+  return view->enabled ? view : nullptr;
+}
+
+// The screen-centre ray through g_V / g_P into a LampPick (the free camera's when that is on).
 bool pick_ray_from_camera(LampPick& pk) {
+  if (const RemixFreeCamera* fc = remix_free_camera()) {
+    for (int k = 0; k < 3; ++k) { pk.org[k] = fc->pos[k]; pk.dir[k] = fc->forward[k]; }
+    pk.ray = true;
+    return true;
+  }
   D3DMATRIX vi;
   if (!inverse(g_V, vi) || std::fabs(g_P._11) < 1e-6f || std::fabs(g_P._22) < 1e-6f) return false;
   const double vx = -g_P._31 / g_P._11, vy = -g_P._32 / g_P._22;
@@ -6023,7 +6042,9 @@ void send_decal_list() {
 
 // Per Present: batched list updates (nothing is sent unless the menu changed a tag).
 void f3_tags_frame() {
-  if (!g_apiOk || g_frame - g_f3SendFrame < 20) return;
+  if (!g_apiOk) return;
+  if (const char* ui = rbrrtx_hudglow_ui_list()) remix_set_raw("override:rtx.worldSpaceUiTextures", ui);   // RBRHUD gauge layers, not saved
+  if (g_frame - g_f3SendFrame < 20) return;
   bool any = false;
   any = g_decalDirty;
   for (int c = 0; c < 4; ++c) any |= g_f3Dirty[c];
@@ -6255,6 +6276,10 @@ void f3_log(const char* line) { clog(L"menu: %S", line); }
 
 // Camera of the last frame that had one: position and forward (the F3 Lights page places lights at the crosshair or in front of it).
 int f3_camera(float pos[3], float fwd[3]) {
+  if (const RemixFreeCamera* fc = remix_free_camera()) {
+    for (int k = 0; k < 3; ++k) { pos[k] = fc->pos[k]; fwd[k] = fc->forward[k]; }
+    return 1;
+  }
   D3DMATRIX vi;
   if (!g_haveCam || !inverse(g_V, vi)) return 0;
   for (int k = 0; k < 3; ++k) { pos[k] = vi.m[3][k]; fwd[k] = vi.m[2][k]; }
@@ -7013,7 +7038,10 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   HRESULT hr = D3D_OK;
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) {
-    if (g_enabled && g_primaryRT) rbrrtx_hudglow_before(dev);
+    if (g_enabled && g_primaryRT) {
+      if (g_curVS && (!g_curInfo || (g_curInfo->flags & SH_CAR))) rbrrtx_hudglow_car_draw(dev);
+      rbrrtx_hudglow_before(dev);
+    }
     hr = glassSplit ? glass_split_draw(dev, glassPlan, draw) : draw();
     rbrrtx_hudglow_after(dev);
   }

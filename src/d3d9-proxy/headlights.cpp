@@ -486,6 +486,7 @@ struct CarModel {
   // Extra lamps switched on in the live <car>_settings.ini (load_extra_lamps), in the root frame.
   struct Extra { std::string name; V3 pos = {}; float rgb[3] = { 1, 1, 1 }; bool weak = false; bool brake = false; };
   std::vector<Extra> extras;
+  std::vector<V3> lampPts;                             // vertices of the lamp parts, root frame (lens_front)
 } g_car;
 constexpr size_t kMaxExtra = 16;
 
@@ -803,9 +804,71 @@ bool cockpit_quad(float c[4][3]) {                     // camera space (x right,
   return true;
 }
 
+// The vertices of a car's lamp parts (e_light*, e_lamp*, e_bumperlight*, lens or cover glass) in the root frame, for
+// lens_front. Same mesh records as load_windscreen: tag 0xC 0 k 1, size, name\0, +136 count, +144 (position, normal).
+void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsigned, Node>& nodes,
+                      const std::unordered_map<std::string, unsigned>& byName) {
+  const char* p = d.data();
+  for (size_t i = 0; i + 20 + 64 + 144 <= d.size() && g_car.lampPts.size() < 60000; ++i) {
+    if (p[i] != 0xC) continue;
+    uint32_t tag[4];
+    std::memcpy(tag, p + i, 16);
+    if (tag[0] != 0xC || tag[1] != 0 || tag[2] > 7 || tag[3] != 1) continue;
+    const char* z = static_cast<const char*>(std::memchr(p + i + 20, 0, 64));
+    if (!z || z == p + i + 20) continue;
+    std::string name(p + i + 20, z), low = name;
+    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (low.compare(0, 2, "e_") || (low.find("light") == std::string::npos && low.find("lamp") == std::string::npos)) continue;
+    const auto node = byName.find(name);
+    if (node == byName.end()) continue;
+    const size_t a = static_cast<size_t>(z - p) + 1;
+    uint32_t n = 0;
+    if (a + 148 > d.size()) continue;
+    std::memcpy(&n, p + a + 136, 4);
+    if (n < 3 || n > 20000 || a + 144 + static_cast<size_t>(n) * 24 > d.size()) continue;
+    float R[3][3];
+    V3 t;
+    total_of(nodes, node->second, false, R, t);
+    for (uint32_t k = 0; k < n; ++k) {
+      float v[3];
+      std::memcpy(v, p + a + 144 + k * 24, 12);
+      g_car.lampPts.push_back({ R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2] + t.x,
+                                R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2] + t.y,
+                                R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2] + t.z });
+    }
+  }
+}
+
+// How far ahead of a lamp node the front of its own lamp (reflector, lens, cover glass) is, on the car's forward axis:
+// the vertices of the lamp parts within kLensAxis of the lamp's axis. 0 = none found. On most cars the node sits behind
+// the glass (measured over the 109 models: E30 4.5 cm, Fabia Rally2 9, Porsche GT3 RS 14-27), so a lamp only `forward`
+// ahead of its node lit its own lens from a few centimetres: flat white and opaque (user 2026-11-09).
+constexpr float kLensAxis = 0.12f, kLensReach = 0.35f;
+struct LensHit { V3 pos; float front; };
+std::vector<LensHit> g_lensHits;                       // per lamp position, this car
+float lens_front(const V3& pos) {
+  for (const LensHit& h : g_lensHits) if (len(h.pos - pos) < 1e-3f) return h.front;
+  float front = 0.0f;
+  for (const V3& v : g_car.lampPts) {
+    const V3 r = v - pos;
+    const float along = dot(r, g_car.forward);
+    if (along < -0.05f || along > kLensReach || along <= front) continue;
+    const V3 side = r - g_car.forward * along;
+    if (dot(side, side) < kLensAxis * kLensAxis) front = along;
+  }
+  g_lensHits.push_back({ pos, front });
+  return front;
+}
+
+// Where a beam starts relative to its node: `wanted` metres ahead, but at least clear of the lamp's glass.
+V3 beam_ahead(const V3& node, float wanted) {
+  return g_car.forward * (std::max)(wanted, lens_front(node) + g_cfg.radius + 0.01f);
+}
+
 void load_car_model(const std::wstring& file) {
   const auto t0 = std::chrono::steady_clock::now();
   g_car = CarModel();
+  g_lensHits.clear();
   g_car.file = file;
   std::ifstream f(file, std::ios::binary);
   const std::vector<char> d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -885,6 +948,9 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
   load_extra_lamps(file, lamp);
+  load_lamp_points(d, nodes, byName);
+  hlog(L"headlights: lamp glass %.1f / %.1f cm ahead of the lamp nodes (%zu lamp vertices): beams start in front of it",
+       lens_front(g_car.lf) * 100.0f, lens_front(g_car.rf) * 100.0f, g_car.lampPts.size());
   load_windscreen(d, nodes, byName);
   load_cockpit_quad(d, file);
   for (const char* name : { "e_body", "i_body" }) {   // the frame most of the car is drawn in
@@ -1692,8 +1758,8 @@ void send_lamps(const float C[16], const wchar_t* src) {
   const V3 rf = g_car.lamps ? g_car.rf : V3{ -g_cfg.fallback.x, g_cfg.fallback.y, g_cfg.fallback.z };
   // One head lamp offset for every view (forward, in front of the lens): with the lamps on the drawn car the car no
   // longer blocks them (2026-10-23 they sat up to 1.4 m inside the drawn body while moving, which needed 0.5-1.5 m).
-  const V3 ahead = g_car.forward * g_cfg.forward;
-  const V3 wl = to_world(C, lf + ahead), wr = to_world(C, rf + ahead);
+  // Each lamp clears its own glass (beam_ahead), or the lens catches the whole beam at a few centimetres (2026-11-09).
+  const V3 wl = to_world(C, lf + beam_ahead(lf, g_cfg.forward)), wr = to_world(C, rf + beam_ahead(rf, g_cfg.forward));
   const V3 fwd = norm(row(C, 2) * g_car.forward.z);
   const V3 up = norm(row(C, 1));
   auto aim = [&](float pitchDeg) { const float pr = pitchDeg * 0.0174533f; return norm(fwd * std::cos(pr) - up * std::sin(pr)); };
@@ -1720,9 +1786,9 @@ void send_lamps(const float C[16], const wchar_t* src) {
     draw_lamp(g_lamps[2], wr, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
     if (g_mode == kBrights || g_cfg.quadLamps) {       // high beams: each lamp node moved toward the car's middle
       const float in = g_cfg.brightsInset;
-      const V3 bahead = ahead + g_car.forward * g_cfg.brightsForward;
-      const V3 bl = to_world(C, lf + bahead + V3{ lf.x > rf.x ? -in : in, 0, 0 });
-      const V3 br = to_world(C, rf + bahead + V3{ lf.x > rf.x ? in : -in, 0, 0 });
+      const V3 lfb = lf + V3{ lf.x > rf.x ? -in : in, 0, 0 }, rfb = rf + V3{ lf.x > rf.x ? in : -in, 0, 0 };
+      const V3 bl = to_world(C, lfb + beam_ahead(lfb, g_cfg.forward + g_cfg.brightsForward));
+      const V3 br = to_world(C, rfb + beam_ahead(rfb, g_cfg.forward + g_cfg.brightsForward));
       const bool high = g_mode == kBrights;            // quad_lamps: the inner pair is a low beam until brights
       const V3 bdir = aim(high ? g_cfg.brightsPitch : g_cfg.pitch);
       draw_lamp(g_lamps[3], bl, bdir, high ? g_cfg.brightsCone : g_cfg.cone, high ? g_cfg.brightsRadiance : g_cfg.radiance,
@@ -1751,7 +1817,7 @@ void send_lamps(const float C[16], const wchar_t* src) {
       const float k = g_cfg.extraIntensity * (e.weak ? g_cfg.extraWeak : 1.0f);
       const float rad[3] = { g_cfg.brightsRadiance[0] * k * e.rgb[0], g_cfg.brightsRadiance[1] * k * e.rgb[1],
                              g_cfg.brightsRadiance[2] * k * e.rgb[2] };
-      draw_lamp(g_extraLamps[i], to_world(C, e.pos + ahead), e.weak ? wdir : edir, e.weak ? g_cfg.cone : g_cfg.extraCone, rad,
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_ahead(e.pos, g_cfg.forward)), e.weak ? wdir : edir, e.weak ? g_cfg.cone : g_cfg.extraCone, rad,
                 e.weak ? g_cfg.softness : g_cfg.brightsSoftness);
     }
   }

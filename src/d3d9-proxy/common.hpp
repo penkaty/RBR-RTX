@@ -205,6 +205,8 @@ void rbrrtx_apiworld_written(const void* buffer);               // the game lock
 void rbrrtx_watch_buffer_writes(void* vb, void* ib);           // comp.cpp: report write locks of these buffers' kinds
 // hudglow.cpp: RBRHUD gauge displays (s0 render target + s15 emissive mask) glow through Kim's material protocol.
 void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol); // materials.ini [hud_glow]; patches SetTexture / SetPixelShaderConstantB
+void rbrrtx_hudglow_car_draw(void* device);                     // car draw: render target layers over the gauges become world-space UI
+const char* rbrrtx_hudglow_ui_list();                           // the hashes for rtx.worldSpaceUiTextures once they grew, else null
 void rbrrtx_hudglow_before(void* device);                       // around each D3D9 draw sent to Remix
 void rbrrtx_hudglow_after(void* device);
 void rbrrtx_hudglow_forget();                                   // stage / device change: texture pointers may be reused
