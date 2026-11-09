@@ -751,10 +751,6 @@ float g_numosSentEl = -1000.0f, g_numosSentAz = -1000.0f, g_numosSentI = -1.0f, 
 // height - ground_offset, low-passed over 3 s (jumps at a new stage), sent when it moved 1 m. ground = auto: NUMOS's own.
 bool g_numosGroundCar = true, g_numosGroundManual = false;
 float g_numosGroundOffset = 0.5f, g_numosGround = 0.0f, g_numosGroundSent = -1.0e9f;
-bool g_numosFogAlbedo = true;                          // [numos] fog_albedo_from_game: albedo from the stage's fog colour
-float g_numosFogExtra = 20.0f;                         // [numos] fog_extra: metres added to every fog visibility (user 2026-10-29)
-bool g_numosOwnsWeather = true;                        // [numos] weather_from_numos: fog, aerosol and weather dimming only from NUMOS's presets (user 2026-11-09)
-bool g_numosFogHalfway = true;                         // [numos] stage_fog_match = halfway (else end)
 // Main menu under NUMOS (user 2026-10-30): the base weather (no preset: "Menu, RBR" binds none unless a preset is made
 // for it) and the menu sun as before (sun_rule rule 4). Coming back from a stage (user, second request: "its time of
 // day only applies to the main menu and slowly moves forward over the next 20 seconds"), the menu starts at the
@@ -1310,12 +1306,6 @@ void atmo_load() {
     GetPrivateProfileStringW(L"numos", L"ground_offset", L"0.5", v, 32, path);
     g_numosGroundOffset = static_cast<float>(_wtof(v));
     g_numosGroundSent = -1.0e9f;                       // send the ground again
-    g_numosOwnsWeather = GetPrivateProfileIntW(L"numos", L"weather_from_numos", 1, path) != 0;
-    g_numosFogAlbedo = GetPrivateProfileIntW(L"numos", L"fog_albedo_from_game", 1, path) != 0;
-    GetPrivateProfileStringW(L"numos", L"fog_extra", L"20", v, 32, path);
-    g_numosFogExtra = (std::max)(0.0f, static_cast<float>(_wtof(v)));
-    GetPrivateProfileStringW(L"numos", L"stage_fog_match", L"halfway", v, 32, path);
-    g_numosFogHalfway = _wcsicmp(v, L"end") != 0;
     GetPrivateProfileStringW(L"menu", L"transition_seconds", L"20", v, 32, path);
     g_menuBlendSeconds = (std::max)(0.0f, static_cast<float>(_wtof(v)));
     GetPrivateProfileStringW(L"numos", L"moon_phase", L"date", v, 32, path);
@@ -1331,10 +1321,8 @@ void atmo_load() {
       remix_set("rtx.atmosphere.moon0.enabled", g_moonOn ? "True" : "False");
       if (g_moonOn) remix_set("rtx.atmosphere.moon0.phase", p);
     }
-    clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f, aerosolDensity %.3f; ground %s; "
-         L"fog albedo %s", g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity,
-         conf_float("rtx.atmosphere.aerosolDensity", 1.1f), g_numosGroundCar ? L"from the car" : L"NUMOS's own (auto)",
-         g_numosFogAlbedo ? L"from the stage's fog colour" : L"presets / conf");
+    clog(L"atmosphere: NUMOS sun rotation = %s atan2 + %.1f deg; conf sunIntensity %.3f; ground %s",
+         g_numosAzSign < 0.0f ? L"-" : L"", g_numosAzOffset, g_numosSunIntensity, g_numosGroundCar ? L"from the car" : L"NUMOS's own (auto)");
   }
   clog(L"atmosphere: %s, %zu regions, %zu weather sections from %s; base haze %.0f m colour (%.2f %.2f %.2f) sky %.2f",
        g_atmoEnabled ? L"on" : L"off (enable = 0)", g_atmoRegions.size(), g_atmoSections.size(), path, g_atmoBase.dist,
@@ -1379,15 +1367,11 @@ bool g_stageWxNamed = false;
 // NUMOS weather (g_numos, user 2026-10-29: the game's chosen weather and conditions, through NUMOS). Per stage/weather:
 //  - rtx.weather.gameWeather = the ids below, most specific first; the first one a preset binds wins (RemixSkyAPI.md
 //    section 2). Presets: config-remixplus\weather\rbr-*.conf (weather.bindings = HeavyRain, LightFog_HeavyCloud, ...),
-//    edited in Alt+X > Sky > Weather. They leave the fog out, so the stage's own fog below shows.
-//  - rtx.atmosphere.fogVisibilityMeters from the stage's FogEnd (stage_fog = s: FogEnd / s, all fogged at FogEnd as
-//    on the raster image) or fog_visibility = m (0 = none) of the atmosphere.ini sections; density divides it.
-//  - rtx.atmosphere.aerosolDensity = the conf value x the sections' aerosol factors (region haze); presets written
-//    "aerosolDensity = x<v>" multiply this.
+//    edited in Alt+X > Sky > Weather. Fog, haze, clouds and weather dimming are the preset's alone (user 2026-11-09).
 //  - rtx.skyProvider.worldChangeCount: bumped for every new stage, so NUMOS measures the ground level again.
-// The sun stays the proxy's (update_sun -> numos_sun); the "sun" factors scale NUMOS's sunIntensity (softer per stage).
+// The sun stays the proxy's (update_sun -> numos_sun).
 void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::wstring& clouds, const std::wstring& tod,
-                   const wchar_t* region, const AtmoFactors& total, float stageFog, const wchar_t* sunFrom) {
+                   const wchar_t* region, const wchar_t* sunFrom) {
   auto narrow = [](const std::wstring& w) { std::string r; for (wchar_t ch : w) r += static_cast<char>(ch); return r; };
   const std::string s = narrow(sky), c = narrow(clouds), t = narrow(tod);   // ASCII names (game_state.cpp)
   const std::string st = "stage" + std::to_string(si.trackId);
@@ -1399,50 +1383,11 @@ void numos_weather(const RbrStageInfo& si, const std::wstring& sky, const std::w
     lastTrack = si.trackId;
     remix_set("rtx.skyProvider.worldChangeCount", std::to_string(++worldChanges).c_str());
   }
-  const float confAerosol = conf_float("rtx.atmosphere.aerosolDensity", 1.1f);
-  // NUMOS owns the weather (user 2026-11-09): the proxy only says which weather it is (rtx.weather.gameWeather above) and the
-  // bound preset sets fog, aerosol and clouds. weather_from_numos = 0 brings back the proxy's factors below.
-  const bool own = g_numosOwnsWeather;
-  atmo_send("rtx.atmosphere.aerosolDensity", fmt1(own ? confAerosol : confAerosol * total.aerosol), fmt1(confAerosol));
-  const float confFog = conf_float("rtx.atmosphere.fogVisibilityMeters", 0.0f);
-  const StageWeather& sw = g_stageWx;
-  const float dens = (std::max)(0.01f, total.density);
-  float vis = confFog;
-  wchar_t fogNote[128] = L"conf value";
-  if (own) {
-    // conf value (a preset's fogVisibilityMeters is applied over it)
-  } else if (stageFog > 0.0f && sw.found && sw.useFog && sw.haveFog == 3 && sw.fogEnd > 1.0f) {
-    // RBR's raster fog is linear, FogStart..FogEnd; NUMOS's visibility is where contrast falls to 2 % (transmittance
-    // exp(-3.912 d / V)). visibility = FogEnd (until 2026-10-30) made NUMOS's fog far thicker on the way: 32 % at a
-    // tenth of FogEnd where RBR has 10 %, 86 % at half where RBR has 50 % (user: haze too close to the camera, objects
-    // grey and flat). halfway: half fogged where RBR is half fogged, V = 3.912 / ln 2 x (FogStart + FogEnd) / 2.
-    const float end = g_numosFogHalfway ? 2.822f * (std::max)(1.0f, sw.fogStart + sw.fogEnd) : sw.fogEnd;
-    vis = end / stageFog / dens;
-    swprintf_s(fogNote, L"stage fog %.0f..%.0f m%s / %.2f / density %.2f", sw.fogStart, sw.fogEnd,
-               g_numosFogHalfway ? L" matched halfway" : L"", stageFog, dens);
-  } else if (total.fogVis >= 0.0f) {
-    vis = total.fogVis > 0.0f ? total.fogVis / dens : 0.0f;
-    swprintf_s(fogNote, L"fog_visibility %.0f m / density %.2f", total.fogVis, dens);
-  }
-  if (!own && vis > 0.0f) {                            // every fog a little clearer (user 2026-10-29: +20 m); 0 stays no fog
-    vis += g_numosFogExtra;
-    swprintf_s(fogNote + wcslen(fogNote), 128 - wcslen(fogNote), L" + %.0f m", g_numosFogExtra);
-  }
-  atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(vis), fmt1(confFog));
-  // The game's fog colour as NUMOS's fog albedo: RBR's night fog is near black (Peklo Snow R 0.01 0.02 0.03), its day fog
-  // near white. NUMOS's own 0.9 lit a night fog into a bright wall. Only when the stage's fog is on.
-  const float confAlbedo = conf_float("rtx.atmosphere.fogAlbedo", 0.9f);
-  float albedo = confAlbedo;
-  if (!own && g_numosFogAlbedo && sw.found && sw.useFog && sw.fogCol[0] >= 0.0f && sw.fogCol[1] >= 0.0f && sw.fogCol[2] >= 0.0f)
-    albedo = std::clamp(0.95f * (std::max)({ sw.fogCol[0], sw.fogCol[1], sw.fogCol[2] }), 0.03f, 0.95f);
-  atmo_send("rtx.atmosphere.fogAlbedo", fmt1(albedo), fmt1(confAlbedo));
-  g_numosSunWeather = own ? 1.0f : total.sun;
+  g_numosSunWeather = 1.0f;
   wchar_t line[1024];
-  swprintf_s(line, L"NUMOS: stage %d %s (%S, region %s), sky %s, clouds %s, %s%s -> weather ids \"%S\"; fog visibility %.0f m (%s), "
-                   L"fog albedo %.2f, aerosol x%.2f, sun x%.2f, fallback sun %.1f/%.1f, stage sun %s",
+  swprintf_s(line, L"NUMOS: stage %d %s (%S, region %s), sky %s, clouds %s, %s%s -> weather ids \"%S\"; fallback sun %.1f/%.1f, stage sun %s",
              si.trackId, si.name[0] ? si.name : L"?", si.country[0] ? si.country : "?", region, sky.c_str(), clouds.c_str(),
-             tod.c_str(), g_stageWxNamed ? L" (from the stage's description)" : L"", ids.c_str(), vis, fogNote, albedo,
-             total.aerosol, total.sun, g_sunFallbackAz, g_sunFallbackEl, sunFrom);
+             tod.c_str(), g_stageWxNamed ? L" (from the stage's description)" : L"", ids.c_str(), g_sunFallbackAz, g_sunFallbackEl, sunFrom);
   g_atmoLine = line;
   clog(L"atmosphere: %s", line);
 }
@@ -1460,31 +1405,20 @@ float moon_phase_today() {
 
 // Main menu weather (user 2026-11-05): the clouds drift between random weathers, each change taking menu_weather_seconds,
 // using the runtime's game blend (rtx.weather.gameWeatherOutgoing -> gameWeather). menu_bad_weather_chance of the changes
-// head for bad weather: fog from [sky.<id>] fog_visibility, and rain through the Remix particles.
-struct MenuWx { const char* id; const wchar_t* section; float rain; };
-const MenuWx kMenuGood[] = { { "Clear", L"sky.Crisp", 0.0f }, { "LightCloud", nullptr, 0.0f }, { "PartCloud", nullptr, 0.0f },
-                             { "HeavyCloud", nullptr, 0.0f }, { "Hazy", L"sky.Hazy", 0.0f } };
-const MenuWx kMenuBad[] = { { "LightFog", L"sky.LightFog", 0.0f }, { "HeavyFog", L"sky.HeavyFog", 0.0f },
-                            { "LightRain", L"sky.LightRain", 50.0f }, { "HeavyRain", L"sky.HeavyRain", 100.0f } };
+// head for bad weather: the bound preset brings the fog, rain comes through the Remix particles.
+struct MenuWx { const char* id; float rain; };
+const MenuWx kMenuGood[] = { { "Clear", 0.0f }, { "LightCloud", 0.0f }, { "PartCloud", 0.0f }, { "HeavyCloud", 0.0f }, { "Hazy", 0.0f } };
+const MenuWx kMenuBad[] = { { "LightFog", 0.0f }, { "HeavyFog", 0.0f }, { "LightRain", 50.0f }, { "HeavyRain", 100.0f } };
 bool g_mwOn = false;
 const MenuWx* g_mwTo = nullptr;
 std::string g_mwFromId = "Menu, RBR";
-float g_mwFromFog = 0.0f, g_mwFromRain = 0.0f, g_mwSeconds = 120.0f, g_mwBad = 0.1f;
-float g_mwToFog = 0.0f;                                      // menu_wx_fog(g_mwTo), read once per weather change
-float g_mwSentBlend = -1.0f, g_mwSentFog = -1.0f;            // last values sent (each send makes Remix re-resolve the sky)
+float g_mwFromRain = 0.0f, g_mwSeconds = 120.0f, g_mwBad = 0.1f;
+float g_mwSentBlend = -1.0f;                                 // last value sent (each send makes Remix re-resolve the sky)
 ULONGLONG g_mwStart = 0;
-
-float menu_wx_fog(const MenuWx* w) {
-  if (!w || !w->section || !g_atmoPath[0]) return 0.0f;
-  wchar_t v[32] = {};
-  GetPrivateProfileStringW(w->section, L"fog_visibility", L"0", v, 32, g_atmoPath);
-  return static_cast<float>(_wtof(v));
-}
 
 void menu_wx_next() {
   if (g_mwTo) {
     g_mwFromId = g_mwTo->id;
-    g_mwFromFog = menu_wx_fog(g_mwTo);
     g_mwFromRain = g_mwTo->rain;
   }
   const bool bad = static_cast<float>(std::rand()) / RAND_MAX < g_mwBad;
@@ -1493,8 +1427,7 @@ void menu_wx_next() {
   const MenuWx* pick = g_mwTo;
   for (int tries = 0; tries < 8 && pick == g_mwTo; ++tries) pick = &list[std::rand() % n];
   g_mwTo = pick;
-  g_mwToFog = menu_wx_fog(g_mwTo);
-  g_mwSentBlend = g_mwSentFog = -1.0f;
+  g_mwSentBlend = -1.0f;
   g_mwStart = GetTickCount64();
   remix_set("rtx.weather.gameWeatherOutgoing", g_mwFromId.c_str());
   remix_set("rtx.weather.gameWeatherBlend", "0");
@@ -1502,7 +1435,7 @@ void menu_wx_next() {
   clog(L"atmosphere: menu weather: %S -> %S over %.0f s", g_mwFromId.c_str(), g_mwTo->id, g_mwSeconds);
 }
 
-// Called every frame. Sends only steps of 2 % blend / 3 % fog (user 2026-11-07: a steady frame-time tick came with the
+// Called every frame. Sends only steps of 2 % blend (user 2026-11-07: a steady frame-time tick came with the
 // drift's sends every 0.4 s and its atmosphere.ini read per call); steps this small on a two-minute blend are not visible.
 void menu_wx_frame() {
   if (!g_mwOn) return;
@@ -1513,13 +1446,6 @@ void menu_wx_frame() {
     remix_set("rtx.weather.gameWeatherBlend", fmt1(s).c_str());
     g_mwSentBlend = s;
   }
-  const float toFog = g_mwToFog;                                  // visibilities blend as extinction, 0 = no fog
-  const float e = (g_mwFromFog > 0.0f ? 1.0f / g_mwFromFog : 0.0f) * (1.0f - s) + (toFog > 0.0f ? 1.0f / toFog : 0.0f) * s;
-  const float fog = e > 0.0f ? 1.0f / e : 0.0f;
-  if (!g_numosOwnsWeather && (g_mwSentFog < 0.0f || std::fabs(fog - g_mwSentFog) > 0.03f * (std::max)(g_mwSentFog, 1.0f))) {
-    atmo_send("rtx.atmosphere.fogVisibilityMeters", fmt1(fog), "");
-    g_mwSentFog = fog;
-  }
   rbrrtx_particles_menu_rain(s < 0.5f ? g_mwFromRain : g_mwTo->rain);
 }
 
@@ -1529,12 +1455,6 @@ void numos_menu(bool menu) {
   if (!g_numos || !g_apiOk) return;
   if (menu) {
     atmo_send("rtx.weather.gameWeather", "Menu, RBR", "");
-    const std::string fog = fmt1(conf_float("rtx.atmosphere.fogVisibilityMeters", 0.0f));
-    const std::string aer = fmt1(conf_float("rtx.atmosphere.aerosolDensity", 1.1f));
-    const std::string alb = fmt1(conf_float("rtx.atmosphere.fogAlbedo", 0.9f));
-    atmo_send("rtx.atmosphere.fogVisibilityMeters", fog, fog);
-    atmo_send("rtx.atmosphere.aerosolDensity", aer, aer);
-    atmo_send("rtx.atmosphere.fogAlbedo", alb, alb);
     remix_set("rtx.atmosphere.timeCycleEnable", "False");   // the 2-minute menu day of 2026-10-30 is gone
     if (g_atmoPath[0] && GetPrivateProfileIntW(L"menu", L"menu_weather", 1, g_atmoPath)) {
       wchar_t v[32] = {};
@@ -1547,7 +1467,7 @@ void numos_menu(bool menu) {
       g_mwOn = true;
       g_mwTo = nullptr;
       g_mwFromId = "Menu, RBR";
-      g_mwFromFog = g_mwFromRain = 0.0f;
+      g_mwFromRain = 0.0f;
       menu_wx_next();
     }
     g_numosSunWeather = 1.0f;
@@ -1557,7 +1477,7 @@ void numos_menu(bool menu) {
       g_menuBlendH0 = solar_hour(g_menuBlendPath, g_stageSentEl, g_stageSentTime != 0);
       g_menuBlendStart = GetTickCount64();
     }
-    clog(L"atmosphere: menu: base weather (\"Menu, RBR\"), conf fog / haze; %s", g_menuBlend
+    clog(L"atmosphere: menu: base weather (\"Menu, RBR\"); %s", g_menuBlend
          ? (L"from the stage's time (sun " + std::to_wstring(g_stageSentEl).substr(0, 5) + L" deg, " +
             std::to_wstring(g_menuBlendH0).substr(0, 5) + L" h) forward to the menu sun in " +
             std::to_wstring(g_menuBlendSeconds).substr(0, 4) + L" s").c_str()
@@ -1734,7 +1654,7 @@ void atmo_frame() {
   }
   g_sunRuleLogged = -1;                                // log the rule again for the new stage / time
   if (g_numos) {
-    numos_weather(si, skyName, cloudName, timeName, region ? region->name.c_str() : L"none", total, stageFog, sunFrom);
+    numos_weather(si, skyName, cloudName, timeName, region ? region->name.c_str() : L"none", sunFrom);
     return;
   }
   float col[3], alb[3];
@@ -3907,7 +3827,7 @@ ULONG STDMETHODCALLTYPE hk_Release(IDirect3DDevice9* dev) {
     o.Release(dev);
     if (refs == 2 + menuRefs) {                        // the game's last reference (plus the menu's)
       if (menuRefs) rbrrtx_menu_release_device();
-      if (g_apiOk) { destroy_sun(L"device released"); rbrrtx_apiworld_reset(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); }
+      if (g_apiOk) { destroy_sun(L"device released"); rbrrtx_apiworld_reset(L"device released"); rbrrtx_headlights_destroy(); rbrrtx_particles_destroy(); rbrrtx_windscreen_destroy(); rbrrtx_litparts_destroy(); rbrrtx_hudglow_device_lost(); }
     }
   }
   return o.Release(dev);
@@ -6044,6 +5964,16 @@ void send_decal_list() {
 void f3_tags_frame() {
   if (!g_apiOk) return;
   if (const char* ui = rbrrtx_hudglow_ui_list()) remix_set_raw("override:rtx.worldSpaceUiTextures", ui);   // RBRHUD gauge layers, not saved
+  {                                                    // the gauge layers glow with the lamps (user 2026-11-09: "should be dark when the lights turn off")
+    static int sentOn = -1;
+    const int on = rbrrtx_headlights_on();
+    if (on != sentOn) {
+      sentOn = on;
+      char v[32];
+      sprintf_s(v, "%.3f", rbrrtx_hudglow_ui_emissive(on != 0));
+      remix_set_raw("override:rtx.worldSpaceUiEmissiveIntensity", v);
+    }
+  }
   if (g_frame - g_f3SendFrame < 20) return;
   bool any = false;
   any = g_decalDirty;
@@ -6491,6 +6421,7 @@ void f3_install(IDirect3DDevice9* dev) {
 // hk_Reset: the DX9 backend's default-pool objects and our texture references must be gone before Reset.
 void f3_before_reset() {
   rbrrtx_menu_device_lost();
+  rbrrtx_hudglow_device_lost();
   f3_probe_free();
 }
 
@@ -7036,14 +6967,19 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   if (g_stage0Fix && !groundBase.on && ff && g_vsUnbound && g_enabled && g_primaryRT && g_vin == kVinDecl && g_curInfo &&
       (g_curInfo->flags & SH_DOUBLE) && stage0_fix_begin(dev, stage0)) ++g_gs.stage0Fixed;
   HRESULT hr = D3D_OK;
+  IDirect3DBaseTexture9* gaugePrev = nullptr;           // the game's gauge render target while its snapshot is bound
   if (cut) hr = alphacut_draw(dev, ac);
   else if (!clock_draw(dev, hr) && !btb_instanced_draw(dev, hr)) {
     if (g_enabled && g_primaryRT) {
-      if (g_curVS && (!g_curInfo || (g_curInfo->flags & SH_CAR))) rbrrtx_hudglow_car_draw(dev);
+      if (g_curVS && (!g_curInfo || (g_curInfo->flags & SH_CAR))) {
+        rbrrtx_hudglow_car_draw(dev);
+        gaugePrev = static_cast<IDirect3DBaseTexture9*>(rbrrtx_hudglow_layer_bind(dev, g_frame));
+      }
       rbrrtx_hudglow_before(dev);
     }
     hr = glassSplit ? glass_split_draw(dev, glassPlan, draw) : draw();
     rbrrtx_hudglow_after(dev);
+    if (gaugePrev) { dev->lpVtbl->SetTexture(dev, 0, gaugePrev); gaugePrev->lpVtbl->Release(gaugePrev); }
   }
   ground_base_end(dev, groundBase);
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);

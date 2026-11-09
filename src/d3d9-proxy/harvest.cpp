@@ -150,6 +150,8 @@ bool layout(D3DFORMAT f, UINT w, UINT h, UINT& rowBytes, UINT& rows, const char*
     case D3DFMT_DXT5: block = 16; name = "DXT5"; break;
     case D3DFMT_A8R8G8B8: bpp = 4; name = "A8R8G8B8"; break;
     case D3DFMT_X8R8G8B8: bpp = 4; name = "X8R8G8B8"; break;
+    case D3DFMT_A8B8G8R8: bpp = 4; name = "A8B8G8R8"; break;   // E30 tyres and rims: no proxy hash without it
+    case D3DFMT_X8B8G8R8: bpp = 4; name = "X8B8G8R8"; break;
     case D3DFMT_R5G6B5: bpp = 2; name = "R5G6B5"; break;
     case D3DFMT_A1R5G5B5: bpp = 2; name = "A1R5G5B5"; break;
     case D3DFMT_A4R4G4B4: bpp = 2; name = "A4R4G4B4"; break;

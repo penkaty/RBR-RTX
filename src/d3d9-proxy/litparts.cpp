@@ -92,6 +92,10 @@ struct Part {
   bool disc() const { return wheelPart() && prims >= kDiscMinPrims && prims <= kDiscMaxPrims; }
   bool settled() const { return onBody + offBody >= kJudgeFrames; }   // seen long enough to tell lens from disc
   bool discQueued = false;                               // its heat steps are on their way to the generated mod
+  // A lit part's class, read once from its own draw: glass over a lamp stays clear, a rear lamp keeps its own colour.
+  int end = 0;                                           // +1 front lamp, -1 rear lamp, 0 not known
+  bool blended = false, classed = false;
+  unsigned classTries = 0;
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
 unsigned g_frame = 0;
@@ -605,6 +609,44 @@ void queue_disc_levels(IDirect3DDevice9* dev, Part& p) {
   p.discQueued = true;
 }
 
+// Where a lit part sits: its vertices (a sample) through the draw's matrix, against the car's lamps. Blending from the draw.
+void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsigned numV, const float* world) {
+  DWORD blend = FALSE;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  p.blended = blend != FALSE;
+  if (++p.classTries > 120) { p.classed = true; return; }  // lamps of the model never known: it stays a front lamp
+  if (!world || !numV) return;
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT off = 0, stride = 0;
+  dev->lpVtbl->GetStreamSource(dev, 0, &vb, &off, &stride);
+  if (!vb) return;
+  float c[3] = {};
+  void* q = nullptr;
+  const INT first = base + static_cast<INT>(minIdx);
+  bool ok = false;
+  if (stride >= 12 && first >= 0 && SUCCEEDED(vb->lpVtbl->Lock(vb, off + static_cast<UINT>(first) * stride, numV * stride, &q, D3DLOCK_READONLY)) && q) {
+    const unsigned step = (std::max)(1u, numV / 64);
+    unsigned n = 0;
+    for (unsigned v = 0; v < numV; v += step, ++n) {
+      float xyz[3];
+      std::memcpy(xyz, static_cast<const char*>(q) + static_cast<size_t>(v) * stride, 12);
+      for (int k = 0; k < 3; ++k) c[k] += xyz[k];
+    }
+    vb->lpVtbl->Unlock(vb);
+    for (float& a : c) a /= n;
+    ok = true;
+  }
+  vb->lpVtbl->Release(vb);
+  if (!ok) return;
+  const float w[3] = { c[0] * world[0] + c[1] * world[4] + c[2] * world[8] + world[12],
+                       c[0] * world[1] + c[1] * world[5] + c[2] * world[9] + world[13],
+                       c[0] * world[2] + c[1] * world[6] + c[2] * world[10] + world[14] };
+  p.end = rbrrtx_headlights_lamp_end(w);
+  if (!p.end) return;
+  p.classed = true;
+  llog(L"lit parts: a %u-triangle lit part is at the %s of the car%s", p.prims, p.end > 0 ? L"front" : L"rear", p.blended ? L", blended" : L"");
+}
+
 void forget_car() {
   for (auto& kv : g_litAtlas) if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
   g_heat = 0.0f;
@@ -745,6 +787,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   p.lastFrame = g_frame;                               // judged at the next Present (judge_frame)
   p.prims = prims;
   g_drawn.push_back(key);
+  if ((p.mask || p.tail) && !p.classed) class_part(dev, p, base, minIdx, numV, world);
   if (!g_litAtlas.empty()) {                             // the always-drawn lit lamp atlas follows the lamps
     IDirect3DBaseTexture9* cur = nullptr;
     dev->lpVtbl->GetTexture(dev, 0, &cur);
@@ -780,6 +823,11 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims &&
       std::find(g_discPrims.begin(), g_discPrims.end(), p.prims) == g_discPrims.end()) kind = kTail;
   if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
+  // Two kinds of car (user 2026-11-09): with lamp glass of its own the light is inside and the blended glass stays clear;
+  // with lamps painted on the blended part is all there is, so it glows. A rear lamp keeps its own colour (atlas mask), the
+  // solid warm white of a head lamp over a red lens read as hazy white glass.
+  if (kind >= 0 && kind < kDisc && p.blended && rbrrtx_headlights_has_lens()) return nullptr;
+  if (kind == kLamps && p.end < 0) kind = kTail;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;
   dev->lpVtbl->GetTexture(dev, 0, &t0);
@@ -809,6 +857,12 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (!published) return nullptr;                      // every kind waits for its material (no noise on the part)
   ++g_swapped;
   return twin;
+}
+
+int rbrrtx_litparts_lamp_parts() {
+  int n = 0;
+  for (const auto& kv : g_parts) if (kv.second.mask & (1u << kLamps)) ++n;
+  return n;
 }
 
 void rbrrtx_litparts_status(wchar_t* out, size_t n) {

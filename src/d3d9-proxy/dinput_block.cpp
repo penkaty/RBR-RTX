@@ -9,7 +9,8 @@
 //   keyboard (256 bytes), mouse (DIMOUSESTATE 16 / DIMOUSESTATE2 20): all zero;
 //   joystick / wheel (DIJOYSTATE 80 / DIJOYSTATE2 272): the axes stay at the values they had when the menu opened
 //     (a wheel has no known neutral: the pedal rest position differs per device), buttons released, hats centred;
-//   buffered data (GetDeviceData): nothing is returned.
+//   buffered data (GetDeviceData): nothing is returned for the mouse (for every device with the full block).
+// The mouse's wheel travel goes to the menu (RBR holds the mouse exclusively, so the window gets no WM_MOUSEWHEEL).
 // Nothing is written to the game or to disk; the slots are put back at exit. RBRRTX_MENU_BLOCK_INPUT=0 leaves it out.
 #include "common.hpp"
 #include "menu/menu.hpp"
@@ -42,6 +43,24 @@ bool g_blockAll = false;                       // RBRRTX_MENU_BLOCK_INPUT=1: key
 bool g_wasOpen = false;
 unsigned g_wipes = 0, g_logged = 0;
 
+// The device's type from its own GetCapabilities (slot 3), asked once: buffered data has no size to tell a mouse by.
+std::map<void*, bool> g_isMouse;
+struct DevCaps { DWORD size, flags, devType, rest[8]; };
+bool is_mouse(void* self) {
+  {
+    std::lock_guard<std::mutex> l(g_lock);
+    auto it = g_isMouse.find(self);
+    if (it != g_isMouse.end()) return it->second;
+  }
+  typedef HRESULT(STDMETHODCALLTYPE* PFN_GetCaps)(void*, DevCaps*);
+  DevCaps caps = {};
+  caps.size = sizeof(caps);
+  const bool mouse = SUCCEEDED(reinterpret_cast<PFN_GetCaps>((*static_cast<void***>(self))[3])(self, &caps)) && (caps.devType & 0xFF) == 0x12;   // DI8DEVTYPE_MOUSE
+  std::lock_guard<std::mutex> l(g_lock);
+  g_isMouse[self] = mouse;
+  return mouse;
+}
+
 const Patched* find_patch(void* self) {
   void** vt = *static_cast<void***>(self);
   for (const Patched& p : g_patched) if (p.vtbl == vt) return &p;
@@ -62,6 +81,7 @@ HRESULT STDMETHODCALLTYPE hk_GetDeviceState(void* self, DWORD cb, LPVOID data) {
   // Default (user 2026-11-03): only the MOUSE is cut off while F3 is open; keyboard and wheel keep driving the game.
   if (!g_blockAll && cb != 16 && cb != 20) return hr;
   if (cb == 256 || cb == 16 || cb == 20) {
+    if (cb != 256 && static_cast<LONG*>(data)[2]) rbrrtx_menu_add_wheel(static_cast<LONG*>(data)[2]);   // lZ
     std::memset(data, 0, cb);
   } else if (cb == 80 || cb == 272) {
     std::lock_guard<std::mutex> l(g_lock);
@@ -85,8 +105,14 @@ HRESULT STDMETHODCALLTYPE hk_GetDeviceData(void* self, DWORD cbObj, void* rgdod,
   const Patched* p = find_patch(self);
   if (!p) return E_FAIL;
   const HRESULT hr = p->data(self, cbObj, rgdod, inOut, flags);
-  // Buffered data cannot be told apart per device (one shared vtable): only with the full block.
-  if (g_blockAll && rbrrtx_menu_is_open() && rgdod && inOut) {
+  // The mouse always (user 2026-11-09: the menu takes the mouse from the game); other devices only with the full block.
+  const bool mouse = rgdod && inOut && rbrrtx_menu_is_open() && is_mouse(self);
+  if ((mouse || g_blockAll) && rbrrtx_menu_is_open() && rgdod && inOut) {
+    if (mouse && !(flags & 1) && SUCCEEDED(hr))           // not DIGDD_PEEK; DIDEVICEOBJECTDATA: dwOfs, dwData; DIMOFS_Z = 8
+      for (DWORD i = 0; i < *inOut; ++i) {
+        const DWORD* e = reinterpret_cast<const DWORD*>(static_cast<const BYTE*>(rgdod) + static_cast<size_t>(i) * cbObj);
+        if (e[0] == 8) rbrrtx_menu_add_wheel(static_cast<int>(e[1]));
+      }
     std::memset(rgdod, 0, static_cast<size_t>(*inOut) * cbObj);
     *inOut = 0;
   }

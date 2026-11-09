@@ -12,6 +12,7 @@
 #pragma warning(pop)
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -317,6 +318,9 @@ void apply_pending() {
   }
   g_pending_apply = false;
 }
+
+std::atomic<int> g_di_wheel{ 0 };                         // DirectInput wheel travel since the last menu frame
+ULONGLONG g_wm_wheel_tick = 0;                            // last WM_MOUSEWHEEL: the window messages are working, the DirectInput travel is not used
 
 // While open the menu draws its own cursor (the game may hide or confine the system one) and lifts a cursor clip.
 void cursor_for_menu(bool open) {
@@ -786,6 +790,7 @@ int rbrrtx_menu_wndproc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 1;
   }
   if (!g_open) return 0;
+  if (msg == WM_MOUSEWHEEL) g_wm_wheel_tick = GetTickCount64();
 
   ImGui_ImplWin32_WndProcHandler(wnd, msg, wp, lp);   // feeds ImGui's io (mouse position, keys, text)
   return is_input_message(msg) ? 1 : 0;
@@ -815,6 +820,10 @@ void rbrrtx_menu_frame(IDirect3DDevice9* dev) {
     dev->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 1);
     dev->SetRenderState(D3DRS_SRGBWRITEENABLE, 1);
   }
+
+  ClipCursor(nullptr);                 // the game may confine the cursor again at any time
+  const int wheel = g_di_wheel.exchange(0);
+  if (wheel && GetTickCount64() - g_wm_wheel_tick > 1000) ImGui::GetIO().AddMouseWheelEvent(0.0f, static_cast<float>(wheel) / WHEEL_DELTA);
 
   ImGui_ImplDX9_NewFrame();
   ImGui_ImplWin32_NewFrame();
@@ -877,6 +886,8 @@ void rbrrtx_menu_shutdown(void) {
 }
 
 int rbrrtx_menu_is_open(void) { return g_open ? 1 : 0; }
+
+void rbrrtx_menu_add_wheel(int delta) { g_di_wheel += delta; }
 
 void rbrrtx_menu_set_open(int open) {
   g_open = open != 0;

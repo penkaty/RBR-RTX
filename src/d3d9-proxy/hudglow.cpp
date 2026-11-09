@@ -19,6 +19,11 @@
 // or alpha-tested on a car counts as such a layer; every hash its size can have (counters 0..kCounters) goes to
 // rtx.worldSpaceUiTextures through the not-saved host layer. A display copy of the whole interior is drawn opaque and is
 // never tagged. materials.ini [hud_glow] ui_layers = 0 turns this off.
+//
+// Snapshot (user 2026-11-09: "visible at the start ... became invisible when moving ... came back when stationary"): Remix
+// path traces at the end of the frame and reads these targets then, while raster read them at the draw. RBRHUD redraws one
+// when its value changes, so a moving needle left Remix a target that was no longer what the car was drawn with. A gauge
+// target is copied at its car draw and the copy is what the draw binds. materials.ini [hud_glow] snapshot = 0 turns this off.
 #define CINTERFACE
 #include "common.hpp"
 #include <d3d9.h>
@@ -53,7 +58,11 @@ unsigned g_draws = 0, g_nightDraws = 0, g_layerSkips = 0;
 struct RtInfo { bool rt = false; UINT w = 0, h = 0; unsigned blended = 0, opaque = 0; bool tagged = false; };
 std::unordered_map<const void*, RtInfo> g_isRt;       // s0 texture -> render target? (RBRHUD's display copy or layer)
 constexpr unsigned kCounters = 4096, kLayerDraws = 8;  // hashes per size; blended draws before a target counts as a layer
-bool g_uiLayers = true;
+bool g_uiLayers = true, g_snapshot = true;
+float g_uiEmissiveOn = 0.4f, g_uiEmissiveOff = 0.0f;   // rtx.worldSpaceUiEmissiveIntensity with the lamps on / off
+struct LayerCopy { IDirect3DTexture9* tex = nullptr; unsigned frame = ~0u; };
+std::unordered_map<const void*, LayerCopy> g_copies;  // gauge render target -> its snapshot
+unsigned g_copiesMade = 0;
 std::set<std::pair<UINT, UINT>> g_uiSizes;            // sizes already in the list
 std::string g_uiList;
 bool g_uiDirty = false;
@@ -127,6 +136,12 @@ void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol) {
   g_tint = std::wcstoul(tint, nullptr, 16) & 0xFFFFFFu;
   if (!g_tint) g_tint = 0xFFFFFFu;
   g_uiLayers = GetPrivateProfileIntW(L"hud_glow", L"ui_layers", 1, path) != 0;
+  g_snapshot = GetPrivateProfileIntW(L"hud_glow", L"snapshot", 1, path) != 0;
+  wchar_t e[32] = {};
+  GetPrivateProfileStringW(L"hud_glow", L"ui_emissive_lamps_on", L"0.4", e, 32, path);
+  g_uiEmissiveOn = static_cast<float>(_wtof(e));
+  GetPrivateProfileStringW(L"hud_glow", L"ui_emissive_lamps_off", L"0", e, 32, path);
+  g_uiEmissiveOff = static_cast<float>(_wtof(e));
   wlog(L"hud glow (materials.ini [hud_glow]): %s; RBRHUD emissive masks (s15) -> stage %lu, tint %06lX",
        g_on ? L"ON" : runtimeHasProtocol ? L"off" : L"off (runtime without the material protocol)", g_slot, g_tint);
   if (!g_on || !device) return;
@@ -146,6 +161,49 @@ void rbrrtx_hudglow_car_draw(void* device) {
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &test);
   if (blend || test) ++i->blended; else ++i->opaque;
   if (i->blended >= kLayerDraws && !i->opaque) { i->tagged = true; tag_layer_size(i->w, i->h); }
+}
+
+float rbrrtx_hudglow_ui_emissive(bool lampsOn) { return lampsOn ? g_uiEmissiveOn : g_uiEmissiveOff; }
+
+// A gauge render target about to be drawn on the car: copies it (once per frame) and binds the copy at stage 0. Returns the
+// game's texture, referenced, for the caller to put back after the draw; null when nothing was bound.
+void* rbrrtx_hudglow_layer_bind(void* device, unsigned frame) {
+  if (!g_snapshot) return nullptr;
+  IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+  RtInfo* i = s0_render_target(dev);
+  if (!i || (!i->tagged && !g_s15)) return nullptr;      // a layer, or a display copy lit through RBRHUD's mask
+  IDirect3DBaseTexture9* t = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &t)) || !t) return nullptr;
+  IDirect3DTexture9* src = reinterpret_cast<IDirect3DTexture9*>(t);
+  LayerCopy& c = g_copies[t];
+  if (!c.tex) {
+    D3DSURFACE_DESC d = {};
+    if (FAILED(src->lpVtbl->GetLevelDesc(src, 0, &d)) ||
+        FAILED(dev->lpVtbl->CreateTexture(dev, d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &c.tex, nullptr)) || !c.tex) {
+      c.tex = nullptr;
+      t->lpVtbl->Release(t);
+      return nullptr;
+    }
+    if (++g_copiesMade <= 8) wlog(L"hud glow: %ux%u gauge target gets a snapshot for Remix (format %d)", d.Width, d.Height, static_cast<int>(d.Format));
+  }
+  if (c.frame != frame) {
+    IDirect3DSurface9* from = nullptr, *to = nullptr;
+    src->lpVtbl->GetSurfaceLevel(src, 0, &from);
+    c.tex->lpVtbl->GetSurfaceLevel(c.tex, 0, &to);
+    const bool ok = from && to && SUCCEEDED(dev->lpVtbl->StretchRect(dev, from, nullptr, to, nullptr, D3DTEXF_NONE));
+    if (from) from->lpVtbl->Release(from);
+    if (to) to->lpVtbl->Release(to);
+    if (!ok) { t->lpVtbl->Release(t); return nullptr; }
+    c.frame = frame;
+  }
+  if (FAILED(dev->lpVtbl->SetTexture(dev, 0, reinterpret_cast<IDirect3DBaseTexture9*>(c.tex)))) { t->lpVtbl->Release(t); return nullptr; }
+  return t;
+}
+
+// Before Reset and at the device's end: the snapshots are D3DPOOL_DEFAULT; the next draw makes them again.
+void rbrrtx_hudglow_device_lost() {
+  for (auto& kv : g_copies) if (kv.second.tex) kv.second.tex->lpVtbl->Release(kv.second.tex);
+  g_copies.clear();
 }
 
 // The list for rtx.worldSpaceUiTextures when it has grown, once; else null.

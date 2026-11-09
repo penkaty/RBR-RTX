@@ -159,6 +159,9 @@ void* rbrrtx_headlights_halo_twin(void* device);               // its thinned tw
 void rbrrtx_headlights_pop_drawn();                            // a draw with that texture: backfire flash
 void rbrrtx_headlights_write_lit_mod();                         // before Remix starts: lit lamp textures made emissive (genmod)
 int rbrrtx_headlights_game_lamps();                             // the game's lamp switch as last sent: 1 on, 0 off, -1 unknown
+int rbrrtx_headlights_on();                                     // 1 while the car's lamps are on for the player (L, automatic), whatever the pulse sends
+int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
+bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
 float rbrrtx_sun_shown_elevation();                             // the sun's height as lit now (comp.cpp; debug sun, night hold)
@@ -206,6 +209,9 @@ void rbrrtx_watch_buffer_writes(void* vb, void* ib);           // comp.cpp: repo
 // hudglow.cpp: RBRHUD gauge displays (s0 render target + s15 emissive mask) glow through Kim's material protocol.
 void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol); // materials.ini [hud_glow]; patches SetTexture / SetPixelShaderConstantB
 void rbrrtx_hudglow_car_draw(void* device);                     // car draw: render target layers over the gauges become world-space UI
+void* rbrrtx_hudglow_layer_bind(void* device, unsigned frame);  // binds a snapshot of a gauge render target; returns the game's texture to restore
+void rbrrtx_hudglow_device_lost();                              // releases the snapshots
+float rbrrtx_hudglow_ui_emissive(bool lampsOn);                 // rtx.worldSpaceUiEmissiveIntensity for the lamp state
 const char* rbrrtx_hudglow_ui_list();                           // the hashes for rtx.worldSpaceUiTextures once they grew, else null
 void rbrrtx_hudglow_before(void* device);                       // around each D3D9 draw sent to Remix
 void rbrrtx_hudglow_after(void* device);
@@ -228,6 +234,7 @@ std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as
 void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
 void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world);
+int rbrrtx_litparts_lamp_parts();                               // this car's parts known to light with the lamps
 void rbrrtx_litparts_status(wchar_t* out, size_t n);
 void rbrrtx_litparts_destroy();
 // A car's <name>_lit.dds (hash) and its unlit <name>.dds file: with the lamps off that mesh is drawn with the unlit one.

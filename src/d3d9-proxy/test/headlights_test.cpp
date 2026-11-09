@@ -9,6 +9,7 @@
 // measured lag of 70 ms (pose rewrite 2026-10-30).
 // Prints each car's lamps (model frame) and body frame.
 void rbrrtx_litparts_note_lit_atlas(unsigned long long, const wchar_t*) {}
+int rbrrtx_litparts_lamp_parts() { return 0; }
 #include "../headlights.cpp"
 #include "../genmod.cpp"
 #include <cstdarg>
