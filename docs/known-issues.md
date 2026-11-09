@@ -18,7 +18,6 @@ Last updated for 0.4.0. Found something that is not here? Send an Alt+K sweep, s
 | **Ford Escort Mk2 low beams** | The beams start low and towards the centre of the car, from the model's lamp points | None yet |
 | **Tail lamps smear behind the car after braking** | The lit lens can leave a short trail | Cosmetic |
 | **Street lamps dim when looking at the ground** | Lamps placed in F3 can look darker with the camera pointing down | Cosmetic |
-| **F3 Windows page** | Creating lit windows can show nothing | Use **Lamps** for now |
 | **F3 picker hits hidden sprites** | A glow sprite ignored in **Alt+X** can still block the F3 crosshair until the game restarts | Restart the game |
 | **Rain takes a while to return after restarting a replay** | The rain rebuilds slowly | Give it a few seconds |
 | **Surfaces too shiny or flat without PBR** | Every texture without a PBR set shares one material | Being worked on |
