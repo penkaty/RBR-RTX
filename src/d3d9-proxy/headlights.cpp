@@ -1762,21 +1762,7 @@ void rbrrtx_cockpit_glass_stats(unsigned* found, unsigned* missed) { *found = g_
 bool rbrrtx_camera_in_cabin() { return camera_inside(); }
 
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended, bool cockpitGlass) {
-  if (cockpitGlass && g_track >= 0 && g_glassW.size() < 16) {   // cockpit_glass_find's candidates
-    WMat w;
-    std::memcpy(w.m, world, sizeof(w.m));
-    w.blended = blended;
-    g_glassW.push_back(w);
-    // Run 15 (user: drops never visible though placed every frame): drawn here, during the frame. At frame end
-    // (Present) Remix has already taken the scene at the UI trigger, so instances sent then never showed.
-    float P[16];
-    V3 phys;
-    if (g_camFrameNo == g_frameNo && camera_inside() && physics_pose(P, &phys) && len(row(world, 3) - row(g_camM, 3)) < 2.0f) {
-      bool axes = true;
-      for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(world, r)), norm(row(P, r))) > 0.95f;
-      (void)axes;                                      // run 16: drops placed from the car files instead
-    }
-  }
+  (void)cockpitGlass;                                    // the cockpit glass search fed only the proxy's own windscreen drops (off for good, 2026-11-11)
   if (!g_rootThisFrame && !blended && prims >= 200 && g_track >= 0 && g_off.locked) drawn_root(world);
   // Collected while the lights are on, and on a stage until the model offset is measured, lights off too: the
   // game shows the car in a 3rd-person view whenever a stage loads, where several car parts agree (user 2026-10-23;

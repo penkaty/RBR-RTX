@@ -288,7 +288,11 @@ bool g_btbOn = false;
 float g_c[256][4] = {};
 bool g_cset[256] = {};
 float g_psc[8][4] = {};                                // pixel shader constants (ps_1_1: c0-c7)
-bool g_dirtOn = true;                                  // car dirt decal pass (dirt_draw)
+// Off by default since 2026-11-11: the twin is a second draw of the same car object, and Remix Plus's direct path merges
+// it into the first draw's instance, whose categories it overwrites: the body or tyre turns into a decal with nothing
+// beneath it and vanishes (E30 body the second its dirt came on, tyres from the first frame, run 20261111-203115;
+// docs/research/e30-stutter-vanish-2026-11-11.md). RBRRTX_CAR_DIRT=1 brings the layer back for tests.
+bool g_dirtOn = false;                                 // car dirt decal pass (dirt_draw)
 unsigned g_dirtDraws = 0, g_dirtUntagged = 0;
 // Ground second layer (layer_draw), Alt+Y cycles the mode. kLayerDecal (default with the baker on, the combination that
 // showed Whaanga right in the 2026-11-02 run; set before the stage loads): the twin of t1 (own hash, harvest.cpp) tagged
@@ -7323,7 +7327,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     if (GetEnvironmentVariableW(L"RBRRTX_SKY", sky, 8)) g_skyMode = std::clamp(_wtoi(sky), 0, 2);
     g_glassOn = rbrrtx_env_flag(L"RBRRTX_GLASS", true);
     g_btbOn = rbrrtx_env_flag(L"RBRRTX_BTB", false);
-    g_dirtOn = rbrrtx_env_flag(L"RBRRTX_CAR_DIRT", true);
+    g_dirtOn = rbrrtx_env_flag(L"RBRRTX_CAR_DIRT", false);
     {                                                  // ground second layer: bake when the Remix terrain baker is on, else off
       const std::string bk = conf_string("rtx.terrainBaker.enableBaking");
       g_bakerOn = !bk.empty() && (bk[0] == 'T' || bk[0] == 't' || bk[0] == '1');
