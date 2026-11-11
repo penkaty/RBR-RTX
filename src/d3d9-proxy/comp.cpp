@@ -503,6 +503,8 @@ DMat g_rbrVPinv = {};                                  // (RBR view*projection)^
 bool g_rbrVPvalid = false;   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
+bool g_carShadowSkip = true;                           // the game's car shadow draws are not sent (is_car_shadow_draw)
+unsigned g_carShadowSkipped = 0;
 
 // Frames since the last comp log line (the per-frame averages in that line divide by it).
 unsigned g_logFrames = 0;
@@ -2762,6 +2764,8 @@ void log_frame(const wchar_t* why) {
   clog(L"  alpha-card cut-outs %s: %s", g_alphaCut ? L"ON" : L"off", acLine);
   rbrrtx_radnorm_summary(acLine, 400, g_logFrames);
   clog(L"  radial foliage normals %s", acLine);
+  if (g_carShadowSkipped) clog(L"  game car shadow: %.0f draws skipped per frame", g_logFrames ? static_cast<double>(g_carShadowSkipped) / g_logFrames : 0.0);
+  g_carShadowSkipped = 0;
   g_refLowered = g_softSkipped = g_midQuadSkipped = g_logFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
   g_opaqueDraws = 0;
   if (okInv)
@@ -3896,6 +3900,23 @@ bool is_midscene_quad(IDirect3DDevice9* dev) {
   return true;
 }
 
+// The game's car shadow (RichardBurnsRally.ini RenderCarShadow = true, exterior cameras): in the middle of the car draws
+// 10-11 pairs of untextured fixed-function stencil volumes (no depth write, both cullings), then one untextured
+// DESTCOLOR/ZERO quad that darkens the stencilled pixels. The quad is not pre-transformed, so is_midscene_quad misses it;
+// Remix took it for the first UI draw and rasterised every car draw after it: the car flat black, unlit, over the scene
+// (runs 20261111-194240 and -195614; fine with the option off, 20261111-194903). Path tracing shadows the car itself,
+// so none of these draws is sent. materials.ini [game_options] car_shadow = 1 draws them again.
+bool is_car_shadow_draw(IDirect3DDevice9* dev) {
+  if (!g_carShadowSkip || g_curVS || !g_primaryRT || !g_enabled || g_uiTriggered || g_st.xformed == 0 || g_oqActive > 0) return false;
+  DWORD stencil = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_STENCILENABLE, &stencil);
+  if (!stencil) return false;
+  IDirect3DBaseTexture9* t0 = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t0);
+  if (t0) { t0->lpVtbl->Release(t0); return false; }
+  return true;
+}
+
 // ---------------------------------------------------------------- distance culling (culling.ini, culling key, experiment steps)
 // K runs 2026-10-17 (Chirdonhead forest): foliage costs ~2.9 ms of ~15 ms, mostly by being in the scene (~1.8 ms; its
 // alpha test only ~1.1), ground ~2.1, objects ~1.1. RBR submits geometry the camera cannot see (behind, beside), which
@@ -4222,6 +4243,8 @@ void load_skip_textures() {
   for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
     if (const unsigned long long h = _wcstoui64(t, nullptr, 16)) g_skipTex.insert(h);
   g_flareSkip = GetPrivateProfileIntW(L"skip_draws", L"lens_flare", 1, path) != 0;
+  g_carShadowSkip = GetPrivateProfileIntW(L"skip_draws", L"car_shadow", 0, path) == 0;
+  clog(L"skip draws: the game's car shadow (stencil volumes and darkening quad, RenderCarShadow) %s", g_carShadowSkip ? L"not drawn" : L"drawn (car_shadow = 1)");
   clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws]); lens flare (screen-space additive draws after the sun query) %s",
        g_skipTex.size(), g_flareSkip ? L"skipped" : L"left alone");
 }
@@ -6530,6 +6553,9 @@ template <class Draw>
 void dirt_draw(IDirect3DDevice9* dev, Draw draw) {
   const int stage = dirt_stage();
   if (stage < 0 || !g_dirtOn || !g_enabled || !g_primaryRT || !g_curVS) return;
+  // CarPaint1: the dirt amount is c3.a. A clean car needs no layer: the twin would be an invisible decal lying on every
+  // paint panel (48 extra draws a frame on the E30, and coplanar decals are what "fight" the body while the camera moves).
+  if (stage == 2 && g_psc[3][3] < 0.004f) return;
   IDirect3DBaseTexture9* dirt = nullptr;
   dev->lpVtbl->GetTexture(dev, stage, &dirt);
   if (!dirt) return;
@@ -6859,16 +6885,20 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   const bool glassSkip = !g_glassOn && is_glass_draw();
   const bool sky = is_sky_draw();
   const bool midQuad = !glassSkip && !sky && is_midscene_quad(dev);
-  const wchar_t* fate = glassSkip ? L"SKIPPED(glass)" : midQuad ? L"SKIPPED(mid-scene quad)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn";
+  const bool carShadow = !glassSkip && !sky && !midQuad && is_car_shadow_draw(dev);
+  const bool offSkip = g_skipOffscreen && g_enabled && !g_primaryRT && g_curInfo && (g_curInfo->flags & (SH_SCENERY | SH_SKY));
+  const wchar_t* fate = glassSkip ? L"SKIPPED(glass)" : offSkip ? L"SKIPPED(off-screen)" : midQuad ? L"SKIPPED(mid-scene quad)" :
+                        carShadow ? L"SKIPPED(car shadow)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn";
   if (g_dumpFrames) dump_draw(dev, fate);
   if (g_sweepTsv) sweep_dump_draw(dev, exp_skip_draw() ? L"SKIPPED(step)" : fate);
   if (glassSkip) { ++g_st.glassSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"glass"); return D3D_OK; }
-  if (g_skipOffscreen && g_enabled && !g_primaryRT && g_curInfo && (g_curInfo->flags & (SH_SCENERY | SH_SKY))) {
+  if (offSkip) {
     ++g_offSkipped;
     if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"off-screen scenery");
     return D3D_OK;
   }
   if (midQuad) { ++g_midQuadSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"mid-scene quad"); return D3D_OK; }
+  if (carShadow) { ++g_carShadowSkipped; return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"experiment (key K)"); return D3D_OK; }   // performance experiment (key K)
   if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
   if (lens_flare_or_hidden(dev)) { if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"lens flare / debug hide"); return D3D_OK; }
