@@ -2839,7 +2839,7 @@ bool g_litOn = true;                                         // lit car parts tw
 bool g_sweepPrecip = false;                                  // emit Remix rain/drops while a sweep runs (normally not)
 extern bool g_dirtOn, g_glassOn;
 const std::pair<const wchar_t*, bool*> g_expSwitches[] = {
-  {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip},
+  {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip}, {L"ffcar", &g_ffCar},
 };
 bool g_expSwitchSaved[std::size(g_expSwitches)] = {};
 struct PerfRow { std::wstring name; double ms, ref; };
@@ -5425,6 +5425,13 @@ HRESULT alphacut_draw(IDirect3DDevice9* dev, const RbrAlphaCut& ac) {
 // RBRRTX_CAR_DIRT=0 = off. Raster (key 0) turns the layer off, and the game's own shader shows the dirt there.
 bool g_decalDirty = false;                             // a new decal tag waits for the next batch (f3_tags_frame)
 std::set<unsigned long long> g_dirtHashes;
+// Body textures that must never be decals. Some skins ship the mud map as a copy of the paint (BMW M3 E30: *_external.dds
+// and *_external_mud.dds are the same bytes, so the same Remix hash). The dirt twin then drew the body a second time
+// with the body's own hash, blended, and the tag made that hash a decal: Remix saw one material both opaque and decal on
+// the same geometry and dropped the panels in blocks, or laid the flat dirt colour over the whole body (runs
+// 20261109-201359 and 20261111-181645; dirt-off sweep steps showed the body again). Such a hash gets no twin, is taken
+// out of the decal list for this session (also when rtx.conf holds it; the conf file is not written) and is logged once.
+std::set<unsigned long long> g_bodyNotDecal;
 // Second-layer twins are what the eye sees of the ground on stages like Whaanga, so they shade as ground (user's Alt+X test
 // 2026-11-05, run 20261105-172317): smooth normals and wet, sent with the decal list. RBRRTX_TWIN_FLAGS=0 = decal only.
 std::set<unsigned long long> g_twinHashes;
@@ -5439,7 +5446,7 @@ std::string conf_string(const char* name) {
 }
 
 void decal_tag(unsigned long long hx, const wchar_t* what) {
-  if (!g_dirtHashes.insert(hx).second) return;
+  if (g_bodyNotDecal.count(hx) || !g_dirtHashes.insert(hx).second) return;
   g_decalDirty = true;                                 // sent with the next batch, not per new texture
   if (!std::wcscmp(what, L"ground second layer")) g_twinHashes.insert(hx);
   clog(L"%s: %016llX tagged as decal (%zu decal textures added)", what, hx, g_dirtHashes.size());
@@ -5507,7 +5514,7 @@ void ground_tags_load() {
 }
 
 bool ground_is_decal(unsigned long long hx) {
-  if (g_f3Off[1].count(hx)) return false;               // taken out of the decal list in the F3 menu
+  if (g_f3Off[1].count(hx) || g_bodyNotDecal.count(hx)) return false;   // taken out in the F3 menu, or a car body texture
   return g_decalConfSet.count(hx) || g_dirtHashes.count(hx) || g_f3Tag[1].count(hx);
 }
 
@@ -5877,7 +5884,7 @@ bool f3_auto_has(unsigned long long h, int c) {
 
 bool f3_tagged(unsigned long long h, int c) {
   f3_conf_load();
-  if (g_f3Off[c].count(h)) return false;
+  if (g_f3Off[c].count(h) || (c == 1 && g_bodyNotDecal.count(h))) return false;
   return g_f3Tag[c].count(h) || f3_base_has(h, c) || f3_auto_has(h, c);
 }
 
@@ -5942,14 +5949,16 @@ void send_decal_list() {
   std::string list;
   char b[24];
   auto add = [&](unsigned long long h) {
-    if (g_f3Off[1].count(h) || !seen.insert(h).second) return;
+    if (g_f3Off[1].count(h) || g_bodyNotDecal.count(h) || !seen.insert(h).second) return;
     sprintf_s(b, "0x%016llX", h);
     if (!list.empty()) list += ", ";
     list += b;
   };
   for (unsigned long long h : g_dirtHashes) add(h);
   for (unsigned long long h : g_f3Tag[1]) add(h);
-  append_removals(list, g_f3Off[1]);
+  std::set<unsigned long long> off = g_f3Off[1];
+  off.insert(g_bodyNotDecal.begin(), g_bodyNotDecal.end());
+  append_removals(list, off);
   remix_set("rtx.decalTextures", list.c_str());
   static const bool twinFlags = rbrrtx_env_flag(L"RBRRTX_TWIN_FLAGS", true);
   if (twinFlags && !g_twinHashes.empty()) {
@@ -6525,6 +6534,26 @@ void dirt_draw(IDirect3DDevice9* dev, Draw draw) {
   dev->lpVtbl->GetTexture(dev, stage, &dirt);
   if (!dirt) return;
   const unsigned long long hx = rbrrtx_texture_hash(dirt);
+  IDirect3DBaseTexture9* body = nullptr;               // the paint this draw just used (see g_bodyNotDecal)
+  dev->lpVtbl->GetTexture(dev, 0, &body);
+  const unsigned long long hb = body == dirt ? hx : rbrrtx_texture_hash(body);
+  if (body) body->lpVtbl->Release(body);
+  f3_conf_load();
+  bool own = hb && hb == hx, listed = false;            // listed: an opaque paint draw whose texture sits in the decal list
+  if (hb && !own && !g_bodyNotDecal.count(hb) && (g_dirtHashes.count(hb) || g_f3Conf[1].count(hb))) {
+    DWORD blend = 0, test = 0;
+    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &test);
+    listed = !blend && !test;
+  }
+  if (hb && !g_bodyNotDecal.count(hb) && (own || listed)) {
+    g_bodyNotDecal.insert(hb);
+    g_dirtHashes.erase(hb);
+    g_decalDirty = true;
+    clog(L"car dirt: %016llX is a body paint texture%s; it is no decal and gets no dirt layer (taken out of rtx.decalTextures for this session)",
+         hb, hb == hx ? L" and its own mud map (same file content)" : L" that sat in the decal list");
+  }
+  if (hx && g_bodyNotDecal.count(hx)) { dirt->lpVtbl->Release(dirt); return; }
   if (hx) decal_tag(hx, L"car dirt map"); else ++g_dirtUntagged;
   const float* c3 = g_psc[3];
   auto u8 = [](float f) { return static_cast<DWORD>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
