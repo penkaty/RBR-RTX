@@ -508,6 +508,14 @@ bool g_rbrVPvalid = false;   // the DrawIndexedPrimitive in flight
 DWORD g_cutoutRef = 96;
 unsigned g_softSkipped = 0, g_refLowered = 0, g_midQuadSkipped = 0;   // g_midQuadSkipped: is_midscene_quad
 bool g_carShadowSkip = true;                           // the game's car shadow draws are not sent (is_car_shadow_draw)
+// The game's own windscreen effect (ParticleQuality on): world-space fixed-function quads (FVF 0x142) on the glass,
+// texture x diffuse. Under Remix the drops and the wiper film came out too faint (user 2026-11-11), so their stage 0 is
+// drawn MODULATE2X / MODULATE4X (materials.ini [game_windscreen] gain = 1 | 2 | 4; 1 = as the game draws them). Only
+// the additive drop, streak and sheet sprites and the film quad; the game's subtractive second pass is in
+// rtx.ignoreTextures.
+int g_dropGain = 2;
+const unsigned long long kDropTex[] = { 0xB6381CDF98A5F4CEull, 0x6BC9918A1038F2A1ull, 0x5928499B9C83AECBull, 0x130596EFB09CACABull,
+                                        0xAD978CDB8C76CBE5ull, 0x839CC56FE28D9937ull, 0xA604032536BD6693ull, 0x2C518B93040E6663ull };
 unsigned g_carShadowSkipped = 0;
 
 // Frames since the last comp log line (the per-frame averages in that line divide by it).
@@ -3256,6 +3264,20 @@ void end_frame(IDirect3DDevice9* dev) {
   const bool kRadNorm = rbrrtx_key_pressed(RBRKEY_FOLIAGE_NORMALS);
   wchar_t why[256];
   if (g_dumpFrames && --g_dumpFrames == 0) clog(L"frame dump end: %u draws", g_dumpDraws);
+  // Once per run: three frames dumped after the game window has been in the background for a while (user 2026-11-11: the
+  // world vanishes and only rasterised draws stay while the window is not focused; key 8 cannot be pressed then).
+  // Checked every 30 frames until it has happened.
+  static int focusDump = 0;                            // 0 waiting, > 0 checks in the background so far, -1 done
+  if (focusDump >= 0 && !g_dumpFrames && g_frame % 30 == 0 && g_wnd && g_haveCam) {
+    if (GetForegroundWindow() == g_wnd) focusDump = 0;
+    else if (++focusDump >= 4) {
+      focusDump = -1;
+      g_dumpFrames = 3;
+      g_dumpDraws = 0;
+      g_dumpTexSaved.clear();
+      log_frame(L"window in the background: frame dump of the next three frames");
+    }
+  }
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
     g_dumpFrames = 1;                                  // the whole next frame, ended at its end_frame
     g_dumpDraws = 0;
@@ -4248,6 +4270,9 @@ void load_skip_textures() {
     if (const unsigned long long h = _wcstoui64(t, nullptr, 16)) g_skipTex.insert(h);
   g_flareSkip = GetPrivateProfileIntW(L"skip_draws", L"lens_flare", 1, path) != 0;
   g_carShadowSkip = GetPrivateProfileIntW(L"skip_draws", L"car_shadow", 0, path) == 0;
+  g_dropGain = GetPrivateProfileIntW(L"game_windscreen", L"gain", 2, path);
+  g_dropGain = g_dropGain >= 4 ? 4 : g_dropGain >= 2 ? 2 : 1;
+  clog(L"game windscreen drops: drawn x%d (materials.ini [game_windscreen] gain)", g_dropGain);
   clog(L"skip draws: the game's car shadow (stencil volumes and darkening quad, RenderCarShadow) %s", g_carShadowSkip ? L"not drawn" : L"drawn (car_shadow = 1)");
   clog(L"skip draws: %zu texture(s) never drawn (materials.ini [skip_draws]); lens flare (screen-space additive draws after the sun query) %s",
        g_skipTex.size(), g_flareSkip ? L"skipped" : L"left alone");
@@ -7096,6 +7121,23 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   Stage0Fix stage0;                                     // RLDouble* with stage 0 on DISABLE: texture x diffuse for this draw (and its layer)
   if (g_stage0Fix && !groundBase.on && ff && g_vsUnbound && g_enabled && g_primaryRT && g_vin == kVinDecl && g_curInfo &&
       (g_curInfo->flags & SH_DOUBLE) && stage0_fix_begin(dev, stage0)) ++g_gs.stage0Fixed;
+  DWORD dropColor = 0, dropAlpha = 0;                   // the game's windscreen sprites, stronger (g_dropGain)
+  bool dropOn = false;
+  if (g_dropGain > 1 && !g_curVS && g_curFVF == 0x142 && g_primaryRT && g_enabled && !g_uiTriggered) {
+    IDirect3DBaseTexture9* dt = nullptr;
+    if (SUCCEEDED(dev->lpVtbl->GetTexture(dev, 0, &dt)) && dt) {
+      const unsigned long long dh = rbrrtx_texture_hash(dt);
+      dt->lpVtbl->Release(dt);
+      if (dh && std::find(std::begin(kDropTex), std::end(kDropTex), dh) != std::end(kDropTex)) {
+        dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_COLOROP, &dropColor);
+        dev->lpVtbl->GetTextureStageState(dev, 0, D3DTSS_ALPHAOP, &dropAlpha);
+        const DWORD op = g_dropGain == 4 ? D3DTOP_MODULATE4X : D3DTOP_MODULATE2X;
+        o.SetTextureStageState(dev, 0, D3DTSS_COLOROP, op);
+        o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, op);
+        dropOn = true;
+      }
+    }
+  }
   HRESULT hr = D3D_OK;
   IDirect3DBaseTexture9* gaugePrev = nullptr;           // the game's gauge render target while its snapshot is bound
   if (cut) hr = alphacut_draw(dev, ac);
@@ -7111,6 +7153,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     rbrrtx_hudglow_after(dev);
     if (gaugePrev) { dev->lpVtbl->SetTexture(dev, 0, gaugePrev); gaugePrev->lpVtbl->Release(gaugePrev); }
   }
+  if (dropOn) { o.SetTextureStageState(dev, 0, D3DTSS_COLOROP, dropColor); o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, dropAlpha); }
   ground_base_end(dev, groundBase);
   if (litMoved) set_xf(dev, 0, litWorld);
   if (litSwap) dev->lpVtbl->SetTexture(dev, 0, litPrev);
