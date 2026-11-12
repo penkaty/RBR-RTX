@@ -125,7 +125,8 @@ D3DMATRIX identity() {
 // ---------------------------------------------------------------- shader identification
 
 enum : unsigned { SH_KNOWN = 1, SH_WORLDSPACE = 2, SH_USES_C8 = 4, SH_CAR = 8, SH_SKY = 16, SH_GLASS = 32, SH_SCENERY = 64, SH_PARTICLE = 128,
-           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024, SH_DOUBLE = 2048, SH_GLASS_VS = 4096 };   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87); DOUBLE: RLDouble* two-texture blend
+           SH_SWAY = 256, SH_ANIM = 512, SH_BTB = 1024, SH_DOUBLE = 2048, SH_GLASS_VS = 4096,
+           SH_OBJPOS = 8192 };   // OBJPOS: ObjPosNormalTexture.vso (drivers, co-drivers; also some stage objects)   // SWAY: wind-swayed foliage; ANIM: UV/vertex animation (c85-c87); DOUBLE: RLDouble* two-texture blend
 
 // A matrix constant of a D3DX-compiled shader, found by name in its constant table. HLSL packs column_major by
 // default: then register r+i holds column i, so the D3D (row-vector) matrix is the transpose of the registers.
@@ -226,6 +227,7 @@ unsigned flags_for(const std::wstring& rel) {
   if (n == L"Particle.vso") f |= SH_PARTICLE;   // dust, smoke, spray, rain sprites (and the ignored car shadow quad)
   if (n == L"CarGlass.vso") f |= SH_GLASS_VS;   // lit parts: a lens drawn with the glass shader stays clear
   if (n == L"CarGlassInternal.vso") f |= SH_GLASS;   // windscreen seen from the cockpit (CarGlass.vso = outside + mirrors)
+  if (n == L"ObjPosNormalTexture.vso") f |= SH_OBJPOS;
   static const wchar_t* uses_c8[] = { L"CarGlass.vso", L"CarPaint1.vso", L"CarPaintInternal.vso", L"CarPlastic.vso",
                                       L"CarRim.vso", L"CloudsDoubleTexture.vso", L"CloudsSingleTexture.vso",
                                       L"IODoubleTexture.vso", L"IOSingleTexture.vso", L"Particle.vso", L"SkyDome.vso" };
@@ -424,7 +426,7 @@ float g_sunWeather = 1.0f;                             // stage atmosphere: clou
 float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from the conf (-1 = not read) / last set
 
 struct Stats {
-  unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace, apiWorld;   // apiWorld: draws its retained instance made
+  unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace, apiWorld, apiObjects;   // apiWorld: draws its retained instance made; apiObjects: drivers by the API
   unsigned uiTriggerAt, oqAtUi;                        // draw number of our UI trigger (0 = none); open queries then
   unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, their copies
   unsigned btbRebuilt, btbCamRejected;                 // merged instance buffers built this frame; camera candidates refused
@@ -2664,7 +2666,10 @@ bool before_draw(IDirect3DDevice9* dev) {
     if (off < 1e-3f) world = identity();
   }
   const bool btbFrame = g_btbPrev || g_st.btb > 0;   // the camera is BTB's (other projection): see btb_camera
-  if (g_curInfo && (g_curInfo->flags & SH_CAR) && !btbFrame) world_from_c0(wvp, world);   // c8 below still wins when it agrees
+  // Every object shader, not only the car's (2026-11-12): drivers (ObjPosNormalTexture, c0 only) took c0 x VP^-1, whose
+  // depth error grows with the distance from the map origin: 0.3-8 m on Noiker ~2.7 km out (run 20261112-023920, "derived
+  // W err"), the user's "driver position lost accuracy". c8 below still wins when it agrees.
+  if (g_curInfo && !worldSpace && !btbFrame) world_from_c0(wvp, world);
   if (g_curInfo && (g_curInfo->flags & SH_USES_C8) && all_set(8, 4)) {
     // The shader also gets the exact world matrix in c8-c11: use it when it agrees with the derived one.
     const D3DMATRIX exact = from_rows(&g_c[8]);
@@ -7023,6 +7028,21 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       frame_camera(from_rows(&g_c[0]));               // this draw may be the one that defines the frame's camera
       if (rbrrtx_apiworld_draw(dev, wd)) {
         ++g_st.apiWorld;
+        if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
+        return D3D_OK;
+      }
+    }
+  }
+  // Drivers and co-drivers through the Remix API (user 2026-11-12, apiworld.cpp rbrrtx_apiworld_object): an
+  // ObjPosNormalTexture draw within 3 m of this frame's car is an API mesh drawn now with its exact W; no D3D9 draw.
+  if (g_dip.valid && g_enabled && g_apiOk && g_primaryRT && g_frameCam && g_haveCar && g_testMode == 0 && g_curInfo &&
+      (g_curInfo->flags & SH_OBJPOS) && g_vin == kVinDecl && !g_uiTriggered && !(g_btbPrev || g_st.btb > 0)) {
+    D3DMATRIX w;
+    if (world_from_c0(from_rows(&g_c[0]), w)) {
+      const float dx = w._41 - g_carPos[0], dy = w._42 - g_carPos[1], dz = w._43 - g_carPos[2];
+      const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, false };
+      if (dx * dx + dy * dy + dz * dz < 9.0f && rbrrtx_apiworld_object(dev, wd, &w._11)) {
+        ++g_st.apiObjects;
         if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
         return D3D_OK;
       }

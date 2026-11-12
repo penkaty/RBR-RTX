@@ -479,6 +479,8 @@ void load_fx(DustCfg& c) {
   GetPrivateProfileStringW(g_sec, L"texture", c.tex, c.tex, 64, g_cfgPath);
 }
 
+void far_load();                                       // [precipitation_far], below with draw_precip
+
 void load_cfg() {
   DustCfg c;
   const bool found = GetFileAttributesW(g_cfgPath) != INVALID_FILE_ATTRIBUTES;
@@ -512,6 +514,7 @@ void load_cfg() {
     g_pre[i] = precip_defaults(i);
     if (found) { g_sec = kPreSection[i]; load_fx(g_pre[i]); g_sec = L"dust"; }
   }
+  far_load();
   g_sec = L"precipitation";
   g_heavyFrom = cfg_float(L"heavy_from", 75.0f, 0.0f, 101.0f);
   g_sec = L"killbox";
@@ -1377,6 +1380,75 @@ void killbox_frame(bool precip) {
   g_kbSent = true;
 }
 
+// Far rain / snow (user 2026-11-12: "spawn snow and rain scene-wide like the original dust from Remix, or at least 150 m
+// further"): Remix's own dust system (rtx_dust_particles.cpp: GPU points spawned over the whole view frustum between
+// minSpawnDistance and maxSpawnDistance, lit by the path-traced radiance, depth culled) fills the distance beyond our
+// near spawner. Sent through SetConfigVariable only when the weather step changes (rbr-remix.ps1 strips these from a
+// saved user.conf after the run). Points, not textured streaks: far rain is specks.
+// Values (user: "use the ones we've deemed correct"): everything comes from the near preset of the same step
+// ([rain_light] .. [snow_heavy]): fall speed (rise_speed) as the speed cap, turbulence, spin, life, opacity from the
+// colour alpha, point size = the flake / drop size seen at the start distance. The far band starts where the near
+// spawner ends (half its size) and reaches extra_distance beyond. Only on/off, the point count and the band are new:
+// particles.ini [precipitation_far].
+struct FarCfg { bool enabled = true; int count = 200000; float heavyFactor = 1.5f, extra = 150.0f; };
+FarCfg g_far;
+int g_farSent = -2;                                    // -2 nothing sent yet, -1 off, else PRE_* step
+
+void far_load() {
+  const wchar_t* was = g_sec;
+  g_sec = L"precipitation_far";
+  g_far = FarCfg();
+  g_far.enabled = cfg_float(L"enabled", 1.0f, 0.0f, 1.0f) >= 0.5f;
+  g_far.count = static_cast<int>(cfg_float(L"particles", static_cast<float>(g_far.count), 1000.0f, 2000000.0f));
+  g_far.heavyFactor = cfg_float(L"heavy_particles_factor", g_far.heavyFactor, 0.1f, 10.0f);
+  g_far.extra = cfg_float(L"extra_distance", g_far.extra, 1.0f, 5000.0f);
+  g_sec = was;
+  g_farSent = -2;                                      // new values go out at the next frame
+}
+
+// pre: the shown PRE_* step, -1 = none. Sends only on a change.
+void far_frame(int pre) {
+  const int step = pre == PRE_RAIN_LIGHT || pre == PRE_RAIN_HEAVY || pre == PRE_SNOW_LIGHT || pre == PRE_SNOW_HEAVY ? pre : -1;
+  const int want = g_far.enabled ? step : -1;
+  if (want == g_farSent) return;
+  const bool wasOn = g_farSent >= 0;
+  g_farSent = want;
+  if (want < 0) {
+    if (wasOn) { rbrrtx_remix_set("rtx.dust.enable", "False"); plog(L"rain: far layer (Remix dust) off"); }
+    return;
+  }
+  const DustCfg& p = g_pre[want];
+  const bool heavy = want == PRE_RAIN_HEAVY || want == PRE_SNOW_HEAVY;
+  const int count = static_cast<int>(g_far.count * (heavy ? g_far.heavyFactor : 1.0f));
+  const float minD = (std::max)(1.0f, 0.5f * p.box), maxD = minD + g_far.extra;
+  // Pixels at the 1080p reference (the runtime's unit) of the preset's metre size seen at minD with a 60 degree view.
+  const float pxPerM = 1080.0f / (2.0f * minD * 0.5774f);
+  const float sMin = (std::min)(50.0f, (std::max)(1.0f, (std::min)(p.startSizeMin, p.endSizeMin) * pxPerM));
+  const float sMax = (std::min)(50.0f, (std::max)(sMin, (std::max)(p.startSizeMax, p.endSizeMax) * pxPerM));
+  const float opacity = (std::min)(1.0f, 0.5f * (p.startColorA[3] + p.startColorB[3]));
+  char v[32];
+  auto setf = [&](const char* k, float x) { sprintf_s(v, "%.3f", x); rbrrtx_remix_set(k, v); };
+  sprintf_s(v, "%d", count);
+  rbrrtx_remix_set("rtx.dust.numberOfParticles", v);
+  setf("rtx.dust.minSpawnDistance", minD);
+  setf("rtx.dust.maxSpawnDistance", maxD);
+  setf("rtx.dust.minParticleLife", p.lifeMin);
+  setf("rtx.dust.maxParticleLife", p.lifeMax);
+  setf("rtx.dust.minParticleSize", sMin);
+  setf("rtx.dust.maxParticleSize", sMax);
+  setf("rtx.dust.opacity", opacity);
+  setf("rtx.dust.gravityForce", -p.riseSpeed);         // reaches the preset's fall speed within a second
+  setf("rtx.dust.maxSpeed", p.riseSpeed);
+  setf("rtx.dust.rotationSpeed", p.rotation);
+  rbrrtx_remix_set("rtx.dust.useTurbulence", p.turbulenceForce > 0.0f ? "True" : "False");
+  setf("rtx.dust.turbulenceAmplitude", p.turbulenceForce);
+  setf("rtx.dust.turbulenceFrequency", p.turbulenceFrequency);
+  rbrrtx_remix_set("rtx.dust.enable", "True");
+  plog(L"rain: far layer (Remix dust) from [%s]: %d points %.0f..%.0f m from the camera, %.1f-%.1f px, opacity %.2f, "
+       L"fall %.1f m/s, turbulence %.2f/%.2f", kPreSection[want], count, minD, maxD, sMin, sMax, opacity, p.riseSpeed,
+       p.turbulenceForce, p.turbulenceFrequency);
+}
+
 // Rain in the main menu's bad weather (comp.cpp menu weather): no game emitters there, so the camera comes from the proxy.
 float g_menuRain = 0.0f;
 
@@ -1399,6 +1471,7 @@ void draw_precip() {
     g_shownStep = pre;
   }
   killbox_frame(pre >= 0);
+  far_frame(pre);
   if (pre < 0) return;
   update_cam_speed();
   draw_one(pre, 1.0f);
@@ -1967,6 +2040,7 @@ void rbrrtx_particles_menu_rain(float percent) { g_menuRain = percent; }
 void rbrrtx_particles_emit(bool sweeping) {
   if (g_test && !sweeping) { draw_emitter(); if (g_rowsOn) draw_rows(); }
   if (g_precip && g_replace && !sweeping) draw_precip();
+  else far_frame(-1);                                  // game's own rain (key), sweep: the far layer goes too
 }
 
 bool rbrrtx_particles_active() { return g_active; }

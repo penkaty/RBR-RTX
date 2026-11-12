@@ -209,6 +209,7 @@ struct RbrWorldDraw { int base; unsigned minIdx, numV, startIdx, prims; bool swa
 void rbrrtx_apiworld_init(const RbrApiExt* ext);                // after the API is up (null = unavailable)
 bool rbrrtx_apiworld_wants(bool sway);                          // this class is taken now
 bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d); // true = its instance draws it: skip the D3D9 draw
+bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float world[16]);   // drivers: API mesh drawn now with W (row-major); true = skip the D3D9 draw
 void rbrrtx_apiworld_replay();                                  // first BeginScene of a frame
 void rbrrtx_apiworld_frame_end(const float* viewProj, bool active);   // Present (viewProj null = no world camera)
 void rbrrtx_apiworld_reset(const wchar_t* why);                 // menu <-> stage, device released

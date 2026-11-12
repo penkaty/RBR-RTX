@@ -80,7 +80,7 @@ PFN_remixapi_DestroyRetainedInstances g_destroyInst = nullptr;
 PFN_remixapi_DrawRetainedInstances g_replay = nullptr;
 
 bool g_avail = false;                                  // runtime + bridge can do it
-bool g_cfgOn = true, g_cfgSway = true, g_cfgStatic = true, g_flat = true;
+bool g_cfgOn = true, g_cfgSway = true, g_cfgStatic = true, g_flat = true, g_cfgObjects = true;
 int g_mode = 0;                                        // key: 0 = as configured, 1 = foliage only, 2 = off
 bool g_active = true;                                  // comp layer on, ray tracing on
 unsigned g_maxBuilds = 64, g_maxVerts = 60000, g_hideFrames = 30;
@@ -210,12 +210,13 @@ float half_to_float(uint16_t h) {
 // The draw's triangles as API vertices (stream 0: POSITION float3/4, TEXCOORD0 float2 / half2, COLOR0 optional).
 // Normals: flat = every triangle its own vertices with its face normal (as Remix shades the FF scenery, which is drawn
 // without NORMAL, comp.cpp g_ffNormals); else area-weighted vertex normals over the draw's own indices.
-int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std::vector<uint32_t>& idx, float c[3], float& r) {
+int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std::vector<uint32_t>& idx, float c[3], float& r,
+                   bool object = false) {   // object: smooth, the draw's own NORMAL when it has one (drivers)
   IDirect3DVertexDeclaration9* decl = static_cast<IDirect3DVertexDeclaration9*>(const_cast<void*>(k.decl));
   D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
   UINT n = MAXD3DDECLLENGTH + 1;
   if (FAILED(decl->lpVtbl->GetDeclaration(decl, el, &n))) return 2;
-  int posOff = -1, uvOff = -1, uvType = -1, colOff = -1;
+  int posOff = -1, uvOff = -1, uvType = -1, colOff = -1, norOff = -1;
   for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
     if (el[i].UsageIndex != 0) continue;
     if (el[i].Usage == D3DDECLUSAGE_POSITION) {
@@ -225,6 +226,8 @@ int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std
       uvOff = el[i].Offset; uvType = el[i].Type;
     } else if (el[i].Usage == D3DDECLUSAGE_COLOR && el[i].Stream == 0 && el[i].Type == D3DDECLTYPE_D3DCOLOR) {
       colOff = el[i].Offset;
+    } else if (el[i].Usage == D3DDECLUSAGE_NORMAL && el[i].Stream == 0 && el[i].Type == D3DDECLTYPE_FLOAT3) {
+      norOff = el[i].Offset;
     }
   }
   if (posOff < 0 || uvOff < 0 || (uvType != D3DDECLTYPE_FLOAT2 && uvType != D3DDECLTYPE_FLOAT3 &&
@@ -269,6 +272,7 @@ int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std
     }
     o.color = 0xFFFFFFFFu;
     if (colOff >= 0) std::memcpy(&o.color, v + colOff, 4);
+    if (norOff >= 0) std::memcpy(o.normal, v + norOff, 12);
     for (int a = 0; a < 3; ++a) { lo[a] = (std::min)(lo[a], o.position[a]); hi[a] = (std::max)(hi[a], o.position[a]); }
   }
   for (int a = 0; a < 3; ++a) c[a] = 0.5f * (lo[a] + hi[a]);
@@ -287,7 +291,14 @@ int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std
   };
   out.clear();
   idx.clear();
-  if (g_flat) {
+  if (object && norOff >= 0) {                         // the model's own normals, shared vertices
+    for (size_t t = 0; t + 2 < src.size(); t += 3) {
+      if (src[t] >= k.numV || src[t + 1] >= k.numV || src[t + 2] >= k.numV) continue;
+      idx.push_back(src[t]); idx.push_back(src[t + 1]); idx.push_back(src[t + 2]);
+    }
+    for (auto& v : verts) unit(v.normal);
+    out.swap(verts);
+  } else if (g_flat && !object) {
     out.reserve(src.size());
     idx.reserve(src.size());
     for (size_t t = 0; t + 2 < src.size(); t += 3) {
@@ -336,6 +347,7 @@ void rbrrtx_apiworld_init(const RbrApiExt* ext) {
   g_cfgSway = geti(L"foliage", 1) != 0;
   g_cfgStatic = geti(L"static", 1) != 0;
   g_flat = geti(L"flat_normals", 1) != 0;
+  g_cfgObjects = geti(L"drivers", 1) != 0;          // drivers and co-drivers drawn by the API every frame
   g_maxBuilds = static_cast<unsigned>((std::max)(1, geti(L"max_builds_per_frame", 64)));
   g_maxVerts = static_cast<unsigned>((std::max)(1000, geti(L"max_vertices_per_frame", 60000)));
   g_hideFrames = static_cast<unsigned>((std::max)(0, geti(L"hide_frames", 30)));
@@ -509,6 +521,119 @@ bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d) {
   return take;
 }
 
+namespace {
+
+// ---- Objects that move (drivers, user 2026-11-12: "make the driver and co-driver fully rendered through the API").
+// One API mesh per game draw range in the model's own space (built once, as the static world), drawn every frame the
+// game draws it with DrawInstance and the draw's world matrix. Not retained: the retained table goes out at the next
+// frame's first BeginScene and would leave a moving object one frame behind the car (0.7 m at 150 km/h). The world
+// matrix comes from comp.cpp world_from_c0 (about 1 mm far from the origin; c0 x VP^-1 drifted 0.3-8 m on Noiker).
+std::unordered_map<Key, Entry, KeyHash> g_objects;     // Entry.sway reused: double-sided
+unsigned g_objDrawn = 0, g_objBuilt = 0, g_objRefused = 0;
+
+void objects_reset() {
+  for (auto& kv : g_objects) if (kv.second.mesh && g_destroyMesh) g_destroyMesh(kv.second.mesh);
+  g_objects.clear();
+}
+
+}  // namespace
+
+bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float world[16]) {
+  IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+  if (!g_cfgObjects || !g_avail || !g_active || !g_ext || !g_ext->drawInstance || !world) return false;
+  DWORD blend = FALSE, at = FALSE, func = D3DCMP_ALWAYS, ref = 0, cull = D3DCULL_CCW, wu = D3DTADDRESS_WRAP, wv = D3DTADDRESS_WRAP;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  if (blend) return false;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
+  if (at) { dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAFUNC, &func); dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAREF, &ref); }
+  else func = D3DCMP_ALWAYS;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_CULLMODE, &cull);
+  dev->lpVtbl->GetSamplerState(dev, 0, D3DSAMP_ADDRESSU, &wu);
+  dev->lpVtbl->GetSamplerState(dev, 0, D3DSAMP_ADDRESSV, &wv);
+  IDirect3DVertexBuffer9* vb = nullptr;
+  IDirect3DIndexBuffer9* ib = nullptr;
+  IDirect3DVertexDeclaration9* decl = nullptr;
+  IDirect3DBaseTexture9* tex = nullptr;
+  UINT offset = 0, stride = 0;
+  dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride);
+  dev->lpVtbl->GetIndices(dev, &ib);
+  dev->lpVtbl->GetVertexDeclaration(dev, &decl);
+  dev->lpVtbl->GetTexture(dev, 0, &tex);
+  Key k = {};
+  k.vb = vb; k.ib = ib; k.decl = decl; k.tex = tex;
+  k.vbGen = vb ? g_gen[vb] : 0;
+  k.ibGen = ib ? g_gen[ib] : 0;
+  k.offset = offset; k.stride = stride; k.base = d.base; k.minIdx = d.minIdx; k.numV = d.numV;
+  k.startIdx = d.startIdx; k.prims = d.prims;
+  k.state = (func & 0xF) | ((ref & 0xFF) << 4) | ((cull & 0x3) << 12) | ((wu & 0x7) << 14) | ((wv & 0x7) << 17);
+  auto it = g_objects.find(k);
+  if (it == g_objects.end() && vb && ib && decl && tex && stride && !g_dynamic.count(vb) && !g_dynamic.count(ib)) {
+    Entry& e = g_objects[k];
+    e.failed = true;
+    const uint64_t hx = rbrrtx_texture_hash(tex);
+    std::vector<remixapi_HardcodedVertex> verts;
+    std::vector<uint32_t> idx;
+    remixapi_MaterialHandle mat = nullptr;
+    int why = -1;
+    if (!hx) why = 0;
+    else if (tex->lpVtbl->GetType(tex) != D3DRTYPE_TEXTURE) why = 1;
+    else if ((why = build_vertices(k, verts, idx, e.c, e.r, true)) < 0 &&
+             !(mat = material_for(dev, tex, hx, k.state & 0xFFF, func, ref, wu, wv)))
+      why = 4;
+    if (why < 0) {
+      remixapi_MeshInfoSurfaceTriangles sf = {};
+      sf.vertices_values = verts.data();
+      sf.vertices_count = verts.size();
+      sf.indices_values = idx.data();
+      sf.indices_count = idx.size();
+      sf.material = mat;
+      remixapi_MeshInfo mi = {};
+      mi.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+      mi.hash = 0x524252444F000000ull + ++g_meshSerial;   // "RBRDO" + a counter
+      mi.surfaces_values = &sf;
+      mi.surfaces_count = 1;
+      if (g_createMesh(&mi, &e.mesh) == REMIXAPI_ERROR_CODE_SUCCESS && e.mesh) { e.failed = false; ++g_objBuilt; }
+      else { e.mesh = nullptr; why = 5; }
+    }
+    if (why >= 0 && ++g_objRefused <= 4)
+      wlog(L"api objects: draw with texture %016llX (%u vertices) stays D3D9: %s", hx, d.numV, kRefuse[why]);
+    if (!e.failed) {
+      e.sway = cull == D3DCULL_NONE;
+      if (g_watched.insert(vb).second | g_watched.insert(ib).second) rbrrtx_watch_buffer_writes(vb, ib);
+    }
+    it = g_objects.find(k);
+  }
+  if (vb) vb->lpVtbl->Release(vb);
+  if (ib) ib->lpVtbl->Release(ib);
+  if (decl) decl->lpVtbl->Release(decl);
+  if (tex) tex->lpVtbl->Release(tex);
+  if (it == g_objects.end() || it->second.failed || !it->second.mesh) return false;
+  remixapi_InstanceInfoBlendEXT bl = {};               // as the static world: texture x vertex colour, alpha = texture
+  bl.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+  bl.alphaTestCompareOp = 7;
+  bl.srcColorBlendFactor = 1; bl.dstColorBlendFactor = 0; bl.colorBlendOp = 0;
+  bl.textureColorArg1Source = 1; bl.textureColorArg2Source = 2; bl.textureColorOperation = 3;
+  bl.textureAlphaArg1Source = 1; bl.textureAlphaArg2Source = 2; bl.textureAlphaOperation = 1;
+  bl.tFactor = 0xFFFFFFFFu;
+  bl.srcAlphaBlendFactor = 1; bl.dstAlphaBlendFactor = 0; bl.alphaBlendOp = 0;
+  bl.writeMask = 0xF;
+  bl.isVertexColorBakedLighting = 1;
+  remixapi_InstanceInfo ii = {};
+  ii.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+  ii.pNext = &bl;
+  ii.mesh = it->second.mesh;
+  ii.doubleSided = it->second.sway ? 1 : 0;
+  for (int r = 0; r < 3; ++r)                          // D3D row vectors (p x W) -> Remix 3x4, translation in column 3
+    for (int c = 0; c < 4; ++c) ii.transform.matrix[r][c] = world[c * 4 + r];
+  if (reinterpret_cast<PFN_remixapi_DrawInstance>(g_ext->drawInstance)(&ii) != REMIXAPI_ERROR_CODE_SUCCESS) return false;
+  ++g_objDrawn;
+  return true;
+}
+
+namespace {
+void objects_reset_outer() { objects_reset(); }
+}  // namespace
+
 // First BeginScene of a frame: the retained table goes out before this frame's draws (and before the HUD draw that
 // starts Remix's frame), after the updates flushed at the last Present (the bridge is a FIFO).
 void rbrrtx_apiworld_replay() {
@@ -561,6 +686,10 @@ void rbrrtx_apiworld_frame_end(const float* viewProj, bool active) {
          L"since last line %u built (%.1f MB), %u hidden, %u shown again%s",
          g_live, g_visibleCount, static_cast<double>(g_taken) / g_logFrames, static_cast<double>(g_passed) / g_logFrames,
          g_built, g_sentMB, g_hidden, g_shown, ref.empty() ? L"" : (L"; stay D3D9 (draws): " + ref.substr(2)).c_str());
+    if (g_objBuilt || g_objDrawn)
+      wlog(L"api objects (drivers): %zu meshes, %.1f drawn per frame, %u built since last line", g_objects.size(),
+           static_cast<double>(g_objDrawn) / g_logFrames, g_objBuilt);
+    g_objDrawn = g_objBuilt = 0;
     g_logFrames = g_taken = g_passed = g_built = g_hidden = g_shown = 0;
     g_sentMB = 0;
     std::memset(g_refused, 0, sizeof(g_refused));
@@ -570,6 +699,8 @@ void rbrrtx_apiworld_frame_end(const float* viewProj, bool active) {
 }
 
 void rbrrtx_apiworld_reset(const wchar_t* why) {
+  if (!g_objects.empty()) wlog(L"api objects: %zu meshes released (%s)", g_objects.size(), why);
+  objects_reset_outer();
   if (g_entries.empty() && g_materials.empty() && g_textures.empty()) return;
   std::vector<uint64_t> handles;
   for (auto& kv : g_entries) if (kv.second.inst) handles.push_back(kv.second.inst);
@@ -603,6 +734,12 @@ void rbrrtx_apiworld_forget(const void* buffer) {
 void rbrrtx_apiworld_written(const void* buffer) {
   if (!buffer || !g_watched.erase(buffer)) return;
   g_dynamic.insert(buffer);
+  for (auto it = g_objects.begin(); it != g_objects.end();) {
+    if (it->first.vb == buffer || it->first.ib == buffer) {
+      if (it->second.mesh && g_destroyMesh) g_destroyMesh(it->second.mesh);
+      it = g_objects.erase(it);
+    } else ++it;
+  }
   unsigned n = 0;
   for (auto it = g_entries.begin(); it != g_entries.end();) {
     if (it->first.vb == buffer || it->first.ib == buffer) { destroy_entry(it->second); it = g_entries.erase(it); ++n; }
