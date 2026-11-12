@@ -429,7 +429,7 @@ void load_settings() {
   }
   wchar_t autoNote[96];
   if (s.dayRunning) swprintf_s(autoNote, L"day running lights, brights below sun %.1f deg", s.brightsBelow);
-  else swprintf_s(autoNote, L"auto below sun %.1f deg in mode %d", s.autoBelow, s.autoMode);
+  else swprintf_s(autoNote, L"auto below sun %.1f deg in mode %d, brights below %.1f", s.autoBelow, s.autoMode, s.brightsBelow);
   hlog(L"headlights (%s): %s, %s, radiance %.0f/%.0f/%.0f, "
        L"radius %.3f, cone %.1f, softness %.2f, focus %.2f, pitch %.1f, forward %.2f, volumetric %.2f, "
        L"keep fallback light %s; brights radiance %.0f cone %.1f softness %.3f pitch %.1f inset %.2f forward %.2f",
@@ -1418,9 +1418,12 @@ float g_dayK = 1.0f;                                   // daylight dimming of th
 int g_autoWant = -1;                                   // the automatic switch's mode last frame (-1 = none yet)
 bool g_badWeather = false;                             // this stage's sky is rain, snow or fog
 // The mode the automatic switch wants at this sun height.
+// day_running = 0 also turns the brights on below brights_below_sun (user 2026-11-12: a full-night Peklo replay had only
+// the two lamps; with day_running = 0 the switch knew only auto_mode).
 int auto_mode_for(float sunEl) {
   if (g_cfg.dayRunning) return sunEl < g_cfg.brightsBelow ? kBrights : kPair;
-  return sunEl < g_cfg.autoBelow || (g_cfg.autoBadWeather && g_badWeather) ? g_cfg.autoMode : kOff;
+  if (!(sunEl < g_cfg.autoBelow || (g_cfg.autoBadWeather && g_badWeather))) return kOff;
+  return sunEl < g_cfg.brightsBelow ? kBrights : g_cfg.autoMode;
 }
 int g_track = -1;
 bool g_emitted = false;                                // first BeginScene of this frame seen (lamp states read)
@@ -2196,7 +2199,7 @@ void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& g
   }
   // The parked menu car: no day running lights, its lamps on below auto_below_sun (brights below brights_below_sun).
   const bool dark = sunEl < g_cfg.autoBelow;
-  const int want = !dark ? kOff : g_cfg.dayRunning ? auto_mode_for(sunEl) : g_cfg.autoMode;
+  const int want = !dark ? kOff : auto_mode_for(sunEl);
   if (dark != g_menuDark || want != g_mode) {
     wchar_t why[64];
     swprintf_s(why, L"menu, sun %.1f deg", sunEl);
@@ -2322,7 +2325,8 @@ void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn) {
   if (!g_manual && want != g_autoWant) {
     wchar_t why[96];
     if (g_cfg.dayRunning) swprintf_s(why, L"day running lights; sun %.1f deg, brights below %.0f", sunElevation, g_cfg.brightsBelow);
-    else swprintf_s(why, L"sun %.1f deg, lamps below %.0f%s", sunElevation, g_cfg.autoBelow, g_badWeather && g_cfg.autoBadWeather ? L", bad weather" : L"");
+    else swprintf_s(why, L"sun %.1f deg, lamps below %.0f, brights below %.0f%s", sunElevation, g_cfg.autoBelow, g_cfg.brightsBelow,
+                    g_badWeather && g_cfg.autoBadWeather ? L", bad weather" : L"");
     set_mode(want, why);
   }
   g_autoWant = want;
