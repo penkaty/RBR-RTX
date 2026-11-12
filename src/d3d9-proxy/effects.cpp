@@ -237,6 +237,11 @@ struct DustCfg {
   int layers = 1;                                      // spawner squares stacked from `above` down to `above - depth`
   float depth = 0.0f;
   float holeLength = 0.0f, holeWidth = 0.0f;           // > 0: spawner on the car with a car-sized gap (nothing inside)
+  // > 0 (rain, user 2026-11-12: no edge at 200 km/h): the spawner is a disk of this radius instead of the square, as dense
+  // as the square out to fullRadius (0 = spawner_size / 2), thinning as 1 / distance beyond. Rate and cap grow with the
+  // area so the density near the camera stays the square's (per_wheel_rate / spawner_size^2).
+  float radius = 0.0f, fullRadius = 0.0f;
+  bool relTrail = false;                               // streaks as seen from the moving camera (runtime bit 0x20)
   int collisionMode = 2;                               // Remix: 0 bounce (takes the hit surface's velocity), 1 stop, 2 kill
   float restitution = 0.0f;                            // bounce: share of the speed kept
   bool holdColour = false;                             // start colour held for half the life, then to the end colour
@@ -307,7 +312,7 @@ DustCfg precip_defaults(int pre) {
     const float a[4] = { 0.70f, 0.72f, 0.76f, 0.25f }, b[4] = { 0.85f, 0.87f, 0.90f, 0.40f };
     set_colour(c, a, b);
     c.cone = 3.0f; c.drag = 0.0f; c.gravity = 0.0f; c.turbulenceForce = 0.0f;   // riseSpeed = fall speed
-    c.align = true; c.billboard = 1;
+    c.align = true; c.billboard = 1; c.relTrail = true;
     c.box = 30.0f; c.ahead = 6.0f; c.aheadPerKmh = 0.12f; c.above = 12.0f;
     wcscpy_s(c.tex, L"rain_drop.dds");
     if (pre == PRE_RAIN_LIGHT) {                       // many small drops, 9 m/s (the run-2 speed)
@@ -469,6 +474,9 @@ void load_fx(DustCfg& c) {
   c.depth = cfg_float(L"spawner_depth", c.depth, 0.0f, 100.0f);
   c.holeLength = cfg_float(L"car_gap_length", c.holeLength, 0.0f, 50.0f);
   c.holeWidth = cfg_float(L"car_gap_width", c.holeWidth, 0.0f, 50.0f);
+  c.radius = cfg_float(L"spawner_radius", c.radius, 0.0f, 500.0f);
+  c.fullRadius = cfg_float(L"spawner_full_radius", c.fullRadius, 0.0f, 500.0f);
+  c.relTrail = cfg_float(L"streaks_from_camera_motion", c.relTrail ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
   c.collisionMode = static_cast<int>(cfg_float(L"collision_mode", static_cast<float>(c.collisionMode), 0.0f, 2.0f));
   c.restitution = cfg_float(L"collision_restitution", c.restitution, 0.0f, 1.0f);
   c.holdColour = cfg_float(L"hold_colour", c.holdColour ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
@@ -714,6 +722,7 @@ struct DescStore {
   remixapi_Float3D maxVel[1] = { { -1.0f, -1.0f, -1.0f } };   // negative = unlimited
 };
 bool g_kbRuntime = false;                              // the runtime answered "__rbrrtx.killbox.v" (killbox section)
+bool g_relTrailRuntime = false;                        // ... with "2" or more: it also has trails relative to the camera
 
 // One ini colour moved toward the surface colour: the surface's hue at this colour's own brightness (relative to the
 // four ini colours), times surface_brightness, mixed in by surface_mix. Quantised to 1/32 so near-equal surfaces
@@ -802,7 +811,10 @@ remixapi_InstanceInfoParticleSystemEXT fx_desc(const DustCfg& c, const float* ti
   p.enableCollisionDetection = c.collision;
   // Bits our runtime reads from collisionMode: 0x80 spawn shelter, 0x40 car kill box (only once the runtime said it has
   // it: an older one would read 0x42 as no collision mode at all).
-  p.collisionMode = static_cast<uint8_t>(c.collisionMode | (c.shelter ? 0x80 : 0) | (c.killCar && g_kbRuntime ? 0x40 : 0));
+  // 0x20: streaks and alignment from the motion seen by the moving camera (runtime "__rbrrtx.killbox.v" >= 2 only: an
+  // older one masks with 0x3F and would read it as a collision mode).
+  p.collisionMode = static_cast<uint8_t>(c.collisionMode | (c.shelter ? 0x80 : 0) | (c.killCar && g_kbRuntime ? 0x40 : 0) |
+                                         (c.relTrail && g_relTrailRuntime ? 0x20 : 0));
   p.collisionRestitution = c.restitution;
   p.collisionThickness = c.collisionThickness;
   p.initialVelocityFromMotion = c.velFromMotion;
@@ -1189,6 +1201,64 @@ bool make_shell(int kind, const DustCfg& c, PrecipFx& f) {
   return true;
 }
 
+// The rain disk (DustCfg::radius): full density to r0, r0 / r beyond. Its spawn area relative to the tuned square.
+bool graded_disk(const DustCfg& c) {
+  return c.radius > 0.0f && c.spawner != 1 && !(c.holeLength > 0.0f && c.holeWidth > 0.0f);
+}
+float disk_r0(const DustCfg& c) {
+  const float r0 = c.fullRadius > 0.0f ? c.fullRadius : 0.5f * c.box;
+  return (std::min)(r0, c.radius);
+}
+float disk_area_ratio(const DustCfg& c) {
+  const float r0 = disk_r0(c), R = c.radius, pi = 3.14159265f;
+  return (pi * r0 * r0 + 2.0f * pi * r0 * (R - r0)) / (c.box * c.box);
+}
+
+// Remix spawns on a random triangle, each with the same chance whatever its size (particle_system_spawn): so ring k gets
+// triangles in proportion to (its area x the density wanted there), and the density follows the triangles. Rings 2 m
+// wide; the centre is a fan. In metres, facing down, at height y.
+void disk_mesh(const DustCfg& c, float y, std::vector<remixapi_HardcodedVertex>& v, std::vector<uint32_t>& idx) {
+  const float r0 = disk_r0(c), R = c.radius, ring = 2.0f, triArea = 2.0f;   // a triangle per 2 m2 at full density
+  const float pi = 3.14159265f;
+  auto vert = [&](float x, float z) {
+    remixapi_HardcodedVertex o = {};
+    o.position[0] = x; o.position[1] = y; o.position[2] = z;
+    o.normal[1] = -1.0f;
+    o.texcoord[0] = 0.5f + x / (2.0f * R); o.texcoord[1] = 0.5f + z / (2.0f * R);
+    o.color = 0xFFFFFFFF;
+    v.push_back(o);
+    return static_cast<uint32_t>(v.size() - 1);
+  };
+  auto density = [&](float r) { return r <= r0 ? 1.0f : r0 / r; };
+  // Centre fan out to `ring`.
+  {
+    const int n = (std::max)(6, static_cast<int>(pi * ring * ring / triArea + 0.5f));
+    const uint32_t ctr = vert(0.0f, 0.0f);
+    uint32_t first = 0, prev = 0;
+    for (int i = 0; i <= n; ++i) {
+      const float a = 2.0f * pi * i / n;
+      const uint32_t cur = i == n ? first : vert(ring * std::cos(a), ring * std::sin(a));
+      if (i == 0) first = cur;
+      else { idx.push_back(ctr); idx.push_back(prev); idx.push_back(cur); }   // wound like the squares: normal down (the emit direction)
+      prev = cur;
+    }
+  }
+  for (float r = ring; r < R - 1e-3f; r += ring) {
+    const float r1 = (std::min)(R, r + ring), mid = 0.5f * (r + r1);
+    const float area = pi * (r1 * r1 - r * r);
+    const int quads = (std::max)(6, static_cast<int>(area * density(mid) / (2.0f * triArea) + 0.5f));
+    const float off = 0.5f * (static_cast<int>(r / ring) % 2);   // stagger the seams ring to ring
+    for (int i = 0; i < quads; ++i) {
+      const float a0 = 2.0f * pi * (i + off) / quads, a1 = 2.0f * pi * (i + 1 + off) / quads;
+      const uint32_t b = vert(r * std::cos(a0), r * std::sin(a0));
+      vert(r1 * std::cos(a0), r1 * std::sin(a0));
+      vert(r1 * std::cos(a1), r1 * std::sin(a1));
+      vert(r * std::cos(a1), r * std::sin(a1));
+      for (uint32_t t : { b, b + 1, b + 2, b, b + 2, b + 3 }) idx.push_back(t);   // normal down
+    }
+  }
+}
+
 bool make_precip(int kind) {                            // kind = preset (PRE_*)
   PrecipFx& f = g_fx[kind];
   if (f.mesh && g_fxEpoch[kind] != g_precipEpoch && g_api) {   // particles.ini saved: layers/texture may have changed
@@ -1247,6 +1317,7 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
   float rects[4][4] = { { -0.5f, -0.5f, 0.5f, 0.5f } };   // x0 z0 x1 z1
   int nRects = 1;
   if (c.spawner == 1) return make_shell(kind, c, f);
+  const bool disk = graded_disk(c);
   if (gap) {
     const float h = c.box * 0.5f, z0 = c.ahead - h, z1 = c.ahead + h, gl = c.holeLength * 0.5f, gw = c.holeWidth * 0.5f;
     const float r[4][4] = { { -h, z0, h, -gl }, { -h, gl, h, z1 }, { -h, -gl, -gw, gl }, { gw, -gl, h, gl } };
@@ -1266,6 +1337,7 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
   idx[kind].clear();
   for (int l = 0; l < layers; ++l) {
     const float y = layers > 1 ? -c.depth * l / (layers - 1) : 0.0f;
+    if (disk) { disk_mesh(c, y, v[kind], idx[kind]); continue; }
     for (int r = 0; r < nRects; ++r) {
       const float* R = rects[r];
       if (R[2] <= R[0] || R[3] <= R[1]) continue;      // gap wider than the square
@@ -1352,8 +1424,11 @@ bool killbox_runtime() {
   char v[8] = {};
   uint32_t n = 0;
   const remixapi_ErrorCode err = reinterpret_cast<PFN_GetGameValue>(x->getGameValue)("__rbrrtx.killbox.v", v, sizeof(v), &n);
-  g_kbRuntime = err == REMIXAPI_ERROR_CODE_SUCCESS && n > 0 && v[0] == '1';
-  if (g_kbRuntime) plog(L"rain: the runtime has the car kill box (try %d)", g_kbPolls);
+  g_kbRuntime = err == REMIXAPI_ERROR_CODE_SUCCESS && n > 0 && v[0] >= '1' && v[0] <= '9';
+  g_relTrailRuntime = g_kbRuntime && v[0] >= '2';
+  if (g_kbRuntime)
+    plog(L"rain: the runtime has the car kill box%s (try %d)",
+         g_relTrailRuntime ? L" and streaks from the camera's motion" : L", no streaks from the camera's motion (runtime before 2026-11-12)", g_kbPolls);
   else if (g_kbPolls == 20) plog(L"rain: the runtime has no car kill box (patch particles-killbox); [killbox] is not used");
   return g_kbRuntime;
 }
@@ -1420,7 +1495,7 @@ void far_frame(int pre) {
   const DustCfg& p = g_pre[want];
   const bool heavy = want == PRE_RAIN_HEAVY || want == PRE_SNOW_HEAVY;
   const int count = static_cast<int>(g_far.count * (heavy ? g_far.heavyFactor : 1.0f));
-  const float minD = (std::max)(1.0f, 0.5f * p.box), maxD = minD + g_far.extra;
+  const float minD = (std::max)(1.0f, graded_disk(p) ? p.radius : 0.5f * p.box), maxD = minD + g_far.extra;
   // Pixels at the 1080p reference (the runtime's unit) of the preset's metre size seen at minD with a 60 degree view.
   const float pxPerM = 1080.0f / (2.0f * minD * 0.5774f);
   const float sMin = (std::min)(50.0f, (std::max)(1.0f, (std::min)(p.startSizeMin, p.endSizeMin) * pxPerM));
@@ -1492,18 +1567,29 @@ void draw_one(int pre, float rateScale) {
   if (!make_precip(pre)) return;
   DustCfg c = g_pre[pre];
   c.perWheelRate *= rateScale;
+  const bool disk = graded_disk(c);
+  if (disk) {                                          // the square's density near the camera, over the whole disk
+    const float k = disk_area_ratio(c);
+    c.perWheelRate *= k;
+    c.maxParticles = static_cast<unsigned>(c.maxParticles * k + 0.5f);
+  }
   // One descriptor per effect, kept: rebuilt only when particles.ini was read again, the wake's rate step changed or
   // the runtime's car kill box became known; the same descriptor is the same Remix particle system (no per-frame
   // arrays, hashing or re-created systems on our side).
-  struct Cached { DescStore store; remixapi_InstanceInfoParticleSystemEXT desc = {}; unsigned epoch = ~0u; float scale = -1.0f; bool kb = false; };
+  struct Cached { DescStore store; remixapi_InstanceInfoParticleSystemEXT desc = {}; unsigned epoch = ~0u; float scale = -1.0f; bool kb = false, rel = false; };
   static Cached cache[PRE_COUNT];
   Cached& ch = cache[pre];
-  if (ch.epoch != g_precipEpoch || ch.scale != rateScale || ch.kb != g_kbRuntime) {
+  if (ch.epoch != g_precipEpoch || ch.scale != rateScale || ch.kb != g_kbRuntime || ch.rel != g_relTrailRuntime) {
     ch.store = DescStore();
     ch.desc = fx_desc(c, nullptr, ch.store);
     ch.epoch = g_precipEpoch;
     ch.scale = rateScale;
     ch.kb = g_kbRuntime;
+    ch.rel = g_relTrailRuntime;
+    if (disk)
+      plog(L"rain: %s disk %.0f m (full density to %.1f m, then 1/r): %.0f/s, cap %u (x%.2f the %.0f m square's)%s",
+           kPreSection[pre], c.radius, disk_r0(c), c.perWheelRate, c.maxParticles, disk_area_ratio(c), c.box,
+           c.relTrail && g_relTrailRuntime ? L", streaks from the camera's motion" : L"");
   }
   remixapi_InstanceInfoParticleSystemEXT& particles = ch.desc;
   remixapi_InstanceInfoBlendEXT blend = {};
@@ -1539,7 +1625,8 @@ void draw_one(int pre, float rateScale) {
     const float ahead = c.ahead + c.aheadPerKmh * g_camKmh;
     x = g_camPos[0] + (fl > 1e-3f ? fx / fl * ahead : 0.0f);
     z = g_camPos[1] + (fl > 1e-3f ? fz / fl * ahead : 0.0f);
-    inst.transform = { { { c.box, 0, 0, x }, { 0, 1, 0, y }, { 0, 0, c.box, z } } };
+    const float sc = disk ? 1.0f : c.box;               // the disk is built in metres
+    inst.transform = { { { sc, 0, 0, x }, { 0, 1, 0, y }, { 0, 0, sc, z } } };
   }
   inst.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
   inst.pNext = &blend;
