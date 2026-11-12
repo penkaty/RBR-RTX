@@ -7408,11 +7408,18 @@ void rbrrtx_watch_buffer_writes(void* vb, void* ib) { watch_buffer_writes(vb, ib
 
 bool rbrrtx_remix_set(const char* key, const char* value) {
   if (!g_apiOk || !g_api.SetConfigVariable) return false;
+
+  ++g_rbrrtxRemixSets;
   remix_set(key, value);
   return true;
 }
 
 std::wstring rbrrtx_stage_line(const RbrStageInfo& si) { return stage_line(si); }   // report.cpp
+
+// The stage's fog end in metres (its TrackSettings section), 0 when it has none or fog is off.
+float rbrrtx_stage_fog_end() {
+  return g_stageWx.found && g_stageWx.useFog && (g_stageWx.haveFog & 2) && g_stageWx.fogEnd > 1.0f ? g_stageWx.fogEnd : 0.0f;
+}
 
 void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
   static bool loaded = false;

@@ -18,6 +18,7 @@ void rbrrtx_report_event(const wchar_t* text);                  // hotkey toggle
 void rbrrtx_report_log_line(const wchar_t* line);               // every comp log line; warnings go to problems.txt
 void rbrrtx_report_sweep(const wchar_t* dir);                   // an Alt+K sweep folder finished during the stage
 extern unsigned g_rbrrtxCreates;                                // textures + shaders created (hitch causes)
+extern unsigned g_rbrrtxRemixSets;                              // Remix settings sent by rbrrtx_remix_set (menu hitch causes)
 
 // True when the environment variable is set to something other than "0" (default when unset).
 bool rbrrtx_env_flag(const wchar_t* name, bool default_value);
@@ -117,6 +118,7 @@ struct StageWeather {
 };
 struct WeatherText { int sky = -1, clouds = -1, time = -1; bool night = false; };   // time: 0..5, rbrrtx_weather_time_name
 bool rbrrtx_stage_weather(const RbrStageInfo& si, StageWeather* out);
+float rbrrtx_stage_fog_end();                                  // comp.cpp: this stage's fog end (m), 0 = none
 bool rbrrtx_weather_from_text(const std::wstring& text, int gameSky, WeatherText* out);
 const wchar_t* rbrrtx_weather_time_name(int t);               // Morning Noon Evening Night Dawn Sunset
 // Copies the window's client area from the screen into a PNG (what Remix presented). mean_luma = 0..255 (0 = black:

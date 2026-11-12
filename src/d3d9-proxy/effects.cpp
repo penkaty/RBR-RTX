@@ -494,6 +494,8 @@ void load_fx(DustCfg& c) {
 
 void far_load();                                       // [precipitation_far], below with draw_precip
 float g_antiGhost = 0.1f;                              // [precipitation] anti_ghost_coverage
+float g_mvCoverage = 0.1f;                             // [precipitation] motion_vector_coverage
+float g_lensCoverage = 0.3f;                           // [precipitation] max_screen_coverage
 
 void load_cfg() {
   DustCfg c;
@@ -532,6 +534,8 @@ void load_cfg() {
   g_sec = L"precipitation";
   g_heavyFrom = cfg_float(L"heavy_from", 75.0f, 0.0f, 101.0f);
   g_antiGhost = cfg_float(L"anti_ghost_coverage", g_antiGhost, 0.0f, 1.0f);
+  g_mvCoverage = cfg_float(L"motion_vector_coverage", g_mvCoverage, 0.0f, 1.0f);
+  g_lensCoverage = cfg_float(L"max_screen_coverage", g_lensCoverage, 0.0f, 16.0f);
   g_sec = L"killbox";
   g_kb = KillBoxCfg();
   g_kb.enabled = cfg_float(L"enabled", 0.0f, 0.0f, 1.0f) >= 0.5f;
@@ -1518,7 +1522,15 @@ void far_frame(int pre) {
   const DustCfg& p = g_pre[want];
   const bool heavy = want == PRE_RAIN_HEAVY || want == PRE_SNOW_HEAVY;
   const int count = static_cast<int>(g_far.count * (heavy ? g_far.heavyFactor : 1.0f));
-  const float minD = (std::max)(1.0f, graded_disk(p) ? p.radius : 0.5f * p.box), maxD = minD + g_far.extra;
+  const float minD = (std::max)(1.0f, graded_disk(p) ? p.radius : 0.5f * p.box);
+  // Not past the end of the stage's fog (Peklo at night: 3..100 m, the dots went to 190 m): nothing shows there.
+  const float fogEnd = rbrrtx_stage_fog_end();
+  const float maxD = fogEnd > 0.0f ? (std::min)(minD + g_far.extra, fogEnd) : minD + g_far.extra;
+  if (maxD <= minD + 5.0f) {
+    if (wasOn) rbrrtx_remix_set("rtx.dust.enable", "False");
+    plog(L"rain: far layer (Remix dust) not used: the stage fog ends at %.0f m, the near spawner reaches %.0f m", fogEnd, minD);
+    return;
+  }
   // Pixels at the 1080p reference (the runtime's unit) of the preset's metre size seen at minD with a 60 degree view.
   const float pxPerM = 1080.0f / (2.0f * minD * 0.5774f);
   const float sMin = (std::min)(50.0f, (std::max)(1.0f, (std::min)(p.startSizeMin, p.endSizeMin) * pxPerM));
@@ -1574,14 +1586,26 @@ void draw_precip() {
     // Ray Reconstruction's anti-ghost mask also on non-emissive particles while Remix rain / snow falls (runtime option of
     // feat/20261112-rain-streaks; an older runtime ignores it): without it each falling flake left copies of itself a
     // frame's fall apart (user 2026-11-12 pictures). Off again without precipitation, so dry-stage dust is as before.
+    // 2026-11-13 (user: the copies stayed, with RR and with DLSS): the flakes' pixels also take the flakes' own motion
+    // vector (their depth and the preset's fall speed, runtime rtx.particles.motionVector*), and billboards that fill a
+    // large part of the screen right at the lens fade out (rtx.particles.maxScreenCoverage: the costliest particles, each
+    // pixel behind many of them). All per preset, back to the runtime's defaults without precipitation.
     static int sent = -2;
-    const int want = pre >= 0 ? 1 : 0;
-    if (want != sent) {
-      sent = want;
-      char v[16];
-      sprintf_s(v, "%.2f", want ? g_antiGhost : 0.0f);
+    if (pre != sent) {
+      sent = pre;
+      const bool on = pre >= 0;
+      char v[64];
+      sprintf_s(v, "%.2f", on ? g_antiGhost : 0.0f);
       rbrrtx_remix_set("rtx.particles.antiGhostCoverage", v);
-      plog(L"rain: particle anti-ghost %s (%S)", want ? L"on" : L"off", v);
+      sprintf_s(v, "%.2f", on ? g_mvCoverage : 0.0f);
+      rbrrtx_remix_set("rtx.particles.motionVectorCoverage", v);
+      sprintf_s(v, "0, %.2f, 0", on ? -g_pre[pre].riseSpeed : 0.0f);
+      rbrrtx_remix_set("rtx.particles.motionVectorVelocity", v);
+      char c[16];
+      sprintf_s(c, "%.2f", on ? g_lensCoverage : 0.0f);
+      rbrrtx_remix_set("rtx.particles.maxScreenCoverage", c);
+      plog(L"rain: particles: anti-ghost %.2f, motion vectors from coverage %.2f at (%S) m/s, fade above %S of the screen height",
+           on ? g_antiGhost : 0.0f, on ? g_mvCoverage : 0.0f, v, c);
     }
   }
   if (pre < 0) return;

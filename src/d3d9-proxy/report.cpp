@@ -32,6 +32,7 @@ namespace fs = std::filesystem;
 
 std::wstring rbrrtx_stage_line(const RbrStageInfo& si);   // comp.cpp
 unsigned g_rbrrtxCreates = 0;
+unsigned g_rbrrtxRemixSets = 0;                        // rbrrtx_remix_set calls (comp.cpp): menu hitch causes
 
 namespace {
 
@@ -707,7 +708,32 @@ void rbrrtx_report_frame(HWND wnd, const RbrReportFrame& f) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   if (now.QuadPart - g_lastCheck.QuadPart >= g_qpf.QuadPart) { g_lastCheck = now; second(now, f); }
-  if (!g_rec.on || g_rec.last.QuadPart == now.QuadPart) return;   // not recording, or started this frame
+  if (!g_rec.on) {
+    // Outside a stage report (menu, loading): slow frames go to the log with what our side did in them (user 2026-11-13:
+    // a frame time spike every 3-5 s in the main menu). Average over ~1 s; a spike = over 2.5 x that and over 25 ms.
+    static LARGE_INTEGER last = {};
+    static double avg = 0.0;
+    static unsigned creates0 = 0, sets0 = 0, logged = 0;
+    static LARGE_INTEGER lastHitch = {};
+    if (last.QuadPart) {
+      const double ms = secs(last, now) * 1000.0;
+      const unsigned creates = g_rbrrtxCreates - creates0, sets = g_rbrrtxRemixSets - sets0;
+      if (avg > 0.0 && ms > 2.5 * avg && ms > 25.0 && ms < 2000.0 && logged < 400) {
+        ++logged;
+        const double since = lastHitch.QuadPart ? secs(lastHitch, now) : 0.0;
+        rbrrtx_log_to(L"rbrrtx_comp.log", L"slow frame outside a stage: %.1f ms (average %.1f), %.2f s after the previous one; "
+                      L"this frame: %u textures/shaders created, %u Remix settings sent", ms, avg, since, creates, sets);
+        lastHitch = now;
+      } else {
+        avg = avg > 0.0 ? avg * 0.98 + ms * 0.02 : ms;
+      }
+    }
+    last = now;
+    creates0 = g_rbrrtxCreates;
+    sets0 = g_rbrrtxRemixSets;
+    return;
+  }
+  if (g_rec.last.QuadPart == now.QuadPart) return;   // started this frame
   const float ms = static_cast<float>(secs(g_rec.last, now) * 1000.0);
   g_rec.last = now;
   g_rec.ring[g_rec.ringFrames++ % kRing] = ms;
