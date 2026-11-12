@@ -814,6 +814,27 @@ bool cockpit_quad(float c[4][3]) {                     // camera space (x right,
 
 // The vertices of a car's lamp parts (e_light*, e_lamp*, e_bumperlight*, lens or cover glass) in the root frame, for
 // lens_front. Same mesh records as load_windscreen: tag 0xC 0 k 1, size, name\0, +136 count, +144 (position, normal).
+struct LampBox { V3 lo, hi; };
+std::vector<LampBox> g_lampBoxes;                      // bounds of each lamp part of this car (not the aux lamps), root frame
+
+// A light node that lies outside every lamp part is moved onto the nearest one (within kSnapReach): on some models the
+// nodes float well clear of the lenses (yaris_rally2: tail nodes 10 cm, reversing nodes 15-20 cm behind the glass and
+// one 13 cm too low; user 2026-11-12: "beams a noticeable distance away from the physical lamps").
+constexpr float kSnapReach = 0.40f;
+bool snap_to_lamp(V3& pos) {
+  float best = kSnapReach;
+  V3 to = pos;
+  for (const LampBox& b : g_lampBoxes) {
+    const V3 c = { std::clamp(pos.x, b.lo.x, b.hi.x), std::clamp(pos.y, b.lo.y, b.hi.y), std::clamp(pos.z, b.lo.z, b.hi.z) };
+    const float dist = len(c - pos);
+    if (dist < 1e-4f) return false;                    // inside a lamp part: the node is fine
+    if (dist < best) { best = dist; to = c; }
+  }
+  if (best >= kSnapReach) return false;
+  pos = to;
+  return true;
+}
+
 void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsigned, Node>& nodes,
                       const std::unordered_map<std::string, unsigned>& byName) {
   const char* p = d.data();
@@ -842,14 +863,21 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
     V3 t;
     total_of(nodes, node->second, false, R, t);
     V3 mid = {};
+    LampBox box = { { 1e9f, 1e9f, 1e9f }, { -1e9f, -1e9f, -1e9f } };
     for (uint32_t k = 0; k < n; ++k) {
       float v[3];
       std::memcpy(v, p + a + 144 + k * 24, 12);
       g_car.lampPts.push_back({ R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2] + t.x,
                                 R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2] + t.y,
                                 R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2] + t.z });
-      mid = mid + g_car.lampPts.back() * (1.0f / n);
+      const V3& w = g_car.lampPts.back();
+      mid = mid + w * (1.0f / n);
+      box.lo = { (std::min)(box.lo.x, w.x), (std::min)(box.lo.y, w.y), (std::min)(box.lo.z, w.z) };
+      box.hi = { (std::max)(box.hi.x, w.x), (std::max)(box.hi.y, w.y), (std::max)(box.hi.z, w.z) };
     }
+    const bool auxPart = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
+                         low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
+    if (n >= 16 && !auxPart) g_lampBoxes.push_back(box);   // placeholder parts of a few vertices are not lamps
     if (low.find("glass") != std::string::npos) {      // the flat front that glows (user 2026-11-09)
       const bool aux = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
                        low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
@@ -895,6 +923,7 @@ void load_car_model(const std::wstring& file) {
   const auto t0 = std::chrono::steady_clock::now();
   g_car = CarModel();
   g_lensHits.clear();
+  g_lampBoxes.clear();
   g_car.file = file;
   std::ifstream f(file, std::ios::binary);
   const std::vector<char> d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -975,6 +1004,15 @@ void load_car_model(const std::wstring& file) {
   }
   load_extra_lamps(file, lamp);
   load_lamp_points(d, nodes, byName);
+  if (g_car.lamps) {
+    int moved = 0;
+    float farthest = 0.0f;
+    for (V3* n : { &g_car.lf, &g_car.rf, &g_car.lb, &g_car.rb, &g_car.revl, &g_car.revr }) {
+      const V3 was = *n;
+      if (snap_to_lamp(*n)) { ++moved; farthest = (std::max)(farthest, len(*n - was)); }
+    }
+    if (moved) hlog(L"headlights: %d light node(s) lay outside the lamp parts and were moved onto the nearest one (up to %.0f cm)", moved, farthest * 100.0f);
+  }
   hlog(L"headlights: lamp glass %.1f / %.1f cm ahead of the lamp nodes (%zu lamp vertices): beams start in front of it",
        lens_front(g_car.lf, g_car.forward) * 100.0f, lens_front(g_car.rf, g_car.forward) * 100.0f, g_car.lampPts.size());
   load_windscreen(d, nodes, byName);

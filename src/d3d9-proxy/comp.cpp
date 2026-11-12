@@ -515,8 +515,10 @@ bool g_carShadowSkip = true;                           // the game's car shadow 
 // rtx.ignoreTextures.
 int g_dropGain = 2;
 const unsigned long long kDropTex[] = { 0xB6381CDF98A5F4CEull, 0x6BC9918A1038F2A1ull, 0x5928499B9C83AECBull, 0x130596EFB09CACABull,
-                                        0xAD978CDB8C76CBE5ull, 0x839CC56FE28D9937ull, 0xA604032536BD6693ull, 0x2C518B93040E6663ull };
+                                        0xAD978CDB8C76CBE5ull, 0x839CC56FE28D9937ull, 0xA604032536BD6693ull, 0x2C518B93040E6663ull,
+                                        0x0599B921456B5597ull /* snow flake on the glass */ };
 unsigned g_carShadowSkipped = 0;
+unsigned g_subSpriteSkipped = 0;                         // the game's subtractive sprite pass (is_subtractive_sprite)
 
 // Frames since the last comp log line (the per-frame averages in that line divide by it).
 unsigned g_logFrames = 0;
@@ -2778,6 +2780,8 @@ void log_frame(const wchar_t* why) {
   clog(L"  radial foliage normals %s", acLine);
   if (g_carShadowSkipped) clog(L"  game car shadow: %.0f draws skipped per frame", g_logFrames ? static_cast<double>(g_carShadowSkipped) / g_logFrames : 0.0);
   g_carShadowSkipped = 0;
+  if (g_subSpriteSkipped) clog(L"  game subtractive sprites (windscreen drops / flakes second pass): %.0f draws skipped per frame", g_logFrames ? static_cast<double>(g_subSpriteSkipped) / g_logFrames : 0.0);
+  g_subSpriteSkipped = 0;
   g_refLowered = g_softSkipped = g_midQuadSkipped = g_logFrames = g_offSkipped = g_ffDraws = g_ffSwayFar = 0;
   g_opaqueDraws = 0;
   if (okInv)
@@ -6907,6 +6911,18 @@ bool api_world_class() {
   return (f & SH_SCENERY) && (f & SH_WORLDSPACE) && !(f & (SH_ANIM | SH_BTB)) && (!(f & SH_DOUBLE) || !(g_layerOn || g_bakerOn));   // RLDouble: D3D9 draws when a layer is drawn or the baker bakes them
 }
 
+// The game draws each windscreen drop, streak and snow flake twice (ParticleQuality on): additive, then with BLENDOP
+// REVSUBTRACT to darken the glass under it. Remix has no subtractive blend and showed the second pass as dark opaque
+// blobs (rain 2026-11-11, snow 2026-11-12). It is not sent: any fixed-function sprite (FVF 0x142) drawn subtractively.
+bool is_subtractive_sprite(IDirect3DDevice9* dev) {
+  if (g_curVS || g_curFVF != 0x142 || !g_primaryRT || !g_enabled || g_uiTriggered) return false;
+  DWORD op = 0, blend = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  if (!blend) return false;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_BLENDOP, &op);
+  return op ==D3DBLENDOP_REVSUBTRACT || op == D3DBLENDOP_SUBTRACT;
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -6915,9 +6931,10 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   const bool sky = is_sky_draw();
   const bool midQuad = !glassSkip && !sky && is_midscene_quad(dev);
   const bool carShadow = !glassSkip && !sky && !midQuad && is_car_shadow_draw(dev);
+  const bool subSprite = !glassSkip && !sky && !midQuad && !carShadow && is_subtractive_sprite(dev);
   const bool offSkip = g_skipOffscreen && g_enabled && !g_primaryRT && g_curInfo && (g_curInfo->flags & (SH_SCENERY | SH_SKY));
   const wchar_t* fate = glassSkip ? L"SKIPPED(glass)" : offSkip ? L"SKIPPED(off-screen)" : midQuad ? L"SKIPPED(mid-scene quad)" :
-                        carShadow ? L"SKIPPED(car shadow)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn";
+                        carShadow ? L"SKIPPED(car shadow)" : subSprite ? L"SKIPPED(subtractive sprite)" : sky ? (g_skyMode == 1 ? L"SKIPPED(sky)" : L"sky") : L"drawn";
   if (g_dumpFrames) dump_draw(dev, fate);
   if (g_sweepTsv) sweep_dump_draw(dev, exp_skip_draw() ? L"SKIPPED(step)" : fate);
   if (glassSkip) { ++g_st.glassSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"glass"); return D3D_OK; }
@@ -6928,6 +6945,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   if (midQuad) { ++g_midQuadSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"mid-scene quad"); return D3D_OK; }
   if (carShadow) { ++g_carShadowSkipped; return D3D_OK; }
+  if (subSprite) { ++g_subSpriteSkipped; return D3D_OK; }
   if (exp_skip_draw()) { ++g_expSkipped; if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"experiment (key K)"); return D3D_OK; }   // performance experiment (key K)
   if (rbrrtx_surface_lookup_on) surface_lookup(dev);         // a wheel on a new surface (particles.cpp): ground colour
   if (lens_flare_or_hidden(dev)) { if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_skip(L"lens flare / debug hide"); return D3D_OK; }

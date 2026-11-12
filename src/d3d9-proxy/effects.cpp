@@ -1237,8 +1237,8 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
   // triangles' area, so each layer gets an equal share. Without a car gap: unit squares, the transform scales x/z to
   // spawner_size. With one: metres, x = across the car, z = along it, the square centred spawner_ahead in front and
   // four rectangles around a car_gap_length x car_gap_width hole at the origin (the transform puts it on the car).
-  static remixapi_HardcodedVertex v[PRE_COUNT][16 * 16] = {};
-  static uint32_t idx[PRE_COUNT][24 * 16] = {};
+  static std::vector<remixapi_HardcodedVertex> v[PRE_COUNT];
+  static std::vector<uint32_t> idx[PRE_COUNT];
   const int layers = c.layers < 1 ? 1 : c.layers > 16 ? 16 : c.layers;
   const bool gap = c.holeLength > 0.0f && c.holeWidth > 0.0f;
   float rects[4][4] = { { -0.5f, -0.5f, 0.5f, 0.5f } };   // x0 z0 x1 z1
@@ -1250,32 +1250,47 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
     std::memcpy(rects, r, sizeof(r));
     nRects = 4;
   }
-  int nv = 0, ni = 0;
+  // Remix picks a triangle at random with the same chance for each, whatever its size (particle_system_spawn), so the
+  // small rectangles beside the car got as many flakes as the big ones ahead and behind: 4-5 times denser beside the
+  // car (user 2026-11-12: flakes "as if multiplied by one another"). Each rectangle is cut along its long side into
+  // strips of about the smallest rectangle's area, so every triangle is about the same size.
+  float minArea = 1e9f;
+  for (int r = 0; r < nRects; ++r) {
+    const float a = (rects[r][2] - rects[r][0]) * (rects[r][3] - rects[r][1]);
+    if (a > 0.0f && a < minArea) minArea = a;
+  }
+  v[kind].clear();
+  idx[kind].clear();
   for (int l = 0; l < layers; ++l) {
     const float y = layers > 1 ? -c.depth * l / (layers - 1) : 0.0f;
     for (int r = 0; r < nRects; ++r) {
       const float* R = rects[r];
       if (R[2] <= R[0] || R[3] <= R[1]) continue;      // gap wider than the square
-      const float q[4][2] = { { R[0], R[1] }, { R[2], R[1] }, { R[2], R[3] }, { R[0], R[3] } };
-      for (int i = 0; i < 4; ++i) {
-        remixapi_HardcodedVertex& o = v[kind][nv + i];
-        o = {};
-        o.position[0] = q[i][0]; o.position[1] = y; o.position[2] = q[i][1];
-        o.normal[1] = -1.0f;
-        o.texcoord[0] = i == 1 || i == 2 ? 1.0f : 0.0f; o.texcoord[1] = i >= 2 ? 1.0f : 0.0f;
-        o.color = 0xFFFFFFFF;
+      const float w = R[2] - R[0], d = R[3] - R[1];
+      const int strips = std::clamp(static_cast<int>(w * d / minArea + 0.5f), 1, 8);
+      for (int k = 0; k < strips; ++k) {
+        const float f0 = static_cast<float>(k) / strips, f1 = static_cast<float>(k + 1) / strips;
+        const float x0 = w >= d ? R[0] + w * f0 : R[0], x1 = w >= d ? R[0] + w * f1 : R[2];
+        const float z0 = w >= d ? R[1] : R[1] + d * f0, z1 = w >= d ? R[3] : R[1] + d * f1;
+        const float q[4][2] = { { x0, z0 }, { x1, z0 }, { x1, z1 }, { x0, z1 } };
+        const uint32_t b = static_cast<uint32_t>(v[kind].size());
+        for (int i = 0; i < 4; ++i) {
+          remixapi_HardcodedVertex o = {};
+          o.position[0] = q[i][0]; o.position[1] = y; o.position[2] = q[i][1];
+          o.normal[1] = -1.0f;
+          o.texcoord[0] = i == 1 || i == 2 ? 1.0f : 0.0f; o.texcoord[1] = i >= 2 ? 1.0f : 0.0f;
+          o.color = 0xFFFFFFFF;
+          v[kind].push_back(o);
+        }
+        for (uint32_t t : { b, b + 1, b + 2, b, b + 2, b + 3 }) idx[kind].push_back(t);
       }
-      const uint32_t b = static_cast<uint32_t>(nv), t[6] = { b, b + 1, b + 2, b, b + 2, b + 3 };
-      std::memcpy(&idx[kind][ni], t, sizeof(t));
-      nv += 4;
-      ni += 6;
     }
   }
   remixapi_MeshInfoSurfaceTriangles tri = {};
-  tri.vertices_values = v[kind];
-  tri.vertices_count = nv;
-  tri.indices_values = idx[kind];
-  tri.indices_count = ni;
+  tri.vertices_values = v[kind].data();
+  tri.vertices_count = static_cast<uint32_t>(v[kind].size());
+  tri.indices_values = idx[kind].data();
+  tri.indices_count = static_cast<uint32_t>(idx[kind].size());
   tri.material = f.mat;
   remixapi_MeshInfo mesh = {};
   mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
