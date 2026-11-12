@@ -426,7 +426,7 @@ float g_sunWeather = 1.0f;                             // stage atmosphere: clou
 float g_skyBase = -1.0f, g_skySet = -1.0f;             // rtx.skyBrightness from the conf (-1 = not read) / last set
 
 struct Stats {
-  unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace, apiWorld, apiObjects;   // apiWorld: draws its retained instance made; apiObjects: drivers by the API
+  unsigned draws, known, unknown, ff, offscreen, xformed, noCamera, scenes, skyDraws, glassSkipped, screenSpace, apiWorld, apiObjects, unknownExact, unknownKept;   // apiWorld: draws its retained instance made; apiObjects: drivers by the API
   unsigned uiTriggerAt, oqAtUi;                        // draw number of our UI trigger (0 = none); open queries then
   unsigned btb, btbSkipped, btbInstanced, btbCopies;   // BTB effect draws; untransformed; instanced draws, their copies
   unsigned btbRebuilt, btbCamRejected;                 // merged instance buffers built this frame; camera candidates refused
@@ -2670,6 +2670,23 @@ bool before_draw(IDirect3DDevice9* dev) {
   // depth error grows with the distance from the map origin: 0.3-8 m on Noiker ~2.7 km out (run 20261112-023920, "derived
   // W err"), the user's "driver position lost accuracy". c8 below still wins when it agrees.
   if (g_curInfo && !worldSpace && !btbFrame) world_from_c0(wvp, world);
+  // Vertex shaders that are no RBR .vso (a plugin's, created at stage load): the cockpit interior is drawn with them
+  // (run 20261112-224515, Santa Lucia II ~4.3 km out: 12 such draws in cockpit views). With c0 x VP^-1 the interior
+  // slid metres along the view ray and stepped from frame to frame: seen from "behind", body gone, no drivers. Take
+  // world_from_c0 only when c0 is W x VP: its z column must come back too (a HUD shader's c0 need not be one, and
+  // there c0 x VP^-1 reproduces c0 exactly).
+  if (!g_curInfo && !btbFrame) {
+    D3DMATRIX w2;
+    if (world_from_c0(wvp, w2)) {
+      const DMat fwd = mul_d(to_d(w2), g_VPd);
+      double bad = 0.0;
+      for (int r = 0; r < 4; ++r) {
+        const double z = wvp.m[r][2], w = wvp.m[r][3];
+        bad = (std::max)(bad, std::fabs(fwd.m[r * 4 + 2] - z) / (std::max)({ 1.0, std::fabs(z), std::fabs(w) }));
+      }
+      if (bad < 1e-3) { world = w2; ++g_st.unknownExact; } else ++g_st.unknownKept;
+    }
+  }
   if (g_curInfo && (g_curInfo->flags & SH_USES_C8) && all_set(8, 4)) {
     // The shader also gets the exact world matrix in c8-c11: use it when it agrees with the derived one.
     const D3DMATRIX exact = from_rows(&g_c[8]);
@@ -2758,6 +2775,9 @@ void log_frame(const wchar_t* why) {
   clog(L"  car %s: %.0f car draws per frame without their vertex shader", g_ffCar ? L"without vertex capture" : L"vertex-captured",
        g_logFrames ? static_cast<double>(g_ffCarDraws) / g_logFrames : 0.0);
   g_ffCarDraws = 0;
+  if (g_st.unknownExact || g_st.unknownKept || g_st.apiObjects)
+    clog(L"  this frame: %u draws of plugin (non-.vso) vertex shaders placed with the exact matrix, %u kept c0 x VP^-1 (c0 not world x view x projection); %u driver draws by the API",
+         g_st.unknownExact, g_st.unknownKept, g_st.apiObjects);
   clog(L"  opaque cut-outs %s: %.0f alpha-tested draws per frame drawn without alpha test (texture never below ALPHAREF)",
        g_opaqueAlpha ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_opaqueDraws) / g_logFrames : 0.0);
   clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",

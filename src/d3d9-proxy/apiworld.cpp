@@ -46,6 +46,9 @@ struct Key {
   INT base;
   UINT minIdx, numV, startIdx, prims;
   uint32_t state;                                      // alpha test, cull, wrap (material + double-sided)
+  // Streams 1 and 2 (objects only, zero for the static world): the drivers keep TEXCOORD0 in stream 1, COLOR0 in 2.
+  const void* s1; unsigned s1Gen; UINT s1Off, s1Stride;
+  const void* s2; unsigned s2Gen; UINT s2Off, s2Stride;
   bool operator==(const Key& o) const { return std::memcmp(this, &o, sizeof(Key)) == 0; }
 };
 struct KeyHash {
@@ -216,16 +219,18 @@ int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std
   D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
   UINT n = MAXD3DDECLLENGTH + 1;
   if (FAILED(decl->lpVtbl->GetDeclaration(decl, el, &n))) return 2;
-  int posOff = -1, uvOff = -1, uvType = -1, colOff = -1, norOff = -1;
+  int posOff = -1, uvOff = -1, uvType = -1, colOff = -1, norOff = -1, uvStream = 0, colStream = 0;
   for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i) {
     if (el[i].UsageIndex != 0) continue;
+    const int st = el[i].Stream;                       // streams 1 / 2 only where the key holds their buffer (objects)
+    const bool readable = st == 0 || (st == 1 && k.s1) || (st == 2 && k.s2);
     if (el[i].Usage == D3DDECLUSAGE_POSITION) {
       if (el[i].Stream != 0 || (el[i].Type != D3DDECLTYPE_FLOAT3 && el[i].Type != D3DDECLTYPE_FLOAT4)) return 2;
       posOff = el[i].Offset;
-    } else if (el[i].Usage == D3DDECLUSAGE_TEXCOORD && el[i].Stream == 0) {
-      uvOff = el[i].Offset; uvType = el[i].Type;
-    } else if (el[i].Usage == D3DDECLUSAGE_COLOR && el[i].Stream == 0 && el[i].Type == D3DDECLTYPE_D3DCOLOR) {
-      colOff = el[i].Offset;
+    } else if (el[i].Usage == D3DDECLUSAGE_TEXCOORD && readable) {
+      uvOff = el[i].Offset; uvType = el[i].Type; uvStream = st;
+    } else if (el[i].Usage == D3DDECLUSAGE_COLOR && readable && el[i].Type == D3DDECLTYPE_D3DCOLOR) {
+      colOff = el[i].Offset; colStream = st;
     } else if (el[i].Usage == D3DDECLUSAGE_NORMAL && el[i].Stream == 0 && el[i].Type == D3DDECLTYPE_FLOAT3) {
       norOff = el[i].Offset;
     }
@@ -256,6 +261,20 @@ int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std
   if (FAILED(vb->lpVtbl->Lock(vb, vStart, vBytes, &p, D3DLOCK_READONLY)) || !p) return 3;
   std::memcpy(raw.data(), p, vBytes);
   vb->lpVtbl->Unlock(vb);
+  // Streams 1 / 2: the same vertex range (BaseVertexIndex applies to every stream).
+  std::vector<uint8_t> sraw[3];
+  const UINT sstr[3] = { k.stride, k.s1Stride, k.s2Stride };
+  for (int st = 1; st <= 2; ++st) {
+    if (uvStream != st && colStream != st) continue;
+    auto* b = static_cast<IDirect3DVertexBuffer9*>(const_cast<void*>(st == 1 ? k.s1 : k.s2));
+    const UINT so = (st == 1 ? k.s1Off : k.s2Off) + first * sstr[st], sn = k.numV * sstr[st];
+    D3DVERTEXBUFFER_DESC sd = {};
+    if (!sstr[st] || FAILED(b->lpVtbl->GetDesc(b, &sd)) || (sd.Usage & D3DUSAGE_DYNAMIC) || so + sn > sd.Size) return 3;
+    if (FAILED(b->lpVtbl->Lock(b, so, sn, &p, D3DLOCK_READONLY)) || !p) return 3;
+    sraw[st].assign(static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + sn);
+    b->lpVtbl->Unlock(b);
+  }
+  const uint8_t* const sbase[3] = { raw.data(), sraw[1].data(), sraw[2].data() };
 
   std::vector<remixapi_HardcodedVertex> verts(k.numV);
   float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
@@ -263,15 +282,16 @@ int build_vertices(const Key& k, std::vector<remixapi_HardcodedVertex>& out, std
     const uint8_t* v = raw.data() + static_cast<size_t>(i) * k.stride;
     remixapi_HardcodedVertex& o = verts[i];
     std::memcpy(o.position, v + posOff, 12);
+    const uint8_t* uv = sbase[uvStream] + static_cast<size_t>(i) * sstr[uvStream] + uvOff;
     if (uvType == D3DDECLTYPE_FLOAT16_2) {
       uint16_t h[2];
-      std::memcpy(h, v + uvOff, 4);
+      std::memcpy(h, uv, 4);
       o.texcoord[0] = half_to_float(h[0]); o.texcoord[1] = half_to_float(h[1]);
     } else {
-      std::memcpy(o.texcoord, v + uvOff, 8);
+      std::memcpy(o.texcoord, uv, 8);
     }
     o.color = 0xFFFFFFFFu;
-    if (colOff >= 0) std::memcpy(&o.color, v + colOff, 4);
+    if (colOff >= 0) std::memcpy(&o.color, sbase[colStream] + static_cast<size_t>(i) * sstr[colStream] + colOff, 4);
     if (norOff >= 0) std::memcpy(o.normal, v + norOff, 12);
     for (int a = 0; a < 3; ++a) { lo[a] = (std::min)(lo[a], o.position[a]); hi[a] = (std::max)(hi[a], o.position[a]); }
   }
@@ -566,8 +586,27 @@ bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float wor
   k.offset = offset; k.stride = stride; k.base = d.base; k.minIdx = d.minIdx; k.numV = d.numV;
   k.startIdx = d.startIdx; k.prims = d.prims;
   k.state = (func & 0xF) | ((ref & 0xFF) << 4) | ((cull & 0x3) << 12) | ((wu & 0x7) << 14) | ((wv & 0x7) << 17);
+  IDirect3DVertexBuffer9* sb[3] = {};                  // streams 1 and 2 the declaration reads (drivers: UV, colour)
+  if (decl) {
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+    UINT n = MAXD3DDECLLENGTH + 1;
+    bool uses[3] = {};
+    if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n)))
+      for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i)
+        if (el[i].Stream == 1 || el[i].Stream == 2) uses[el[i].Stream] = true;
+    for (int st = 1; st <= 2; ++st) {
+      if (!uses[st]) continue;
+      UINT so = 0, ss = 0;
+      dev->lpVtbl->GetStreamSource(dev, st, &sb[st], &so, &ss);
+      if (!sb[st]) continue;
+      if (st == 1) { k.s1 = sb[1]; k.s1Gen = g_gen[sb[1]]; k.s1Off = so; k.s1Stride = ss; }
+      else { k.s2 = sb[2]; k.s2Gen = g_gen[sb[2]]; k.s2Off = so; k.s2Stride = ss; }
+    }
+  }
+  const bool streamsStatic = !(sb[1] && g_dynamic.count(sb[1])) && !(sb[2] && g_dynamic.count(sb[2]));
   auto it = g_objects.find(k);
-  if (it == g_objects.end() && vb && ib && decl && tex && stride && !g_dynamic.count(vb) && !g_dynamic.count(ib)) {
+  if (it == g_objects.end() && vb && ib && decl && tex && stride && !g_dynamic.count(vb) && !g_dynamic.count(ib) &&
+      streamsStatic) {
     Entry& e = g_objects[k];
     e.failed = true;
     const uint64_t hx = rbrrtx_texture_hash(tex);
@@ -600,9 +639,13 @@ bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float wor
     if (!e.failed) {
       e.sway = cull == D3DCULL_NONE;
       if (g_watched.insert(vb).second | g_watched.insert(ib).second) rbrrtx_watch_buffer_writes(vb, ib);
+      for (int st = 1; st <= 2; ++st)
+        if (sb[st] && g_watched.insert(sb[st]).second) rbrrtx_watch_buffer_writes(sb[st], nullptr);
     }
     it = g_objects.find(k);
   }
+  for (int st = 1; st <= 2; ++st)
+    if (sb[st]) sb[st]->lpVtbl->Release(sb[st]);
   if (vb) vb->lpVtbl->Release(vb);
   if (ib) ib->lpVtbl->Release(ib);
   if (decl) decl->lpVtbl->Release(decl);
@@ -735,7 +778,7 @@ void rbrrtx_apiworld_written(const void* buffer) {
   if (!buffer || !g_watched.erase(buffer)) return;
   g_dynamic.insert(buffer);
   for (auto it = g_objects.begin(); it != g_objects.end();) {
-    if (it->first.vb == buffer || it->first.ib == buffer) {
+    if (it->first.vb == buffer || it->first.ib == buffer || it->first.s1 == buffer || it->first.s2 == buffer) {
       if (it->second.mesh && g_destroyMesh) g_destroyMesh(it->second.mesh);
       it = g_objects.erase(it);
     } else ++it;
