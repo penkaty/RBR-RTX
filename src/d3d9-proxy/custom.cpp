@@ -367,6 +367,10 @@ void publish() {
           "                asset inputs:diffuse_texture = @" + dds + "@ (\n"
           "                    colorSpace = \"auto\"\n"
           "                )\n"
+          // Matte: the texture is often an atlas shared with ground or walls, and without a value the whole of it takes
+          // Remix's default roughness 0.5 (user 2026-11-13: a shiny grass patch in the menu, twin 34ED98A2444D100D).
+          "                float inputs:reflection_roughness_constant = 0.9\n"
+          "                float inputs:metallic_constant = 0\n"
           "                bool inputs:enable_emission = 1\n"
           "                asset inputs:emissive_mask_texture = @" + mask + "@ (\n"
           "                    colorSpace = \"auto\"\n"

@@ -24,6 +24,7 @@
 #include "common.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -67,6 +68,24 @@ bool g_dirty = false, g_listsDirty = true, g_modDirty = false, g_noPuddleRefused
 unsigned g_newThisRun = 0, g_frame = 0, g_readsThisFrame = 0, g_segments = 0;
 std::chrono::steady_clock::time_point g_lastNew, g_lastSend, g_stageStart;
 bool g_inStage = false, g_stageModSent = false;
+unsigned g_unreadable = 0, g_drawsRead = 0, g_noneVerdicts = 0;   // this stage
+double g_nextDiag = 0;
+
+// Road mask (runtime: game value "__wet.roadMask", RBR-RTX-remixplus documentation/RemixWetAPI.md): where the physics
+// has tarmac or gravel, on a grid of 1 m cells around the car. One texture often covers road and verge, and old stages
+// draw all their ground from one atlas, so only the position can keep puddles off the grass. The window follows the
+// car in steps; cells that scroll in are asked from the collision a few hundred per frame.
+struct Mask {
+  bool enabled = true;
+  int n = 160;                                           // cells per side
+  float cell = 1.0f;
+  int perFrame = 600;                                    // collision queries per frame while cells are open
+  int ox = 0, oz = 0;                                    // cell index (world / cell) of the window's corner
+  bool have = false, dirty = false, sentAny = false;
+  std::vector<signed char> v;                            // -1 not asked yet, 0 no road, 1 road
+  size_t cursor = 0, open = 0;
+  unsigned sends = 0;
+} g_mask;
 
 // The game's collision query. __fastcall with a spare edx stands in for __thiscall (ecx = this, callee cleans up).
 typedef int(__fastcall* CollectFn)(void* world, void* edx, const float* mn, const float* mx, int* list);
@@ -93,19 +112,26 @@ bool probe_available() {
   return g_probeOk;
 }
 
-// Surface id A under the render-space point (Y up), or -1. No C++ objects in here: structured exception handling.
-int surface_at(const float p[3]) {
-  static int list[4100];
+// What the queries of a stage came to (logged: a stage where nothing is found must say why).
+struct QueryStats { unsigned calls = 0, noWorld = 0, noLeaves = 0, miss = 0, undefined = 0, found = 0; double seconds = 0; } g_q;
+
+// Surface id A at the first collision triangle the vertical segment through the render-space point p (Y up) meets, from
+// `up` above it to `down` below. -1 nothing there, 0 a triangle without a surface, -2 the query faulted.
+// No C++ objects in here: structured exception handling.
+int surface_at(const float p[3], float up = 1.0f, float down = 1.0f) {
+  static int list[8200];
   int id = -1;
+  ++g_q.calls;
   __try {
     void* world = *reinterpret_cast<void**>(kWorldPtr);
-    if (!world || !readable(world, 0x1018) || !*reinterpret_cast<void**>(static_cast<char*>(world) + 8)) return -1;
-    const float mn[3] = { p[0] - 0.25f, p[2] - 0.25f, p[1] - 1.25f }, mx[3] = { p[0] + 0.25f, p[2] + 0.25f, p[1] + 1.25f };
-    const float from[3] = { p[0], p[2], p[1] + 1.0f }, to[3] = { p[0], p[2], p[1] - 1.0f };   // physics space: Z up
+    if (!world || !readable(world, 0x1018) || !*reinterpret_cast<void**>(static_cast<char*>(world) + 8)) { ++g_q.noWorld; return -1; }
+    const float mn[3] = { p[0] - 0.25f, p[2] - 0.25f, p[1] - down - 0.25f }, mx[3] = { p[0] + 0.25f, p[2] + 0.25f, p[1] + up + 0.25f };
+    const float from[3] = { p[0], p[2], p[1] + up }, to[3] = { p[0], p[2], p[1] - down };   // physics space: Z up
     float out[32] = {};
     list[0] = 0;
-    if (!(reinterpret_cast<CollectFn>(kCollect)(world, nullptr, mn, mx, list) & 0xFF) || list[0] <= 0 || list[0] > 4000) return -1;
+    if (!(reinterpret_cast<CollectFn>(kCollect)(world, nullptr, mn, mx, list) & 0xFF) || list[0] <= 0 || list[0] > 8000) { ++g_q.noLeaves; return -1; }
     if (reinterpret_cast<SegmentFn>(kSegment)(world, nullptr, from, to, out, list)) id = static_cast<int>(out[10]) & 0xFF;
+    if (id < 0) ++g_q.miss; else if (id == 0) ++g_q.undefined; else ++g_q.found;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     ++g_faults;
     id = -2;
@@ -162,6 +188,10 @@ void load_cfg() {
   g_cfg.menu = f(L"probe_in_menu", 1.0f) != 0.0f;
   g_cfg.puddleMinShare = std::clamp(f(L"puddle_min_share", g_cfg.puddleMinShare), 0.05f, 1.0f);
   g_cfg.samples = std::clamp(static_cast<int>(f(L"samples", 32.0f)), 8, 512);
+  g_mask.enabled = f(L"road_mask", 1.0f) != 0.0f;
+  g_mask.n = std::clamp(static_cast<int>(f(L"road_mask_cells", 160.0f)), 32, 512) & ~3;
+  g_mask.cell = std::clamp(f(L"road_mask_cell_m", 1.0f), 0.25f, 4.0f);
+  g_mask.perFrame = std::clamp(static_cast<int>(f(L"road_mask_queries_per_frame", 600.0f)), 16, 20000);
   wchar_t pf[256] = {};
   GetPrivateProfileStringW(L"surfaces", L"puddle_surfaces", L"", pf, 256, path);
   if (pf[0]) {
@@ -268,7 +298,7 @@ void settle(uint64_t hash, const Probe& p) {
     v.fam = best;
   }
   g_done[hash] = v;
-  if (v.fam == F_NONE) return;                           // kept for this scene only (rbrrtx_surfmap_frame), never saved
+  if (v.fam == F_NONE) { ++g_noneVerdicts; return; }                           // kept for this scene only (rbrrtx_surfmap_frame), never saved
   g_dirty = g_listsDirty = g_modDirty = true;
   g_lastNew = std::chrono::steady_clock::now();
   int top[3] = { 0, 0, 0 };                              // the three most frequent surface ids, for the log
@@ -323,6 +353,8 @@ bool rbrrtx_surfmap_wants(unsigned long long hash) {
 void rbrrtx_surfmap_samples(unsigned long long hash, const float* pts, unsigned n) {
   Probe& p = g_open[hash];
   ++p.draws;
+  ++g_drawsRead;
+  if (!n) ++g_unreadable;
   for (unsigned i = 0; i < n && g_faults < 3; ++i) {
     const int id = surface_at(pts + i * 3);
     ++g_segments;
@@ -345,6 +377,103 @@ void rbrrtx_surfmap_twins(const char* list) {
   g_listsDirty = true;
 }
 
+// The window's cells from the collision, a batch per frame; sent to the runtime when a pass is complete.
+void mask_frame(bool inMenu) {
+  Mask& m = g_mask;
+  const RbrApiExt* x = rbrrtx_api_ext();
+  typedef int(__stdcall* SetGameValueFn)(const char* key, const char* value);
+  if (!m.enabled || !x || !x->setGameValue) return;
+  float car[20];
+  if (inMenu || !probe_available() || g_faults >= 3 || !rbrrtx_player_car_raw(car)) {
+    if (m.sentAny) { reinterpret_cast<SetGameValueFn>(x->setGameValue)("__wet.roadMask", ""); m.sentAny = false; }
+    m.have = false;
+    return;
+  }
+  if (!g_famLoaded) load_families();
+  const float cx = car[16], cz = car[17], cy = car[18];   // physics x, y, z = render x, z, y
+  const int wantX = static_cast<int>(std::floor(cx / m.cell)) - m.n / 2, wantZ = static_cast<int>(std::floor(cz / m.cell)) - m.n / 2;
+  const int step = m.n / 10;                              // recentre once the car is a tenth of the window off centre
+  if (!m.have || m.v.size() != static_cast<size_t>(m.n) * m.n) {
+    m.v.assign(static_cast<size_t>(m.n) * m.n, -1);
+    m.ox = wantX; m.oz = wantZ; m.have = true; m.cursor = 0; m.open = m.v.size();
+  } else if (std::abs(wantX - m.ox) >= step || std::abs(wantZ - m.oz) >= step) {
+    std::vector<signed char> nv(m.v.size(), -1);
+    const int dx = wantX - m.ox, dz = wantZ - m.oz;
+    size_t open = 0;
+    for (int z = 0; z < m.n; ++z)
+      for (int xx = 0; xx < m.n; ++xx) {
+        const int sx = xx + dx, sz = z + dz;
+        signed char c = -1;
+        if (sx >= 0 && sx < m.n && sz >= 0 && sz < m.n) c = m.v[static_cast<size_t>(sz) * m.n + sx];
+        nv[static_cast<size_t>(z) * m.n + xx] = c;
+        open += c < 0;
+      }
+    m.v.swap(nv);
+    m.ox = wantX; m.oz = wantZ; m.cursor = 0; m.open = open;
+  }
+  if (m.open) {
+    LARGE_INTEGER f, t0, t1;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t0);
+    int budget = m.perFrame;
+    for (; m.cursor < m.v.size() && budget > 0; ++m.cursor) {
+      if (m.v[m.cursor] >= 0) continue;
+      const int xx = static_cast<int>(m.cursor % m.n), z = static_cast<int>(m.cursor / m.n);
+      const float p[3] = { (m.ox + xx + 0.5f) * m.cell, cy, (m.oz + z + 0.5f) * m.cell };
+      const int id = surface_at(p, 40.0f, 60.0f);          // hills: the ground can be far above or below the car
+      m.v[m.cursor] = id > 0 && (g_cfg.puddleFams & (1u << g_fam[id])) ? 1 : 0;
+      --m.open;
+      --budget;
+    }
+    QueryPerformanceCounter(&t1);
+    g_q.seconds += static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(f.QuadPart);
+    if (m.cursor >= m.v.size()) m.open = 0;
+    if (!m.open) m.dirty = true;
+  }
+  if (!m.dirty) return;
+  m.dirty = false;
+  std::string value;
+  char head[96];
+  sprintf_s(head, "%.3f %.3f %.3f %d ", m.ox * m.cell, m.oz * m.cell, m.cell, m.n);
+  value.reserve(m.v.size() / 4 + 96);
+  value = head;
+  size_t road = 0;
+  for (size_t i = 0; i < m.v.size(); i += 4) {
+    int d = 0;
+    for (int k = 0; k < 4; ++k) if (m.v[i + k] > 0) { d |= 8 >> k; ++road; }
+    value += "0123456789abcdef"[d];
+  }
+  reinterpret_cast<SetGameValueFn>(x->setGameValue)("__wet.roadMask", value.c_str());
+  m.sentAny = true;
+  if (++m.sends <= 3 || m.sends % 100 == 0)
+    slog(L"surfaces: road mask sent (%u): %d x %d cells of %.2f m at (%.0f, %.0f), %zu road cells (%.0f %%)", m.sends, m.n, m.n, m.cell,
+         m.ox * m.cell, m.oz * m.cell, road, 100.0 * road / m.v.size());
+}
+
+// One line per stage after a few seconds: what the collision answered, so an empty result explains itself.
+void stage_diag() {
+  float car[20];
+  int under = -3;
+  if (rbrrtx_player_car_raw(car)) {
+    const float p[3] = { car[16], car[18], car[17] };
+    under = surface_at(p, 2.0f, 4.0f);
+  }
+  unsigned mapsSelf = 0, mapsCount = 0;
+  if (readable(reinterpret_cast<void*>(0x016592B8 + 0x800), 8)) {
+    mapsSelf = *reinterpret_cast<unsigned*>(0x016592B8 + 0x800);
+    mapsCount = *reinterpret_cast<unsigned*>(0x016592B8 + 0x804);
+  }
+  size_t known = 0;
+  for (const auto& kv : g_done) known += kv.second.fam != F_NONE;
+  slog(L"surfaces: stage check: surface under the car = %d (%S); collision queries %u: %u found, %u without a surface, %u missed, %u no leaves, "
+       L"%u no world, %u faults, %.1f ms in the road mask; material maps loaded %s (%u); draws read %u (%u unreadable), textures judged %zu, "
+       L"%u without a result, %zu open; road mask %s, %zu cells open",
+       under, under > 0 ? kFamName[g_fam[under] ? g_fam[under] : F_OTHER] : under == 0 ? "undefined" : under == -3 ? "no car" : "nothing hit",
+       g_q.calls, g_q.found, g_q.undefined, g_q.miss, g_q.noLeaves, g_q.noWorld, g_faults, g_q.seconds * 1000.0,
+       mapsSelf ? L"yes" : L"NO", mapsCount, g_drawsRead, g_unreadable, known, g_noneVerdicts, g_open.size(),
+       g_mask.sentAny ? L"sent" : L"not sent", g_mask.open);
+}
+
 // Per Present.
 void rbrrtx_surfmap_frame(bool inMenu, bool apiOk) {
   ++g_frame;
@@ -354,6 +483,10 @@ void rbrrtx_surfmap_frame(bool inMenu, bool apiOk) {
     g_inStage = !inMenu;
     g_stageStart = now;
     g_stageModSent = false;
+    g_unreadable = g_drawsRead = g_noneVerdicts = 0;
+    g_q = QueryStats();
+    g_nextDiag = 6.0;
+    g_mask.have = false;
     g_open.clear();                                      // counts of a half-probed texture belong to the stage left
     for (auto it = g_done.begin(); it != g_done.end();)  // "no surface found" held for that scene only: asked again here
       it = it->second.fam == F_NONE ? g_done.erase(it) : std::next(it);
@@ -372,6 +505,15 @@ void rbrrtx_surfmap_frame(bool inMenu, bool apiOk) {
          g_done.size(), g_newThisRun, g_segments);
   }
   if (g_dirty && quiet >= 2.0) { g_dirty = false; save_cache(); }
+  mask_frame(inMenu);
+  // A texture with no surface found is asked again every few seconds: the first frames of a stage can come before its
+  // collision data, and a texture's first draws can be the far ones.
+  if (g_inStage && g_frame % 240 == 0)
+    for (auto it = g_done.begin(); it != g_done.end();) it = it->second.fam == F_NONE ? g_done.erase(it) : std::next(it);
+  if (g_inStage && inStage >= g_nextDiag && g_nextDiag < 200.0) {
+    g_nextDiag = g_nextDiag < 30.0 ? g_nextDiag + 12.0 : 1e9;
+    stage_diag();
+  }
 }
 
 void rbrrtx_surfmap_status(wchar_t* out, size_t n) {
