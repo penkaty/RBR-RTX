@@ -34,6 +34,7 @@ bool rbrrtx_headlights_is_aux(unsigned) { return false; }
 bool rbrrtx_headlights_aux_on() { return false; }
 bool rbrrtx_headlights_is_brake_lens(unsigned) { return false; }
 bool rbrrtx_headlights_is_head_lamp(unsigned) { return false; }
+bool rbrrtx_headlights_head_lamp_at(unsigned, const float*, bool* needPos) { if (needPos) *needPos = false; return false; }
 int rbrrtx_headlights_rear_lens(unsigned, const float*, bool* needPos) { if (needPos) *needPos = false; return 0; }
 bool rbrrtx_headlights_forward(float*) { return false; }
 bool rbrrtx_headlights_is_lamp_glass(unsigned) { return false; }

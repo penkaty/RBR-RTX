@@ -7201,18 +7201,19 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   // Car lamp parts through the Remix API (user 2026-11-13: "revert lamps to API"): litparts.cpp says whether this car
   // draw is a lamp part and whether it glows now; apiworld.cpp draws it as an API mesh in its off or on look (the game's
-  // texture, the glow from its own mask), and the D3D9 draw is skipped. The twin texture below stays for brake discs and
-  // as the path with [lamps] api = 0.
+  // texture, the glow from its own mask), and the D3D9 draw is skipped. Brake discs too, cold or hot (the heat colour as
+  // the emissive). The twin texture below stays as the path with [lamps] api = 0 and for draws the API refuses.
   void* litTwin = nullptr;
   const bool litAsked = g_litOn && g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid;
   if (litAsked) {
     litTwin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, g_carWorld,
                                    (g_curInfo->flags & SH_GLASS_VS) != 0);
     const RbrLitDecision& ld = rbrrtx_litparts_decision();
-    if (g_lampsApi && ld.lampPart && g_testMode == 0) {
+    if (g_lampsApi && (ld.lampPart || ld.brakeDisc || ld.kind >= 0 || ld.texture) && g_testMode == 0) {
       RbrLampLook look;
       look.glow = ld.kind >= 0 ? ld.glow : 0.0f;
       look.emissiveFile = ld.mask.empty() ? nullptr : ld.mask.c_str();
+      look.texture = ld.texture;
       DWORD lb = FALSE;
       dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &lb);
       look.roughness = ld.glass || lb ? 0.05f : 0.35f;

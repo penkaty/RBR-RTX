@@ -848,6 +848,10 @@ std::vector<LampBox> g_lampBoxes;                      // bounds of each lamp pa
 // them DIMMER"). Role: 1 tail lens (e_light_lb / _rb, lit or not), 2 unlit brake lens (e_light_brake_*, not _lit).
 struct RearPart { int role = 0; unsigned n = 0; LampBox box; };
 std::vector<RearPart> g_rearParts;
+// The head lamp parts (e_light_lf / _rf, lit or not, not their glass) with their root-frame boxes. A part of several face
+// blocks (Fabia RS Rally2: CarLight + CarGlass + a third over one 2652-vertex block) is drawn one block at a time, each
+// draw a part of the vertex range: the count never matched and its head lamps never glowed (user 2026-11-13, 19:24).
+std::vector<RearPart> g_headParts;
 
 // Auxiliary lamp sets named like the stock lamps (Celica TA64: e_light_bumper, e_light_upper, e_light_84 .. _86,
 // e_light_wing with _lit and _cover variants, each with its own Point_light_<set>_l / _r). Which set the car carries is in
@@ -1003,7 +1007,7 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
       box.side = low.find("_lf") != std::string::npos ? 1 : 2;
       box.mid = mid;
       box.n = n;
-      if (low.find("glass") == std::string::npos && n >= 16) g_car.headLampVerts.push_back(n);
+      if (low.find("glass") == std::string::npos && n >= 16) { g_car.headLampVerts.push_back(n); g_headParts.push_back({ 1, n, box }); }
     }
     if (n >= 16 && !auxPart) g_lampBoxes.push_back(box);   // placeholder parts of a few vertices are not lamps
     if (low.find("glass") != std::string::npos) {      // the flat front that glows (user 2026-11-09)
@@ -1120,6 +1124,7 @@ void load_car_model(const std::wstring& file) {
   g_lensHits.clear();
   g_lampBoxes.clear();
   g_rearParts.clear();
+  g_headParts.clear();
   g_auxSets.clear();
   g_car.file = file;
   std::ifstream f(file, std::ios::binary);
@@ -2773,6 +2778,18 @@ bool rbrrtx_headlights_aux_on() {                       // as send_lamps: extra_
   return g_cfg.extra && g_mode != kOff && (g_cfg.extra != 2 || g_mode == kBrights);
 }
 
+// The middle of the bonnet in the world (render space, Y up): the head lamps' midpoint, `back` metres toward the cabin and
+// `up` metres higher. Engine steam and fire start there (effects.cpp): the game's emitter has no place of its own and the
+// car's centre put the smoke inside the cabin (user 2026-11-13, BMW E30 at 19:21).
+bool rbrrtx_headlights_bonnet(float back, float up, float out[3]) {
+  if (!g_haveRoot || !g_car.lamps) return false;
+  const V3 mid = (g_car.lf + g_car.rf) * 0.5f;
+  const V3 p = mid - V3{ 0, 0, g_car.forward.z } * back + V3{ 0, up, 0 };
+  const V3 w = to_world(g_lastRoot, p);
+  out[0] = w.x; out[1] = w.y; out[2] = w.z;
+  return true;
+}
+
 bool rbrrtx_headlights_forward(float out[3]) {
   if (!g_haveRoot) return false;
   const V3 f = norm(row(g_lastRoot, 2) * g_car.forward.z);
@@ -2810,6 +2827,31 @@ int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* need
     if (dist < best) { best = dist; role = r.role; }
   }
   return role;
+}
+
+// A draw is a head lamp part: by its vertex count, else (a draw of fewer vertices than a head lamp part: one face block of
+// it) by its centre inside (or within 3 cm of) that part's box. needPos: the place decides, call again with worldPos.
+bool rbrrtx_headlights_head_lamp_at(unsigned numV, const float* worldPos, bool* needPos) {
+  if (needPos) *needPos = false;
+  bool partial = false;
+  for (const RearPart& h : g_headParts) {
+    if (h.n == numV) return true;
+    if (numV >= 3 && numV < h.n) partial = true;
+  }
+  if (!partial) return false;
+  if (!worldPos) { if (needPos) *needPos = true; return false; }
+  if (!g_haveRoot) return false;
+  const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(g_lastRoot, 3);
+  V3 l = {};
+  const V3 ax[3] = { row(g_lastRoot, 0), row(g_lastRoot, 1), row(g_lastRoot, 2) };
+  float* lc[3] = { &l.x, &l.y, &l.z };
+  for (int k = 0; k < 3; ++k) { const float s = dot(ax[k], ax[k]); *lc[k] = s > 1e-8f ? dot(d, ax[k]) / s : 0.0f; }
+  for (const RearPart& h : g_headParts) {
+    if (numV >= h.n) continue;
+    const V3 c = { std::clamp(l.x, h.box.lo.x, h.box.hi.x), std::clamp(l.y, h.box.lo.y, h.box.hi.y), std::clamp(l.z, h.box.lo.z, h.box.hi.z) };
+    if (len(c - l) < 0.03f) return true;
+  }
+  return false;
 }
 
 int rbrrtx_headlights_lamp_end(const float worldPos[3]) {

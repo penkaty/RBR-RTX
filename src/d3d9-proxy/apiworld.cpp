@@ -797,25 +797,50 @@ bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world
   dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride);
   dev->lpVtbl->GetIndices(dev, &ib);
   dev->lpVtbl->GetVertexDeclaration(dev, &decl);
-  dev->lpVtbl->GetTexture(dev, 0, &tex);
+  if (look.texture) { tex = static_cast<IDirect3DBaseTexture9*>(look.texture); tex->lpVtbl->AddRef(tex); }
+  else dev->lpVtbl->GetTexture(dev, 0, &tex);
   Key k = {};
   k.vb = vb; k.ib = ib; k.decl = decl; k.tex = tex;
   k.vbGen = vb ? g_gen[vb] : 0;
   k.ibGen = ib ? g_gen[ib] : 0;
   k.offset = offset; k.stride = stride; k.base = d.base; k.minIdx = d.minIdx; k.numV = d.numV;
   k.startIdx = d.startIdx; k.prims = d.prims;
+  // Streams 1 / 2 the declaration reads: the car shaders keep TEXCOORD0 on stream 1 (CarTexture.vso: s0 POSITION +
+  // NORMAL, s1 TEXCOORD0); without them every car lamp was refused as "vertex layout" (run 20261113-191621, 0 drawn).
+  IDirect3DVertexBuffer9* sb[3] = {};
+  if (decl) {
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+    UINT n = MAXD3DDECLLENGTH + 1;
+    bool uses[3] = {};
+    if (SUCCEEDED(decl->lpVtbl->GetDeclaration(decl, el, &n)))
+      for (UINT i = 0; i < n && el[i].Stream != 0xFF; ++i)
+        if (el[i].Stream == 1 || el[i].Stream == 2) uses[el[i].Stream] = true;
+    for (int st = 1; st <= 2; ++st) {
+      if (!uses[st]) continue;
+      UINT so = 0, ss = 0;
+      dev->lpVtbl->GetStreamSource(dev, st, &sb[st], &so, &ss);
+      if (!sb[st]) continue;
+      if (st == 1) { k.s1 = sb[1]; k.s1Gen = g_gen[sb[1]]; k.s1Off = so; k.s1Stride = ss; }
+      else { k.s2 = sb[2]; k.s2Gen = g_gen[sb[2]]; k.s2Off = so; k.s2Stride = ss; }
+    }
+  }
+  const bool streamsStatic = !(sb[1] && g_dynamic.count(sb[1])) && !(sb[2] && g_dynamic.count(sb[2]));
   const uint32_t state = (func & 0xF) | ((ref & 0xFF) << 4) | ((cull & 0x3) << 12) | ((wu & 0x7) << 14) | ((wv & 0x7) << 17);
   const uint64_t hx = tex ? rbrrtx_texture_hash(tex) : 0;
   remixapi_MeshHandle mesh = nullptr;
   auto it = g_lampParts.find(k);
   if (it == g_lampParts.end() && vb && ib && decl && tex && stride && hx && !g_dynamic.count(vb) && !g_dynamic.count(ib) &&
-      tex->lpVtbl->GetType(tex) == D3DRTYPE_TEXTURE) {
+      streamsStatic && tex->lpVtbl->GetType(tex) == D3DRTYPE_TEXTURE) {
     LampEntry& e = g_lampParts[k];
     float c[3], r;
     const int why = build_vertices(k, e.verts, e.idx, c, r, true);
     e.failed = why >= 0;
     if (e.failed && ++g_lampRefused <= 4) wlog(L"api lamps: lamp draw with texture %016llX (%u vertices) stays D3D9: %s", hx, d.numV, kRefuse[why]);
-    if (!e.failed && (g_watched.insert(vb).second | g_watched.insert(ib).second)) rbrrtx_watch_buffer_writes(vb, ib);
+    if (!e.failed) {
+      if (g_watched.insert(vb).second | g_watched.insert(ib).second) rbrrtx_watch_buffer_writes(vb, ib);
+      for (int st = 1; st <= 2; ++st)
+        if (sb[st] && g_watched.insert(sb[st]).second) rbrrtx_watch_buffer_writes(sb[st], nullptr);
+    }
     it = g_lampParts.find(k);
   }
   if (it != g_lampParts.end() && !it->second.failed) {
@@ -851,6 +876,8 @@ bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world
   if (ib) ib->lpVtbl->Release(ib);
   if (decl) decl->lpVtbl->Release(decl);
   if (tex) tex->lpVtbl->Release(tex);
+  for (int st = 1; st <= 2; ++st)
+    if (sb[st]) sb[st]->lpVtbl->Release(sb[st]);
   if (!mesh) return false;
   remixapi_InstanceInfoBlendEXT bl = {};
   bl.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;

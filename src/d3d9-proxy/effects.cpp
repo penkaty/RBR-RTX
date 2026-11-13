@@ -1828,6 +1828,9 @@ Row row_defaults(int i) {
   return r;
 }
 
+// Engine steam / fire start point behind the head lamps (effects.ini [fx_steam] bonnet_back / bonnet_up, metres).
+float g_bonnetBack = 0.55f, g_bonnetUp = 0.12f;
+
 void rows_load(bool found) {
   for (int i = 0; i < R_COUNT; ++i) {
     g_rows[i] = row_defaults(i);
@@ -1840,6 +1843,10 @@ void rows_load(bool found) {
     r.merge = cfg_float(L"merge_metres", r.merge, 0.1f, 50.0f);
     r.maxDist = cfg_float(L"max_distance", r.maxDist, 5.0f, 5000.0f);
     r.hideCockpit = cfg_float(L"hide_in_cockpit", r.hideCockpit ? 1.0f : 0.0f, 0.0f, 1.0f) >= 0.5f;
+    if (i == R_STEAM) {
+      g_bonnetBack = cfg_float(L"bonnet_back", g_bonnetBack, -3.0f, 3.0f);
+      g_bonnetUp = cfg_float(L"bonnet_up", g_bonnetUp, -1.0f, 2.0f);
+    }
   }
   g_sec = L"dust";
   g_emRow.clear();
@@ -2076,11 +2083,19 @@ void draw_rows() {
     for (const Site& s : r.sites) {
       if (!s.t || now - s.t >= static_cast<ULONGLONG>(r.holdMs)) continue;
       float p[3] = { s.p[0], s.p[1], s.p[2] };
+      float x, y, z;
+      float bon[3];
+      const bool engine = i == R_STEAM || i == R_FIRE || i == R_FIRE_SMOKE;
       if (std::fabs(p[0]) + std::fabs(p[1]) + std::fabs(p[2]) < 0.01f) {   // car-space emitter: no world position of its own
-        if (!haveCar) continue;
-        p[0] = car[16]; p[1] = car[17]; p[2] = car[18];
+        if (engine && rbrrtx_headlights_bonnet(g_bonnetBack, g_bonnetUp, bon)) {   // engine damage: from the bonnet, not the cabin
+          x = bon[0]; y = bon[1] + r.c.height; z = bon[2];
+        } else {
+          if (!haveCar) continue;
+          x = car[16]; y = car[18] + r.c.height; z = car[17];           // physics -> render: Y and Z swapped
+        }
+      } else {
+        x = p[0]; y = p[2] + r.c.height; z = p[1];
       }
-      const float x = p[0], y = p[2] + r.c.height, z = p[1];           // physics -> render: Y and Z swapped
       if (haveView) {
         const float dx = x - g_viewPos[0], dy = y - g_viewPos[1], dz = z - g_viewPos[2];
         if (dx * dx + dy * dy + dz * dz > r.maxDist * r.maxDist) continue;

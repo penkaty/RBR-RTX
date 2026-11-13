@@ -167,6 +167,7 @@ int rbrrtx_headlights_game_lamps();                             // the game's la
 int rbrrtx_headlights_on();                                     // 1 while the car's lamps are on for the player (L, automatic), whatever the pulse sends
 int rbrrtx_headlights_lamp_end(const float worldPos[3]);        // a point on the car: +1 nearer the head lamps, -1 nearer the rear lamps, 0 unknown
 bool rbrrtx_headlights_has_lens();                              // this car's model has lamp glass / lens / cover meshes of its own
+bool rbrrtx_headlights_bonnet(float back, float up, float out[3]);   // bonnet point in the world (render space), false before the first pose
 bool rbrrtx_headlights_forward(float out[3]);                   // the car's forward direction in the world, false before its first pose
 bool rbrrtx_headlights_is_lamp_glass(unsigned numV);            // a draw of this vertex count is one of the model's front lamp glass meshes
 bool rbrrtx_headlights_is_aux_glass(unsigned numV);             // the same for the auxiliary lamps' glass
@@ -180,6 +181,7 @@ bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of thi
 // A rear lens of the model: 1 tail lens (e_light_lb / _rb), 2 unlit brake lens, 0 none / not known. When a tail and a
 // brake lens share the vertex count (*needPos = true) only the draw's place (world, its vertices' centre) tells them apart.
 int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* needPos);
+bool rbrrtx_headlights_head_lamp_at(unsigned numV, const float* worldPos, bool* needPos);   // + one face block of a head lamp part, by place
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
 float rbrrtx_sun_shown_elevation();                             // the sun's height as lit now (comp.cpp; debug sun, night hold)
@@ -221,7 +223,8 @@ bool rbrrtx_apiworld_wants(bool sway);                          // this class is
 bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d); // true = its instance draws it: skip the D3D9 draw
 // A car lamp part's look through the API (apiworld.cpp rbrrtx_apiworld_lamp): glow 0 = off; emissiveFile = mask file
 // (null = the part's own texture); alphaAdd = alpha raised on a blended (glass) draw; nudge = metres off the surface.
-struct RbrLampLook { float glow = 0.0f; const wchar_t* emissiveFile = nullptr; float roughness = 0.4f; unsigned alphaAdd = 0; float nudge[3] = {}; };
+// texture: drawn instead of the bound texture 0 (a lit-atlas car: the unlit atlas with the lamps off, the lit one with them on).
+struct RbrLampLook { float glow = 0.0f; const wchar_t* emissiveFile = nullptr; float roughness = 0.4f; unsigned alphaAdd = 0; float nudge[3] = {}; void* texture = nullptr; };
 bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world[16], const RbrLampLook& look);
 bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float world[16]);   // drivers: API mesh drawn now with W (row-major); true = skip the D3D9 draw
 void rbrrtx_apiworld_replay();                                  // first BeginScene of a frame
@@ -262,7 +265,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
 // What rbrrtx_litparts_draw decided for the draw just passed (comp.cpp: car lamp parts through the API). lampPart = the
 // draw is one of the car's lamp parts (lit or not); kind >= 0 = it glows now with glow, mask = its emission mask file
 // (null = its own texture); disc = a brake disc (stays on its twin texture).
-struct RbrLitDecision { bool lampPart = false, disc = false, glass = false; int kind = -1; float glow = 0.0f; std::wstring mask; };
+struct RbrLitDecision { bool lampPart = false, disc = false, glass = false, brakeDisc = false; int kind = -1; float glow = 0.0f; std::wstring mask; void* texture = nullptr; };
 const RbrLitDecision& rbrrtx_litparts_decision();
 void rbrrtx_litparts_drop_twin();                              // the twin just returned was not used (API path)
 bool rbrrtx_litparts_nudge(float out[3]);                       // world offset for the twin just returned, off a coplanar surface

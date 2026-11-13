@@ -89,6 +89,8 @@ struct Part {
   bool tailLens = false;                                 // the model's tail lens (e_light_lb / _rb): glows with the lamps, braking or not
   int rearRole = -1;                                     // rbrrtx_headlights_rear_lens: -1 not asked yet, 0 none, 1 tail, 2 brake
   unsigned rearTries = 0;
+  int head = -1;                                         // rbrrtx_headlights_head_lamp_at: -1 not known yet, 0 no, 1 a head lamp part
+  unsigned headTries = 0;
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
   unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
@@ -147,7 +149,7 @@ unsigned g_learnt = 0, g_swapped = 0, g_noHash = 0;
 
 // Cars with a <name>_lit.dds lamp atlas (BMW M3 E30): the game draws it always (Predicate = NotUsed), so with the lamps off
 // the same mesh gets the unlit <name>.dds. The unlit texture object is taken from the car's own draws of it.
-struct LitAtlas { uint64_t unlit; IDirect3DBaseTexture9* unlitTex; };
+struct LitAtlas { uint64_t unlit; IDirect3DBaseTexture9* unlitTex; IDirect3DBaseTexture9* litTex; };   // held while the car is
 std::map<uint64_t, LitAtlas> g_litAtlas;                 // lit atlas hash -> its unlit sibling
 
 uint64_t mix(uint64_t h, uint64_t v) {
@@ -717,11 +719,12 @@ void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsig
 RbrLitDecision g_dec;                                   // rbrrtx_litparts_decision: the draw just passed
 
 void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h) {
-  if (kind >= 0 && kind < kKinds && !(kind >= kDisc && kind < kDisc + kDiscLevels)) {   // the look, whether or not the twin is ready
+  if (kind >= 0 && kind < kKinds) {                      // the look, whether or not the twin is ready
     g_dec.kind = kind;
     g_dec.glow = kind == kLampBody ? 0.0f : g_cfg.glow[kind];   // the lamp body: an "on" marker, no emission
     std::wstring m;
-    if (kind == kLampsBright) m = bright_mask_path(src);
+    if (kind >= kDisc && kind < kDisc + kDiscLevels) m = heat_dds(kind);   // a hot disc: its heat colour, not the atlas
+    else if (kind == kLampsBright) m = bright_mask_path(src);
     else if (kind == kLampGlass) m = glass_mask_path(src);
     else if (kind == kLamps) m = lamp_dds();
     g_dec.mask = !m.empty() && GetFileAttributesW(m.c_str()) != INVALID_FILE_ATTRIBUTES ? m : std::wstring();
@@ -761,7 +764,10 @@ void note_nudge(int kind, int end) {
 
 void forget_car() {
   g_carLitAtlas = false;
-  for (auto& kv : g_litAtlas) if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
+  for (auto& kv : g_litAtlas) {
+    if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
+    if (kv.second.litTex) { kv.second.litTex->lpVtbl->Release(kv.second.litTex); kv.second.litTex = nullptr; }
+  }
   g_heat = 0.0f;
   g_discLevel = 0;
   g_heatTick = 0;
@@ -930,6 +936,18 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
       }
     }
   }
+  if (p.head < 0) {                                      // a head lamp part of the model: by vertex count, or by place
+    bool needPos = false;
+    int head = rbrrtx_headlights_head_lamp_at(numV, nullptr, &needPos) ? 1 : 0;
+    if (needPos) {
+      float w[3];
+      head = draw_centre(dev, base, minIdx, numV, world, w) ? (rbrrtx_headlights_head_lamp_at(numV, w, nullptr) ? 1 : 0) : -1;
+      if (head < 0 && ++p.headTries > 120) head = 0;
+      if (head > 0) llog(L"lit parts: a %u-triangle draw (%u vertices) is a face block of a head lamp part by its place", prims, numV);
+    }
+    p.head = head;
+  }
+  const bool headLamp = p.head > 0;
   if (!p.tail && !p.mask && !p.everOn[kBrake] && p.end <= 0 && prims <= kLensMaxPrims && p.rearRole == 2) {
     p.tail = true;
     llog(L"lit parts: a %u-triangle part is an unlit brake lens by the car's model: it glows as a tail lamp while the lamps are on", prims);
@@ -938,7 +956,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   g_dec.glass = glassShader;
   g_dec.disc = p.wheelPart() || p.disc();
   g_dec.lampPart = !g_dec.disc && prims <= kLensMaxPrims * 40 &&
-                   (p.tail || p.tailLens || p.rearRole > 0 || (p.mask && !p.never) || rbrrtx_headlights_is_head_lamp(numV) ||
+                   (p.tail || p.tailLens || p.rearRole > 0 || (p.mask && !p.never) || headLamp ||
                     rbrrtx_headlights_is_lamp_glass(numV) || rbrrtx_headlights_is_aux(numV) || rbrrtx_headlights_is_aux_glass(numV));
   if (!g_litAtlas.empty()) {                             // the always-drawn lit lamp atlas follows the lamps
     IDirect3DBaseTexture9* cur = nullptr;
@@ -952,20 +970,28 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
           litSrc = kv.first;
         }
       const auto lit = g_litAtlas.find(h);
-      if (lit != g_litAtlas.end()) litSrc = h;
+      if (lit != g_litAtlas.end()) {
+        litSrc = h;
+        if (!lit->second.litTex) { cur->lpVtbl->AddRef(cur); lit->second.litTex = cur; }
+      }
       D3DSURFACE_DESC ad = {};
       if (litSrc && cur->lpVtbl->GetType(cur) == D3DRTYPE_TEXTURE) reinterpret_cast<IDirect3DTexture9*>(cur)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(cur), 0, &ad);
       cur->lpVtbl->Release(cur);
       // A brake or reverse part has its own signal (run 20261109-180308: the E30's lit brake mesh got the unlit texture with the lamps off).
       if (litSrc && !(p.mask & ((1u << kBrake) | (1u << kReverse)))) {
         if (g_raw[kLamps] < 0) {
-          if (lit != g_litAtlas.end() && lit->second.unlitTex) return lit->second.unlitTex;
+          // The API path draws this texture instead of the bound one (comp.cpp, RbrLampLook::texture).
+          if (lit != g_litAtlas.end() && lit->second.unlitTex) { g_dec.texture = lit->second.unlitTex; return lit->second.unlitTex; }
         } else if (g_raw[kLamps] > 0 && ad.Width) {
           // These cars' lamp meshes never switch, so learning finds nothing and they had no glow at all (the E30's head lamps). Lit and
           // unlit meshes are both drawn in the same place: both get the glow, so they cannot show through each other.
           if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
           const int kind = p.end < 0 ? kTail : kLampBody;
           if (kind == kLampBody) g_carLitAtlas = true;
+          if (lit == g_litAtlas.end()) {                   // the unlit sibling drawn: the API draws the lit atlas
+            const auto la = g_litAtlas.find(litSrc);
+            if (la != g_litAtlas.end() && la->second.litTex) g_dec.texture = la->second.litTex;
+          }
           if (g_cfg.glow[kind] > 0.0f)
             if (void* twin = twin_for(dev, litSrc, kind, ad.Width, ad.Height)) { note_nudge(kind, p.end); return twin; }
         }
@@ -996,7 +1022,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   // differs per car: Predicate on / off are swapped on the Yaris Rally2 and the Golf). No learning: the Fabia Rally2's were
   // never learnt (run 20261113-050319). The lamp's inner face block, not its glass; only the bright parts of the picture glow.
   if (!glassShader && g_raw[kLamps] > 0 && g_cfg.glow[kLampsBright] > 0.0f && !(p.mask & ((1u << kBrake) | (1u << kReverse))) &&
-      !p.tail && rbrrtx_headlights_is_head_lamp(numV)) {
+      !p.tail && headLamp) {
     if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
     if (p.end > 0) {
       IDirect3DBaseTexture9* ht = nullptr;
@@ -1040,6 +1066,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   // its glow would be the atlas colour (grey-blue metal) over the whole part.
   if ((p.mask & (1u << kBrake)) && (!p.settled() || (p.wheelPart() && !p.disc()) || (!p.wheelPart() && p.prims > kLensMaxPrims))) return nullptr;
   const bool isDisc = (p.mask & (1u << kBrake)) && p.disc();
+  g_dec.brakeDisc = isDisc;                              // through the API cold or hot (user 2026-11-13: brakes too)
   if (isDisc) {
     if (g_cfg.discGlow <= 0.0f) return nullptr;
     if (!p.discQueued) queue_disc_levels(dev, p);
@@ -1099,11 +1126,14 @@ void rbrrtx_litparts_status(wchar_t* out, size_t n) {
 void rbrrtx_litparts_note_lit_atlas(unsigned long long litHash, const wchar_t* unlitFile) {
   uint64_t unlit = 0;
   UINT w = 0, h = 0;
-  if (dds_hash(unlitFile, &unlit, &w, &h)) g_litAtlas[litHash] = { unlit, nullptr };
+  if (dds_hash(unlitFile, &unlit, &w, &h)) g_litAtlas[litHash] = { unlit, nullptr, nullptr };
 }
 
 void rbrrtx_litparts_destroy() {
-  for (auto& kv : g_litAtlas) if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
+  for (auto& kv : g_litAtlas) {
+    if (kv.second.unlitTex) { kv.second.unlitTex->lpVtbl->Release(kv.second.unlitTex); kv.second.unlitTex = nullptr; }
+    if (kv.second.litTex) { kv.second.litTex->lpVtbl->Release(kv.second.litTex); kv.second.litTex = nullptr; }
+  }
   for (auto& kv : g_twins) if (kv.second.tex) kv.second.tex->lpVtbl->Release(kv.second.tex);
   g_twins.clear();
 }
