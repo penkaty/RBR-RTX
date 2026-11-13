@@ -71,14 +71,6 @@ bool g_uiDirty = false;
 decltype(IDirect3DDevice9Vtbl::SetTexture) g_setTexture = nullptr;
 decltype(IDirect3DDevice9Vtbl::SetPixelShaderConstantB) g_setPsB = nullptr;
 
-template <class F>
-void patch(F* slot, F hook, F& orig) {
-  DWORD old = 0;
-  if (!VirtualProtect(slot, sizeof(F), PAGE_EXECUTE_READWRITE, &old)) return;
-  if (*slot != hook) { orig = *slot; *slot = hook; }
-  VirtualProtect(slot, sizeof(F), old, &old);
-}
-
 // The render target on s0, null for anything else. A mask RBRHUD leaves on s15 must not light other draws.
 RtInfo* s0_render_target(IDirect3DDevice9* dev) {
   IDirect3DBaseTexture9* t = nullptr;

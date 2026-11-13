@@ -19,9 +19,6 @@
 
 namespace {
 
-int read_int(uintptr_t addr) {
-  __try { return *reinterpret_cast<volatile int*>(addr); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-}
 
 // Player car block: g_CarMovement (0x8EF660, valid in pre-stage/stage/replay; NGPCarMenu RBRAPI.h:214) +0x100,
 // 20 floats: +0x100 (quaternion?), +0x110 4x4 "matrix" whose 3x3 is NOT the car's rotation (2026-10-23 01:32),

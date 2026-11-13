@@ -3,6 +3,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <string>
+#include <cmath>
+#include <cstdint>
 
 // Appends one timestamped line to <RBRRTX_LOG_DIR>\<file>; does nothing when RBRRTX_LOG_DIR is unset.
 void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...);
@@ -354,3 +356,34 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
 int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* user);
 float rbrrtx_world_lights_night_fraction(float sunElevation);                     // 0..1: how far the street lamps are lit at that sun height
 void rbrrtx_dinput_block_remove();
+
+// ---- Small helpers that several files used to carry their own copy of (2026-11-13) ----
+// Vtable slot patch: stores the original once, then points the slot at the hook.
+template <class F>
+inline void patch(F* slot, F hook, F& orig) {
+  DWORD old = 0;
+  if (!VirtualProtect(slot, sizeof(F), PAGE_EXECUTE_READWRITE, &old)) return;
+  if (*slot != hook) { orig = *slot; *slot = hook; }
+  VirtualProtect(slot, sizeof(F), old, &old);
+}
+
+// An int of game state at a fixed address in RichardBurnsRally_SSE.exe, read defensively (-1 when unreadable).
+inline int read_int(uintptr_t addr) {
+  __try { return *reinterpret_cast<volatile int*>(addr); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
+// Kelvin -> linear RGB with the brightest channel 1 (Tanner Helland's fit of the Planckian locus): world lamps and the
+// F3 lamp pages. The car lamps use the luminance-1 fit in headlights.cpp instead.
+inline void rbrrtx_kelvin_rgb_max1(float k, float out[3]) {
+  const float t = (k < 1000.0f ? 1000.0f : k > 40000.0f ? 40000.0f : k) / 100.0f;
+  const float r = t <= 66 ? 255 : 329.7f * std::pow(t - 60, -0.1332f);
+  const float g = t <= 66 ? 99.47f * std::log(t) - 161.1f : 288.1f * std::pow(t - 60, -0.0755f);
+  const float b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5f * std::log(t - 10) - 305.0f;
+  const float c[3] = { r, g, b };
+  for (int i = 0; i < 3; ++i) {
+    const float v = (c[i] < 0.0f ? 0.0f : c[i] > 255.0f ? 255.0f : c[i]) / 255.0f;
+    out[i] = v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+  }
+  const float m = out[0] > out[1] ? (out[0] > out[2] ? out[0] : out[2]) : (out[1] > out[2] ? out[1] : out[2]);
+  for (int i = 0; i < 3; ++i) out[i] /= m;
+}

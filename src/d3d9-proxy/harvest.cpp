@@ -120,18 +120,7 @@ void copy_erase(void* t) {
   g_copies.erase(it);
 }
 
-template <class F>
-void patch(F* slot, F hook, F& orig) {
-  DWORD old = 0;
-  if (!VirtualProtect(slot, sizeof(F), PAGE_EXECUTE_READWRITE, &old)) return;
-  if (*slot != hook) { orig = *slot; *slot = hook; }
-  VirtualProtect(slot, sizeof(F), old, &old);
-}
-
 // Game state, read defensively (fixed addresses in RichardBurnsRally_SSE.exe).
-int read_int(uintptr_t addr) {
-  __try { return *reinterpret_cast<volatile int*>(addr); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-}
 int game_mode() {
   __try {
     const uintptr_t cfg = *reinterpret_cast<volatile uintptr_t*>(0x007EAC48);

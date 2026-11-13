@@ -24,21 +24,6 @@
 
 namespace {
 
-// Tanner Helland's fit of the Planckian locus, linear, brightest channel 1 (as worldlights.cpp kelvin_rgb).
-void kelvin_rgb(float k, float out[3]) {
-  const float t = std::clamp(k, 1000.0f, 40000.0f) / 100.0f;
-  const float r = t <= 66 ? 255 : 329.7f * std::pow(t - 60, -0.1332f);
-  const float g = t <= 66 ? 99.47f * std::log(t) - 161.1f : 288.1f * std::pow(t - 60, -0.0755f);
-  const float b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5f * std::log(t - 10) - 305.0f;
-  const float c[3] = { r, g, b };
-  for (int i = 0; i < 3; ++i) {
-    const float s = std::clamp(c[i], 0.0f, 255.0f) / 255.0f;
-    out[i] = s <= 0.04045f ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f);
-  }
-  const float m = (std::max)(out[0], (std::max)(out[1], out[2]));
-  for (int i = 0; i < 3; ++i) out[i] /= m;
-}
-
 void status(const char* t) { rbrrtx_menu_set_status(t); }
 
 // ---- Lamp presets (the old Alt+X lamp creator's, rtx_light_authoring.cpp, user 2026-11-07: "presets in F3") ------------
@@ -64,7 +49,7 @@ float nearest_kelvin(const float rgb[3]) {             // a saved lamp's colour 
   float best = 3000.0f, bestErr = 1e9f;
   for (float k = 1500.0f; k <= 9000.0f; k += 50.0f) {
     float c[3];
-    kelvin_rgb(k, c);
+    rbrrtx_kelvin_rgb_max1(k, c);
     const float err = (c[0] - rgb[0]) * (c[0] - rgb[0]) + (c[1] - rgb[1]) * (c[1] - rgb[1]) + (c[2] - rgb[2]) * (c[2] - rgb[2]);
     if (err < bestErr) { bestErr = err; best = k; }
   }
@@ -100,7 +85,7 @@ void add_light(const float pos[3], const float rgb[3], float lumens, float radiu
 void add_preset(const float pos[3], int preset) {
   float rgb[3];
   if (preset == 1) { rgb[0] = 1.0f; rgb[1] = 0.16f; rgb[2] = 0.07f; add_light(pos, rgb, 7000.0f, 0.18f, 0.7f, 1); return; }
-  kelvin_rgb(preset == 2 ? 2700.0f : 3000.0f, rgb);
+  rbrrtx_kelvin_rgb_max1(preset == 2 ? 2700.0f : 3000.0f, rgb);
   add_light(pos, rgb, preset == 2 ? 1800.0f : 4000.0f, preset == 2 ? 0.25f : 0.1f, preset == 2 ? 0.15f : 0.0f, 0);
 }
 
@@ -148,7 +133,7 @@ void page_lights(void*) {
   auto add_cone = [&](const float pos[3]) {
     const LampPreset& lp = kLampPresets[conePreset];
     float rgb[3];
-    if (lp.kelvin > 0.0f) kelvin_rgb(lp.kelvin, rgb); else std::memcpy(rgb, lp.rgb, sizeof(rgb));
+    if (lp.kelvin > 0.0f) rbrrtx_kelvin_rgb_max1(lp.kelvin, rgb); else std::memcpy(rgb, lp.rgb, sizeof(rgb));
     const int id = rbrrtx_custom_light_add(pos, rgb);
     RbrCustomLight n = {};
     for (int i = 0, c = rbrrtx_custom_light_count(); i < c; ++i)
@@ -183,7 +168,7 @@ void page_lights(void*) {
       ch |= ImGui::ColorEdit3("colour", l.rgb, ImGuiColorEditFlags_Float);
       auto kIt = s_kelvin.find(l.id);
       if (kIt == s_kelvin.end()) kIt = s_kelvin.emplace(l.id, nearest_kelvin(l.rgb)).first;
-      if (ImGui::SliderFloat("or temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) { kelvin_rgb(kIt->second, l.rgb); ch = true; }
+      if (ImGui::SliderFloat("or temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) { rbrrtx_kelvin_rgb_max1(kIt->second, l.rgb); ch = true; }
       ch |= ImGui::SliderFloat("lumens", &l.lumens, 10.0f, 400000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
       ch |= ImGui::SliderFloat("radius (m)", &l.radius, 0.02f, 2.0f, "%.2f");
       ch |= ImGui::SliderFloat("cone half angle (0 = every way)", &l.cone, 0.0f, 90.0f, "%.0f deg");
@@ -338,7 +323,7 @@ void page_emissive(void*) {
                      "Lit windows: the Windows preset, with the box over the panes.");
   static bool freeze = false, island_only = true;
   static float rgb[3] = { 1.0f, 1.0f, 1.0f }, intensity = 0.2f, kelvin = 3200.0f;
-  static const int rgbFromKelvin = (kelvin_rgb(kelvin, rgb), 0);
+  static const int rgbFromKelvin = (rbrrtx_kelvin_rgb_max1(kelvin, rgb), 0);
   (void)rgbFromKelvin;
   static int mode = 0, preset = 0;
   // Light the prop casts (user 2026-11-05: stadium floodlights): a lamp at every place the picked part is drawn.
@@ -350,7 +335,7 @@ void page_emissive(void*) {
       if (ImGui::Selectable(kLampPresets[p].name, p == preset)) {
         preset = p;
         const LampPreset& lp = kLampPresets[p];
-        if (lp.kelvin > 0.0f) { kelvin = lp.kelvin; kelvin_rgb(kelvin, rgb); }
+        if (lp.kelvin > 0.0f) { kelvin = lp.kelvin; rbrrtx_kelvin_rgb_max1(kelvin, rgb); }
         else std::memcpy(rgb, lp.rgb, sizeof(rgb));
         if (lp.window) cast = false;
         else { lumens = lp.lumens; cone = lp.cone; softness = lp.softness; }
@@ -394,7 +379,7 @@ void page_emissive(void*) {
     static int anchor = 0;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
     ImGui::Combo("lamp sits at the part's", &anchor, "top\0centre\0bottom\0");
-    if (ImGui::SliderFloat("temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kelvin, rgb);
+    if (ImGui::SliderFloat("temperature (K)", &kelvin, 1500.0f, 9000.0f, "%.0f")) rbrrtx_kelvin_rgb_max1(kelvin, rgb);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sodium about 3200 K, LED 4750-5750 K.");
     if (ImGui::TreeNode("colour instead of temperature")) {
       ImGui::ColorEdit3("colour", rgb, ImGuiColorEditFlags_Float);
@@ -476,7 +461,7 @@ void page_emissive(void*) {
       static std::map<int, float> s_kelvin;
       auto kIt = s_kelvin.find(e.id);
       if (kIt == s_kelvin.end()) kIt = s_kelvin.emplace(e.id, nearest_kelvin(e.rgb)).first;
-      if (ImGui::SliderFloat("temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) kelvin_rgb(kIt->second, e.rgb);
+      if (ImGui::SliderFloat("temperature (K)", &kIt->second, 1500.0f, 9000.0f, "%.0f")) rbrrtx_kelvin_rgb_max1(kIt->second, e.rgb);
       glowEdit |= ImGui::IsItemDeactivatedAfterEdit();
       held |= ImGui::IsItemActive();
       if (ImGui::TreeNode("colour instead of temperature")) {

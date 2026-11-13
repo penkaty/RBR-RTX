@@ -594,14 +594,6 @@ bool in_backend(const void* p) {
                                  static_cast<LPCWSTR>(p), &m) && m == g_backend;
 }
 
-template <class F>
-void patch(F* slot, F hook, F& orig) {
-  DWORD old = 0;
-  if (!VirtualProtect(slot, sizeof(F), PAGE_EXECUTE_READWRITE, &old)) return;
-  if (*slot != hook) { orig = *slot; *slot = hook; }
-  VirtualProtect(slot, sizeof(F), old, &old);
-}
-
 void set_xf(IDirect3DDevice9* dev, int i, const D3DMATRIX& m) {
   if (g_devValid[i] && std::memcmp(&g_dev[i], &m, sizeof(D3DMATRIX)) == 0) return;
   o.SetTransform(dev, kXf[i], &m);

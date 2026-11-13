@@ -101,14 +101,6 @@ unsigned g_lastGaugeFrame = 0;
 int g_stageKey = -2;
 unsigned g_vsOther = 0;
 
-template <class F>
-void patch(F* slot, F hook, F& orig) {
-  DWORD old = 0;
-  if (!VirtualProtect(slot, sizeof(F), PAGE_EXECUTE_READWRITE, &old)) return;
-  if (*slot != hook) { orig = *slot; *slot = hook; }
-  VirtualProtect(slot, sizeof(F), old, &old);
-}
-
 // ---- same shader identification as comp.cpp (FNV-1a over the bytecode up to the end token)
 size_t bytecode_size(const DWORD* p, size_t max_dwords) {
   for (size_t i = 1; i < max_dwords; ++i) {

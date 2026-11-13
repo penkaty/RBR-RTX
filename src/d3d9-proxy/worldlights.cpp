@@ -100,21 +100,6 @@ float ini_f(const wchar_t* path, const wchar_t* sec, const wchar_t* key, float d
   return v[0] ? static_cast<float>(_wtof(v)) : dflt;
 }
 
-// Tanner Helland's fit of the Planckian locus (as headlights.cpp kelvin_rgb), linear.
-void kelvin_rgb(float k, float out[3]) {
-  const float t = std::clamp(k, 1000.0f, 40000.0f) / 100.0f;
-  float r = t <= 66 ? 255 : 329.7f * std::pow(t - 60, -0.1332f);
-  float g = t <= 66 ? 99.47f * std::log(t) - 161.1f : 288.1f * std::pow(t - 60, -0.0755f);
-  float b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5f * std::log(t - 10) - 305.0f;
-  const float c[3] = { r, g, b };
-  for (int i = 0; i < 3; ++i) {
-    const float s = std::clamp(c[i], 0.0f, 255.0f) / 255.0f;
-    out[i] = s <= 0.04045f ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f);
-  }
-  const float m = (std::max)(out[0], (std::max)(out[1], out[2]));
-  for (int i = 0; i < 3; ++i) out[i] /= m;
-}
-
 void destroy(Lamp& l) {
   if (l.h && g_api && g_api->DestroyLight) g_api->DestroyLight(l.h);
   l.h = nullptr;
@@ -241,7 +226,7 @@ std::wstring glow_write_mask(uint64_t hash, const Kind& k) {
     for (float f : r) { crc ^= static_cast<uint32_t>(std::lround(f * 1024.0f)); crc *= 16777619u; }
   // The lamp's colour is in the mask: with a mask set, Remix ignores a USD material's emissive_color_constant.
   float rgb[3];
-  kelvin_rgb(k.kelvin, rgb);
+  rbrrtx_kelvin_rgb_max1(k.kelvin, rgb);
   auto byte = [](float c) { return static_cast<uint32_t>(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f)); };
   const uint32_t lit = 0xFF000000u | (byte(rgb[0]) << 16) | (byte(rgb[1]) << 8) | byte(rgb[2]);
   crc ^= lit; crc *= 16777619u;
@@ -285,7 +270,7 @@ void glow_publish() {
     const auto g = g_glow.find(kv.first);
     if (kd.glow <= 0.0f || g == g_glow.end() || !g->second.ok) continue;
     float rgb[3];
-    kelvin_rgb(kd.kelvin, rgb);
+    rbrrtx_kelvin_rgb_max1(kd.kelvin, rgb);
     const std::string dds = rbrrtx_genmod_asset(g->second.dds), mask = rbrrtx_genmod_asset(g->second.mask);
     for (int lv = 1; lv <= kGlowLevels; ++lv) {
       uint32_t px[256];
@@ -526,7 +511,7 @@ void rbrrtx_world_lights_frame(float sunElevation, const float cam[3], bool laye
       if (isNew) ++g_createNew; else if (posMoved) ++g_createMoved; else ++g_createLevel;
       if (!rbrrtx_remix_plus()) destroy(*l);           // 1.5.2: a re-create needs the old handle gone (headlights.cpp)
       float rgb[3];
-      kelvin_rgb(kd.kelvin, rgb);
+      rbrrtx_kelvin_rgb_max1(kd.kelvin, rgb);
       if (kd.hasRgb) {
         const float m = (std::max)(kd.rgb[0], (std::max)(kd.rgb[1], kd.rgb[2]));
         for (int i = 0; i < 3; ++i) rgb[i] = m > 0.0f ? kd.rgb[i] / m : 1.0f;
