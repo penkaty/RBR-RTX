@@ -80,6 +80,7 @@ struct Mask {
   int n = 160;                                           // cells per side
   float cell = 1.0f;
   int perFrame = 600;                                    // collision queries per frame while cells are open
+  float vicinity = 5.0f;                                 // metres beside the road that may hold water too (user 2026-11-13: ditches)
   int ox = 0, oz = 0;                                    // cell index (world / cell) of the window's corner
   bool have = false, dirty = false, sentAny = false;
   std::vector<signed char> v;                            // -1 not asked yet, 0 no road, 1 road
@@ -130,7 +131,13 @@ int surface_at(const float p[3], float up = 1.0f, float down = 1.0f) {
     float out[32] = {};
     list[0] = 0;
     if (!(reinterpret_cast<CollectFn>(kCollect)(world, nullptr, mn, mx, list) & 0xFF) || list[0] <= 0 || list[0] > 8000) { ++g_q.noLeaves; return -1; }
-    if (reinterpret_cast<SegmentFn>(kSegment)(world, nullptr, from, to, out, list)) id = static_cast<int>(out[10]) & 0xFF;
+    if (reinterpret_cast<SegmentFn>(kSegment)(world, nullptr, from, to, out, list)) {
+      // The id is stored as an integer in the result's float slot 10 (run 20261113-050319: read as a float it was 0 on
+      // 30,000 hits). A value that only makes sense as a float is taken as one.
+      unsigned raw = 0;
+      std::memcpy(&raw, &out[10], sizeof(raw));
+      id = raw < 256 ? static_cast<int>(raw) : (out[10] >= 0.0f && out[10] < 256.0f ? static_cast<int>(out[10]) : 0);
+    }
     if (id < 0) ++g_q.miss; else if (id == 0) ++g_q.undefined; else ++g_q.found;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     ++g_faults;
@@ -191,6 +198,7 @@ void load_cfg() {
   g_mask.enabled = f(L"road_mask", 1.0f) != 0.0f;
   g_mask.n = std::clamp(static_cast<int>(f(L"road_mask_cells", 160.0f)), 32, 512) & ~3;
   g_mask.cell = std::clamp(f(L"road_mask_cell_m", 1.0f), 0.25f, 4.0f);
+  g_mask.vicinity = std::clamp(f(L"road_vicinity_m", 5.0f), 0.0f, 30.0f);
   g_mask.perFrame = std::clamp(static_cast<int>(f(L"road_mask_queries_per_frame", 600.0f)), 16, 20000);
   wchar_t pf[256] = {};
   GetPrivateProfileStringW(L"surfaces", L"puddle_surfaces", L"", pf, 256, path);
@@ -437,17 +445,35 @@ void mask_frame(bool inMenu) {
   sprintf_s(head, "%.3f %.3f %.3f %d ", m.ox * m.cell, m.oz * m.cell, m.cell, m.n);
   value.reserve(m.v.size() / 4 + 96);
   value = head;
-  size_t road = 0;
-  for (size_t i = 0; i < m.v.size(); i += 4) {
+  // The road and its vicinity: every cell within `vicinity` of a road cell (rows, then columns).
+  const int r = static_cast<int>(m.vicinity / m.cell + 0.5f), n = m.n;
+  std::vector<unsigned char> rows(m.v.size(), 0), wide(m.v.size(), 0);
+  size_t road = 0, beside = 0;
+  for (int z = 0; z < n; ++z)
+    for (int xx = 0, last = -100000; xx < n; ++xx) {
+      if (m.v[static_cast<size_t>(z) * n + xx] > 0) {
+        ++road;
+        for (int k = (std::max)(last + 1, xx - r); k <= (std::min)(n - 1, xx + r); ++k) rows[static_cast<size_t>(z) * n + k] = 1;
+        last = (std::min)(n - 1, xx + r);
+      }
+    }
+  for (int xx = 0; xx < n; ++xx)
+    for (int z = 0, last = -100000; z < n; ++z) {
+      if (rows[static_cast<size_t>(z) * n + xx]) {
+        for (int k = (std::max)(last + 1, z - r); k <= (std::min)(n - 1, z + r); ++k) wide[static_cast<size_t>(k) * n + xx] = 1;
+        last = (std::min)(n - 1, z + r);
+      }
+    }
+  for (size_t i = 0; i < wide.size(); i += 4) {
     int d = 0;
-    for (int k = 0; k < 4; ++k) if (m.v[i + k] > 0) { d |= 8 >> k; ++road; }
+    for (int k = 0; k < 4; ++k) if (wide[i + k]) { d |= 8 >> k; ++beside; }
     value += "0123456789abcdef"[d];
   }
   reinterpret_cast<SetGameValueFn>(x->setGameValue)("__wet.roadMask", value.c_str());
   m.sentAny = true;
   if (++m.sends <= 3 || m.sends % 100 == 0)
-    slog(L"surfaces: road mask sent (%u): %d x %d cells of %.2f m at (%.0f, %.0f), %zu road cells (%.0f %%)", m.sends, m.n, m.n, m.cell,
-         m.ox * m.cell, m.oz * m.cell, road, 100.0 * road / m.v.size());
+    slog(L"surfaces: road mask sent (%u): %d x %d cells of %.2f m at (%.0f, %.0f), %zu road cells (%.0f %%), %zu with %.0f m beside it (%.0f %%)",
+         m.sends, m.n, m.n, m.cell, m.ox * m.cell, m.oz * m.cell, road, 100.0 * road / m.v.size(), beside, m.vicinity, 100.0 * beside / m.v.size());
 }
 
 // One line per stage after a few seconds: what the collision answered, so an empty result explains itself.
