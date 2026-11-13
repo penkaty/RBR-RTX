@@ -54,7 +54,9 @@ struct Cfg {
   float roughness = 1.0f;
 } g_cfg;
 
-struct Leaf { float t[3]; };                             // the texture's colour, brightest channel 1 (0 0 0: unknown)
+// cut: the texture has cut-out alpha (1), is solid (0, never a card: user 2026-11-13, card normals on cars and walls
+// shaded them wrong), or not judged yet (-1, still a card as before).
+struct Leaf { float t[3]; int cut = -1; };               // the texture's colour, brightest channel 1 (0 0 0: unknown)
 std::map<uint64_t, Leaf> g_leaves;                       // texture hash -> colour
 std::unordered_map<void*, int> g_seen;                   // texture -> tries (>= 0 done once hashed)
 bool g_dirty = false;
@@ -62,6 +64,13 @@ std::chrono::steady_clock::time_point g_lastNew;
 std::wstring g_cacheFile;
 unsigned g_newThisRun = 0, g_unhashed = 0;
 size_t g_cardNormalsSent = 0;                            // textures in the last rtx.cardNormalsTextures sent
+size_t g_cardsAsked = 0;                                 // catalog cards + leaves when the list was last built
+bool g_cardsDirty = false;                               // a leaf was judged solid / cut-out since
+// The user's own edits in the live rtx.conf say "not a card": a card-normals removal (-0x..) or the texture put in
+// smooth normals, decals, UI, ignore, terrain or the player model (user 2026-11-13: "learn from my edits"; ten cards
+// taken off and set to smooth normals at 20:37-21:05).
+std::unordered_set<uint64_t> g_userNotCard;
+constexpr int kCutAlpha = 128;                           // lowest alpha below this: the texture has cut-out parts
 // What the sway shader draws is not all foliage (2026-11-01, runs 20261101-102516/104520: 424 of 476 learned textures
 // were spectators, signs, props, road lines, atlases; the menu's lamp-post atlas got bent card normals = stepped
 // shading). config\foliage-classes.txt (tools/pbr/make_foliage_classes.py, from the catalog): "card" textures are leaves
@@ -77,20 +86,52 @@ size_t g_cardsKnown = 0;                                // "card" lines in folia
 // in the menu when the list grew (a change rebuilds the instances that use them).
 void send_card_normals(bool inMenu) {
   const size_t n = g_cardsKnown + g_leaves.size();
-  if (!g_cfg.cardNormals || n == g_cardNormalsSent || (g_cardNormalsSent && !inMenu)) return;
+  if (!g_cfg.cardNormals || (n == g_cardsAsked && !g_cardsDirty) || (g_cardNormalsSent && !inMenu)) return;
   std::string list;
   list.reserve(n * 20);
   char h[24];
+  size_t sent = 0, solid = 0, user = 0;
   auto add = [&](uint64_t x) {
+    if (g_userNotCard.count(x)) { ++user; return; }
+    const auto l = g_leaves.find(x);
+    if (l != g_leaves.end() && l->second.cut == 0) { ++solid; return; }
     sprintf_s(h, "%s0x%016llX", list.empty() ? "" : ", ", static_cast<unsigned long long>(x));
     list += h;
+    ++sent;
   };
   for (const auto& kv : g_classes) if (kv.second) add(kv.first);
   for (const auto& kv : g_leaves) if (!g_classes.count(kv.first)) add(kv.first);
   if (!rbrrtx_remix_set("rtx.cardNormalsTextures", list.c_str())) return;
-  g_cardNormalsSent = n;
-  flog(L"foliage: %zu textures sent as rtx.cardNormalsTextures (%zu from the catalog; bent card normals; RBR-RTX runtime only)",
-       n, g_cardsKnown);
+  g_cardNormalsSent = sent ? sent : 1;
+  g_cardsAsked = n;
+  g_cardsDirty = false;
+  flog(L"foliage: %zu textures sent as rtx.cardNormalsTextures (%zu catalog cards; bent card normals; RBR-RTX runtime only); "
+       L"left out: %zu solid (no cut-out alpha), %zu by your rtx.conf", sent, g_cardsKnown, solid, user);
+}
+
+// The live rtx.conf's hash lists that say "not a card" (see g_userNotCard).
+void load_user_not_cards() {
+  g_userNotCard.clear();
+  auto read = [](const char* key, bool removals) {
+    const std::string* v = rbrrtx_conf_value(key);
+    if (!v) return;
+    size_t i = 0;
+    while (i < v->size()) {
+      size_t e = v->find(',', i);
+      if (e == std::string::npos) e = v->size();
+      std::string t = v->substr(i, e - i);
+      i = e + 1;
+      const size_t s = t.find_first_not_of(" \t");
+      if (s == std::string::npos) continue;
+      const bool neg = t[s] == '-';
+      if (neg != removals) continue;
+      if (const uint64_t x = _strtoui64(t.c_str() + s + (neg ? 1 : 0), nullptr, 16)) g_userNotCard.insert(x);
+    }
+  };
+  read("rtx.cardNormalsTextures", true);
+  for (const char* k : { "rtx.smoothNormalsTextures", "rtx.decalTextures", "rtx.uiTextures", "rtx.worldSpaceUiTextures",
+                         "rtx.ignoreTextures", "rtx.terrainTextures", "rtx.playerModelTextures" })
+    read(k, false);
 }
 
 bool not_foliage(uint64_t h) {
@@ -160,7 +201,7 @@ void publish() {
               g_cfg.anisotropy);
     body += rbrrtx_genmod_material(kv.first, g_cfg.enabled ? "swaying foliage: matte, thin opaque" : "swaying foliage: matte", in);
     char line[96];
-    sprintf_s(line, "%016llX %.4f %.4f %.4f\n", static_cast<unsigned long long>(kv.first), l.t[0], l.t[1], l.t[2]);
+    sprintf_s(line, "%016llX %.4f %.4f %.4f %d\n", static_cast<unsigned long long>(kv.first), l.t[0], l.t[1], l.t[2], l.cut);
     cache += line;
   }
   rbrrtx_genmod_set("foliage", body);
@@ -183,7 +224,10 @@ void rbrrtx_foliage_startup() {
     for (std::string line; std::getline(in, line);) {
       unsigned long long h = 0;
       Leaf l;
-      if (sscanf_s(line.c_str(), "%llx %f %f %f", &h, &l.t[0], &l.t[1], &l.t[2]) != 4 || !h) continue;
+      int cut = -1;
+      const int got = sscanf_s(line.c_str(), "%llx %f %f %f %d", &h, &l.t[0], &l.t[1], &l.t[2], &cut);
+      if (got < 4 || !h) continue;
+      l.cut = got == 5 && cut >= -1 && cut <= 1 ? cut : -1;
       const float mx = (std::max)({ l.t[0], l.t[1], l.t[2] });   // first build's file: colour x 0.85
       for (float& c : l.t) c = mx > 0.0f ? c / mx : 0.0f;
       if (!not_foliage(h)) g_leaves[h] = l;           // dropped: textures the catalog knows as no foliage
@@ -191,7 +235,10 @@ void rbrrtx_foliage_startup() {
   }
   for (const auto& kv : g_classes)                      // the catalog's cards: leaf material from the first frame
     if (kv.second && !g_leaves.count(kv.first)) g_leaves[kv.first] = Leaf{ { 0.0f, 0.0f, 0.0f } };
+  load_user_not_cards();
   publish();
+  flog(L"foliage: %zu textures are no cards by your rtx.conf (card-normal removals, smooth normals, decals, UI, ignore, terrain, player model)",
+       g_userNotCard.size());
   flog(L"foliage: thin opaque %s (thickness %.2f mm, transmittance %.2f %.2f %.2f, scattering albedo = leaf colour x %.2f, "
        L"anisotropy %.2f); %zu foliage textures known from earlier runs", g_cfg.enabled ? L"ON" : L"off (materials.ini)",
        g_cfg.thickness, g_cfg.transmittance[0], g_cfg.transmittance[1], g_cfg.transmittance[2], g_cfg.brightest,
@@ -211,8 +258,20 @@ void rbrrtx_foliage_draw(void* texture) {
     return;
   }
   g_seen[texture] = -1;
-  if (g_leaves.count(h) || not_foliage(h)) return;
+  if (not_foliage(h)) return;
+  const int minA = rbrrtx_texture_min_alpha(texture);
+  const int cut = minA < 0 ? -1 : minA < kCutAlpha ? 1 : 0;
+  const auto known = g_leaves.find(h);
+  if (known != g_leaves.end()) {                        // a leaf from the cache or the catalog: judge its alpha once
+    if (known->second.cut < 0 && cut >= 0) {
+      known->second.cut = cut;
+      g_dirty = g_cardsDirty = true;
+      if (!cut) flog(L"foliage: texture %016llX has no cut-out alpha (lowest %d): no card normals", static_cast<unsigned long long>(h), minA);
+    }
+    return;
+  }
   Leaf l;
+  l.cut = cut;
   float rgb[3];
   const float mx = rbrrtx_texture_avg_rgb(texture, rgb) ? (std::max)({ rgb[0], rgb[1], rgb[2] }) : 0.0f;
   if (mx > 0.02f) for (int i = 0; i < 3; ++i) l.t[i] = rgb[i] / mx;

@@ -954,6 +954,12 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   }
   if ((p.mask || p.tail) && !p.classed) class_part(dev, p, base, minIdx, numV, world);
   g_dec.glass = glassShader;
+  // See-through glass = the glass shader AND blending. A car's CarLight face blocks without a shader of their own are
+  // drawn opaque with CarGlass.vso (Yaris Rally2, dump 21:06: head lamp insides and rear lenses): they are the lamp,
+  // not its glass, and glow (user 2026-11-13: Yaris rear lamps dark, front lamps half lit).
+  DWORD blendNow = FALSE;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blendNow);
+  const bool clearGlass = glassShader && blendNow;
   g_dec.disc = p.wheelPart() || p.disc();
   g_dec.lampPart = !g_dec.disc && prims <= kLensMaxPrims * 40 &&
                    (p.tail || p.tailLens || p.rearRole > 0 || (p.mask && !p.never) || headLamp ||
@@ -1021,7 +1027,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   // Head lamps by the model's names (e_light_lf / _rf, lit or unlit: the game shows one of the two, and which one is "on"
   // differs per car: Predicate on / off are swapped on the Yaris Rally2 and the Golf). No learning: the Fabia Rally2's were
   // never learnt (run 20261113-050319). The lamp's inner face block, not its glass; only the bright parts of the picture glow.
-  if (!glassShader && g_raw[kLamps] > 0 && g_cfg.glow[kLampsBright] > 0.0f && !(p.mask & ((1u << kBrake) | (1u << kReverse))) &&
+  if (!clearGlass && g_raw[kLamps] > 0 && g_cfg.glow[kLampsBright] > 0.0f && !(p.mask & ((1u << kBrake) | (1u << kReverse))) &&
       !p.tail && headLamp) {
     if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
     if (p.end > 0) {
@@ -1042,7 +1048,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   }
   // Auxiliary lamps (bumper, bonnet, ramp lights): their meshes never switch, so learning finds nothing. The model names them; they
   // glow while they are on (brights, with extra_lights = 2). Their body only when they have no glass to glow.
-  if (!glassShader && !rbrrtx_headlights_has_aux_glass() && !p.mask && !p.tail && rbrrtx_headlights_aux_on() && rbrrtx_headlights_is_aux(numV) && prims <= kLensMaxPrims * 4) {
+  if (!clearGlass && !rbrrtx_headlights_has_aux_glass() && !p.mask && !p.tail && rbrrtx_headlights_aux_on() && rbrrtx_headlights_is_aux(numV) && prims <= kLensMaxPrims * 4) {
     if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
     IDirect3DBaseTexture9* at = nullptr;
     dev->lpVtbl->GetTexture(dev, 0, &at);
@@ -1084,7 +1090,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   // painted on, the blended part is all there is, so it glows. Glass means the glass shader: blending alone also marked the
   // E30's lit brake lamps (run 20261109-180308), which then never glowed. A rear lamp keeps its own colour (atlas mask), the
   // solid warm white of a head lamp over a red lens read as hazy white glass.
-  if (kind >= 0 && kind < kDisc && glassShader && rbrrtx_headlights_has_lens()) return nullptr;
+  if (kind >= 0 && kind < kDisc && clearGlass && rbrrtx_headlights_has_lens()) return nullptr;
   if (kind == kLamps && p.end < 0) kind = kTail;
   if (kind < 0 || g_cfg.glow[kind] <= 0.0f) return nullptr;
   IDirect3DBaseTexture9* t0 = nullptr;

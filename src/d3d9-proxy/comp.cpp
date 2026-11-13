@@ -7560,6 +7560,8 @@ int f3_ini_extra_dump(void (*emit)(const char*, void*), void* user) { return rbr
 
 void rbrrtx_watch_buffer_writes(void* vb, void* ib) { watch_buffer_writes(vb, ib); }
 
+const std::string* rbrrtx_conf_value(const char* key) { return conf_lookup(key); }
+
 bool rbrrtx_remix_set(const char* key, const char* value) {
   if (!g_apiOk || !g_api.SetConfigVariable) return false;
 

@@ -43,6 +43,7 @@ void rbrrtx_layer_enable(bool on);                            // off: release ev
 void rbrrtx_layer_stats(unsigned* held, unsigned* twins, double* mb);
 // harvest.cpp: smallest alpha (0..255) of that texture's mip 0, -1 if unknown (same hooks, alpha_min.hpp).
 int rbrrtx_texture_min_alpha(void* base_texture);
+const std::string* rbrrtx_conf_value(const char* key);   // the live rtx.conf's value of key (comp.cpp), nullptr = not in it
 // Average colour of a texture's mip 0 (sampled when the game uploaded it), 0..1; false = unknown.
 bool rbrrtx_texture_avg_rgb(void* base_texture, float rgb[3]);
 // harvest.cpp: writes mip 0 of a 2D texture to a .dds through a READONLY lock (frame dump; through the Remix bridge
