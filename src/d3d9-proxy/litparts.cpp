@@ -86,6 +86,9 @@ struct Part {
   unsigned lastFrame = ~0u;
   unsigned mask = 0;                                     // signals it is the lit part of (tail lenses: lamps and brake)
   bool tail = false;                                     // unlit brake lens: glows as a tail lamp with the lamps on
+  bool tailLens = false;                                 // the model's tail lens (e_light_lb / _rb): glows with the lamps, braking or not
+  int rearRole = -1;                                     // rbrrtx_headlights_rear_lens: -1 not asked yet, 0 none, 1 tail, 2 brake
+  unsigned rearTries = 0;
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
   unsigned onBody = 0, offBody = 0;                      // frames drawn with the body's matrix / with another one
@@ -663,17 +666,13 @@ void queue_disc_levels(IDirect3DDevice9* dev, Part& p) {
   p.discQueued = true;
 }
 
-// Where a lit part sits: its vertices (a sample) through the draw's matrix, against the car's lamps. Blending from the draw.
-void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsigned numV, const float* world) {
-  DWORD blend = FALSE;
-  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
-  p.blended = blend != FALSE;
-  if (++p.classTries > 120) { p.classed = true; return; }  // lamps of the model never known: it stays a front lamp
-  if (!world || !numV) return;
+// The centre of a draw's vertices (a sample) through its world matrix.
+bool draw_centre(IDirect3DDevice9* dev, int base, unsigned minIdx, unsigned numV, const float* world, float w[3]) {
+  if (!world || !numV) return false;
   IDirect3DVertexBuffer9* vb = nullptr;
   UINT off = 0, stride = 0;
   dev->lpVtbl->GetStreamSource(dev, 0, &vb, &off, &stride);
-  if (!vb) return;
+  if (!vb) return false;
   float c[3] = {};
   void* q = nullptr;
   const INT first = base + static_cast<INT>(minIdx);
@@ -691,10 +690,21 @@ void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsig
     ok = true;
   }
   vb->lpVtbl->Release(vb);
-  if (!ok) return;
-  const float w[3] = { c[0] * world[0] + c[1] * world[4] + c[2] * world[8] + world[12],
-                       c[0] * world[1] + c[1] * world[5] + c[2] * world[9] + world[13],
-                       c[0] * world[2] + c[1] * world[6] + c[2] * world[10] + world[14] };
+  if (!ok) return false;
+  w[0] = c[0] * world[0] + c[1] * world[4] + c[2] * world[8] + world[12];
+  w[1] = c[0] * world[1] + c[1] * world[5] + c[2] * world[9] + world[13];
+  w[2] = c[0] * world[2] + c[1] * world[6] + c[2] * world[10] + world[14];
+  return true;
+}
+
+// Where a lit part sits: its vertices (a sample) through the draw's matrix, against the car's lamps. Blending from the draw.
+void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsigned numV, const float* world) {
+  DWORD blend = FALSE;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  p.blended = blend != FALSE;
+  if (++p.classTries > 120) { p.classed = true; return; }  // lamps of the model never known: it stays a front lamp
+  float w[3];
+  if (!draw_centre(dev, base, minIdx, numV, world, w)) return;
   p.end = rbrrtx_headlights_lamp_end(w);
   if (!p.end) return;
   p.classed = true;
@@ -889,7 +899,26 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   g_drawn.push_back(key);
   // The unlit brake lens glows as a tail lamp from the start: the model names it, without waiting for the first brake press
   // (user 2026-11-09: rear lights only came on after toggling L). A part drawn while braking stops being one (judge_frame).
-  if (!p.tail && !p.mask && !p.everOn[kBrake] && p.end <= 0 && prims <= kLensMaxPrims && rbrrtx_headlights_is_brake_lens(numV)) {
+  // Which rear lens of the model it is: by vertex count, and by place where a tail and a brake lens share the count
+  // (Celica TA64: both 14 vertices; the tail lens taken for a brake lens lost its glow at the first brake press).
+  if (p.rearRole < 0 && prims <= kLensMaxPrims) {
+    bool needPos = false;
+    int role = rbrrtx_headlights_rear_lens(numV, nullptr, &needPos);
+    if (needPos) {
+      float w[3];
+      role = draw_centre(dev, base, minIdx, numV, world, w) ? rbrrtx_headlights_rear_lens(numV, w, nullptr) : -1;
+      if (role < 0 && ++p.rearTries > 120) role = 0;   // never placed: no role
+    }
+    if (role >= 0) {
+      p.rearRole = role;
+      if (role == 1 && !p.tailLens) {
+        p.tailLens = true;
+        llog(L"lit parts: a %u-triangle part is a tail lamp lens by the car's model%s: it glows while the lamps are on, braking or not",
+             prims, needPos ? L" and its place" : L"");
+      }
+    }
+  }
+  if (!p.tail && !p.mask && !p.everOn[kBrake] && p.end <= 0 && prims <= kLensMaxPrims && p.rearRole == 2) {
     p.tail = true;
     llog(L"lit parts: a %u-triangle part is an unlit brake lens by the car's model: it glows as a tail lamp while the lamps are on", prims);
   }
@@ -1004,6 +1033,8 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (kind < 0 && p.mask) for (int i = 0; i < kSignals; ++i) if (kind < 0 && (p.mask & (1u << i)) && g_raw[i] == 0) kind = i;   // signal unknown only: known off = no glow
   if (kind < 0 && p.tail && g_raw[kLamps] > 0 && g_raw[kBrake] <= 0 && p.settled() && !p.wheelPart() && p.prims <= kLensMaxPrims &&
       std::find(g_discPrims.begin(), g_discPrims.end(), p.prims) == g_discPrims.end()) kind = kTail;
+  // Named and placed: no judging needed, and drawn with every signal off (the Celica draws it always) is no objection.
+  if (kind < 0 && p.tailLens && g_raw[kLamps] > 0) kind = kTail;
   if (kind == kBrake && p.disc()) kind = kDisc + g_discLevel - 1;
   // Two kinds of car (user 2026-11-09): with lamp glass of its own the light is inside and the glass stays clear; with lamps
   // painted on, the blended part is all there is, so it glows. Glass means the glass shader: blending alone also marked the
