@@ -850,7 +850,7 @@ std::vector<RearPart> g_rearParts;
 // drawn; Switch = true with Predicate on / off = drawn with the lamp switch; Switch = true with Predicate NotUsed = never.
 // The <car>_settings.ini Active flags are not kept in step (Celica: the wing lamps Active, but the car showed their covers
 // and carried the bumper and grille lamps; user 2026-11-13).
-struct AuxSet { std::string name; bool known = false, lamp = false, cover = false; std::vector<unsigned> verts; };
+struct AuxSet { std::string name; bool known = false, lamp = false, cover = false, promoted = false; std::vector<unsigned> verts; };
 std::vector<AuxSet> g_auxSets;
 
 std::string lower_str(std::string x) {
@@ -1016,14 +1016,14 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
 int aux_set_state(const std::string& nodeLow) {
   for (const AuxSet& s : g_auxSets) {
     const std::string pre = "point_light_" + s.name + "_";
-    if (s.known && !nodeLow.compare(0, pre.size(), pre)) return s.lamp && !s.cover ? 1 : 0;
+    if (s.known && !nodeLow.compare(0, pre.size(), pre)) return s.lamp && !s.cover && !s.promoted ? 1 : 0;
   }
   return -1;
 }
 
 std::vector<std::string> aux_sets_on() {
   std::vector<std::string> on;
-  for (const AuxSet& s : g_auxSets) if (s.known && s.lamp && !s.cover) on.push_back(s.name);
+  for (const AuxSet& s : g_auxSets) if (s.known && s.lamp && !s.cover && !s.promoted) on.push_back(s.name);
   return on;
 }
 
@@ -1191,18 +1191,53 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaust = true;
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
-  load_lamp_points(d, nodes, byName, read_part_switches(file));   // first: the aux sets decide which extras count
+  const auto switches = read_part_switches(file);
+  load_lamp_points(d, nodes, byName, switches);       // first: the aux sets decide which extras count
+  // The car .ini draws no stock head lamp (e_light_lf / _rf, lit or not) but a front lamp set of its own: that set is the
+  // head lamps (Porsche 911 SC RS: e_light_head_l / _r on the wings; its e_light_lf / _rf are bumper lamps that the
+  // current setup leaves off; user 2026-11-13 17:45: "no extralights currently on the Porsche, but the brights assumed
+  // there are").
+  std::string promoted;
+  {
+    bool known = false, drawn = false;
+    for (const char* n : { "e_light_lf", "e_light_rf", "e_light_lf_lit", "e_light_rf_lit" }) {
+      const auto it = switches.find(n);
+      if (it != switches.end()) { known = true; drawn = drawn || it->second; }
+    }
+    for (AuxSet& s : g_auxSets) {
+      if (!known || drawn || !g_car.lamps) break;
+      if (!s.known || !s.lamp || s.cover) continue;
+      V3 l, r;
+      if (!lamp(("Point_light_" + s.name + "_l").c_str(), l) || !lamp(("Point_light_" + s.name + "_r").c_str(), r)) continue;
+      if (dot((l + r) * 0.5f - (g_car.lf + g_car.rf) * 0.5f, g_car.forward) < -1.2f) continue;   // not at the front
+      const float c = (g_car.lf.x + g_car.rf.x) * 0.5f;
+      if ((l.x - c) * (g_car.lf.x - c) < 0.0f) std::swap(l, r);   // keep lf on its side
+      g_car.lf = l;
+      g_car.rf = r;
+      s.promoted = true;
+      promoted = s.name;
+      for (unsigned n : s.verts) {
+        if (n >= 16) g_car.headLampVerts.push_back(n);
+        const auto a = std::find(g_car.auxVerts.begin(), g_car.auxVerts.end(), n);
+        if (a != g_car.auxVerts.end()) g_car.auxVerts.erase(a);
+      }
+      break;
+    }
+  }
+  if (!promoted.empty())
+    hlog(L"headlights: the car .ini draws no e_light_lf / _rf: lamp set \"%S\" is the head lamps, lf (%.3f %.3f %.3f) rf (%.3f %.3f %.3f)",
+         promoted.c_str(), g_car.lf.x, g_car.lf.y, g_car.lf.z, g_car.rf.x, g_car.rf.y, g_car.rf.z);
   load_extra_lamps(file, lamp);
   if (!g_auxSets.empty()) {
     std::wstring sets;
     for (const AuxSet& s : g_auxSets)
-      sets += std::wstring(s.name.begin(), s.name.end()) + (!s.known ? L" (not in the car .ini) " : s.lamp && !s.cover ? L" ON " : s.cover && s.lamp ? L" covered " : L" off ");
+      sets += std::wstring(s.name.begin(), s.name.end()) + (!s.known ? L" (not in the car .ini) " : s.promoted ? L" HEAD LAMPS " : s.lamp && !s.cover ? L" ON " : s.cover && s.lamp ? L" covered " : L" off ");
     hlog(L"headlights: auxiliary lamp sets of the model, by its live .ini: %s", sets.c_str());
   }
   if (g_car.lamps) {
     int moved = 0;
     float farthest = 0.0f;
-    const bool frontByPart = fix_front_nodes();
+    const bool frontByPart = !promoted.empty() || fix_front_nodes();
     for (V3* n : { &g_car.lf, &g_car.rf, &g_car.lb, &g_car.rb, &g_car.revl, &g_car.revr }) {
       if (frontByPart && (n == &g_car.lf || n == &g_car.rf)) continue;
       const V3 was = *n;
