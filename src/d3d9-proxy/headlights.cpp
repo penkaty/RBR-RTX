@@ -852,6 +852,9 @@ std::vector<RearPart> g_rearParts;
 // blocks (Fabia RS Rally2: CarLight + CarGlass + a third over one 2652-vertex block) is drawn one block at a time, each
 // draw a part of the vertex range: the count never matched and its head lamps never glowed (user 2026-11-13, 19:24).
 std::vector<RearPart> g_headParts;
+// Vertex counts of every lamp part of the model (e_*light* / *lamp*): a draw with one of these counts is that part, never
+// a face block of a bigger one found by place.
+std::unordered_set<unsigned> g_lampCounts;
 
 // Auxiliary lamp sets named like the stock lamps (Celica TA64: e_light_bumper, e_light_upper, e_light_84 .. _86,
 // e_light_wing with _lit and _cover variants, each with its own Point_light_<set>_l / _r). Which set the car carries is in
@@ -1000,6 +1003,7 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
                             (low.size() == 10 || low.compare(10, std::string::npos, "_lit") == 0);
       const bool brakeUnlit = !low.compare(0, 13, "e_light_brake") && low.find("_lit") == std::string::npos;
       if (tailName || brakeUnlit) g_rearParts.push_back({ tailName ? 1 : 2, n, box });
+      g_lampCounts.insert(n);
     }
     // The head lamps by the model's own names: where they are (fix_front_nodes) and which draws they are (litparts.cpp).
     if (!auxPart && (!low.compare(0, 10, "e_light_lf") || !low.compare(0, 10, "e_light_rf") ||
@@ -1125,6 +1129,7 @@ void load_car_model(const std::wstring& file) {
   g_lampBoxes.clear();
   g_rearParts.clear();
   g_headParts.clear();
+  g_lampCounts.clear();
   g_auxSets.clear();
   g_car.file = file;
   std::ifstream f(file, std::ios::binary);
@@ -2834,21 +2839,27 @@ bool rbrrtx_headlights_is_brake_lens(unsigned numV) {
 
 int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* needPos) {
   int role = 0;
-  bool mixed = false;
-  for (const RearPart& r : g_rearParts)
+  bool mixed = false, partial = false;
+  for (const RearPart& r : g_rearParts) {
     if (r.n == numV) { mixed = mixed || (role && role != r.role); role = r.role; }
-  if (needPos) *needPos = mixed;
-  if (!mixed) return role;
+    else if (numV >= 3 && numV < r.n) partial = true;
+  }
+  // One face block of a rear lens part (Hyundai i20 WRC: e_light_lb is 705 vertices, drawn as 402-vertex blocks; user
+  // 2026-11-13: "taillights do not show, brake lights do"): found by place, unless its count is another lamp part's.
+  const bool byBlock = !role && partial && !g_lampCounts.count(numV);
+  if (needPos) *needPos = mixed || byBlock;
+  if (!mixed && !byBlock) return role;
   if (!worldPos || !g_haveRoot) return 0;
   const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(g_lastRoot, 3);
   V3 l = {};                                           // root frame (rows of the root matrix are its axes)
   const V3 ax[3] = { row(g_lastRoot, 0), row(g_lastRoot, 1), row(g_lastRoot, 2) };
   float* lc[3] = { &l.x, &l.y, &l.z };
   for (int k = 0; k < 3; ++k) { const float s = dot(ax[k], ax[k]); *lc[k] = s > 1e-8f ? dot(d, ax[k]) / s : 0.0f; }
-  float best = 0.10f;                                  // the centre of a lens lies in (or within 10 cm of) its own box
+  // The centre of a lens lies in (or within 10 cm of) its own box; a block of a bigger part within 3 cm of it.
+  float best = mixed ? 0.10f : 0.03f;
   role = 0;
   for (const RearPart& r : g_rearParts) {
-    if (r.n != numV) continue;
+    if (mixed ? r.n != numV : numV >= r.n) continue;
     const V3 c = { std::clamp(l.x, r.box.lo.x, r.box.hi.x), std::clamp(l.y, r.box.lo.y, r.box.hi.y), std::clamp(l.z, r.box.lo.z, r.box.hi.z) };
     const float dist = len(c - l);
     if (dist < best) { best = dist; role = r.role; }
