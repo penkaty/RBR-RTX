@@ -481,6 +481,11 @@ bool g_glassSplit = true;                              // materials.ini [glass] 
 // User 2026-11-13 18:10: the glass and the outer layer of the lamps were gone in ray tracing, raster showed them; the
 // captured cockpit windscreen always rendered, the glass that took the car's no-capture path (2026-11-05) did not.
 bool g_glassFf = false;
+bool g_glassApi = true;                                // materials.ini [glass] api: the glass split's passes through the API
+unsigned g_glassApiDraws = 0;
+// Car lamp parts through the Remix API (materials.ini [lamps] api, sweep proxy.lampsapi; apiworld.cpp rbrrtx_apiworld_lamp).
+bool g_lampsApi = true;
+unsigned g_apiLampDraws = 0;                          // lamp draws taken by the API since the last log line
 unsigned g_glassCaptured = 0;                         // car glass draws kept captured since the last log line
 unsigned g_glassHudDraws = 0;                         // of them, cockpit windscreen draws with RBRHUD's F4 opacity
 unsigned g_glassSplitDraws = 0;                       // car glass draws split into stickers + glass (load_glass_split) since the last log line
@@ -2803,7 +2808,10 @@ void log_frame(const wchar_t* why) {
        g_glassSplit ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_glassSplitDraws) / g_logFrames : 0.0,
        g_logFrames ? static_cast<double>(g_glassHudDraws) / g_logFrames : 0.0,
        g_logFrames ? static_cast<double>(g_glassCaptured) / g_logFrames : 0.0, g_glassFf ? L"on" : L"off");
-  g_glassSplitDraws = g_glassHudDraws = g_glassCaptured = 0;
+  clog(L"  car lamps through the API %s: %.1f lamp draws per frame; car glass through the API %s: %.1f glass passes per frame",
+       g_lampsApi ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_apiLampDraws) / g_logFrames : 0.0,
+       g_glassApi ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_glassApiDraws) / g_logFrames : 0.0);
+  g_glassSplitDraws = g_glassHudDraws = g_glassCaptured = g_apiLampDraws = g_glassApiDraws = 0;
   {
     unsigned held = 0, twins = 0;
     double mb = 0;
@@ -2904,7 +2912,7 @@ bool g_sweepLamps = true;                                    // proxy.headlights
 extern bool g_dirtOn, g_glassOn;
 const std::pair<const wchar_t*, bool*> g_expSwitches[] = {
   {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip}, {L"ffcar", &g_ffCar},
-  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps}, {L"glassff", &g_glassFf}, {L"precip_half", &rbrrtx_precip_half},
+  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps}, {L"glassff", &g_glassFf}, {L"lampsapi", &g_lampsApi}, {L"glassapi", &g_glassApi}, {L"precip_half", &rbrrtx_precip_half},
   {L"precip_near", &rbrrtx_precip_near},
 };
 bool g_expSwitchSaved[std::size(g_expSwitches)] = {};
@@ -2933,6 +2941,7 @@ std::vector<int> g_expOrder;                                 // baseline, steps.
 std::vector<double> g_expMs;                                 // result per g_expOrder entry
 LARGE_INTEGER g_expStepStart = {}, g_expMeasureStart = {}, g_qpf = {};
 unsigned g_expFrames = 0, g_expSkipped = 0, g_expSolid = 0;
+std::vector<double> g_expRtss;                         // RTSS frame times of the step being measured (rtss.cpp)
 bool g_expMeasuring = false;
 std::unordered_map<const ShaderInfo*, bool> g_expSkipCache, g_expSolidCache;
 
@@ -3184,7 +3193,7 @@ void exp_frame() {
   const ExpStep& s = g_exp[g_expStep];
   if (!g_expMeasuring) {
     if (inStep >= (s.settle > 0 ? s.settle : g_expSettle)) {
-      g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0;
+      g_expMeasuring = true; g_expMeasureStart = now; g_expFrames = 0; g_expSkipped = 0; g_expRtss.clear();
       if (g_sweep && s.dump) sweep_dump_start();
       if (g_sweep && s.capture) {                            // Remix USD capture: hotkey Pause for this step (sweep.ini sets it)
         g_captureBefore = list_captures();
@@ -3196,15 +3205,31 @@ void exp_frame() {
     return;
   }
   ++g_expFrames;
+  {
+    double r = 0.0;
+    if (rbrrtx_rtss_frame_ms(&r)) g_expRtss.push_back(r);
+  }
   const double measured = static_cast<double>(now.QuadPart - g_expMeasureStart.QuadPart) / g_qpf.QuadPart;
   if (measured < (s.measure > 0 ? s.measure : g_expMeasure) || g_expFrames < 10) return;
-  const double ms = measured * 1000.0 / g_expFrames;
+  const double avgMs = measured * 1000.0 / g_expFrames;
+  // RTSS (user 2026-11-13): the median of its per-frame times ignores the hitches of a step switch (a recompile, a
+  // rebuilt cache), which the plain average carries. With RTSS running the ranking uses the median.
+  double rtMed = 0.0, rtP95 = 0.0;
+  unsigned rtSpikes = 0;
+  if (g_expRtss.size() >= 10) {
+    std::vector<double> v = g_expRtss;
+    std::sort(v.begin(), v.end());
+    rtMed = v[v.size() / 2];
+    rtP95 = v[(std::min)(v.size() - 1, v.size() * 95 / 100)];
+    for (double x : v) if (x > rtMed * 1.5) ++rtSpikes;
+  }
+  const double ms = rtMed > 0.0 ? rtMed : avgMs;
   g_expMs.push_back(ms);
   if (s.ref) g_perfRef = ms;
   else if (g_perfRef > 0 && g_expStep > 0) g_perfRows.push_back({s.name, ms, g_perfRef});
-  clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden, %.1f made solid per frame", g_expPos + 1,
-       g_expOrder.size(), s.name.c_str(), ms, 1000.0 / ms, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames,
-       static_cast<double>(g_expSolid) / g_expFrames);
+  clog(L"experiment %zu/%zu %s: %.2f ms (%.1f fps) over %u frames, %.1f draws hidden, %.1f made solid per frame; RTSS %s median %.2f p95 %.2f, %u spikes over 1.5x",
+       g_expPos + 1, g_expOrder.size(), s.name.c_str(), avgMs, 1000.0 / avgMs, g_expFrames, static_cast<double>(g_expSkipped) / g_expFrames,
+       static_cast<double>(g_expSolid) / g_expFrames, rtMed > 0.0 ? L"on" : L"off", rtMed, rtP95, rtSpikes);
   if (g_sweep) {
     std::wstring shotName = L"-";
     double luma = -1.0;
@@ -3225,8 +3250,8 @@ void exp_frame() {
       shotName += L"; capture " + (added.empty() ? std::wstring(L"not found yet in ") + capture_dir() : added);
     }
     wchar_t line[600];
-    swprintf_s(line, L"%02zu %s\t%.2f\t%.1f\t%.1f\t%s\t%.1f", g_expPos + 1, s.name.c_str(), ms, 1000.0 / ms,
-               static_cast<double>(g_expSkipped) / g_expFrames, shotName.c_str(), luma);
+    swprintf_s(line, L"%02zu %s\t%.2f\t%.1f\t%.1f\t%s\t%.1f\t%.2f\t%.2f\t%.2f\t%u", g_expPos + 1, s.name.c_str(), ms, 1000.0 / ms,
+               static_cast<double>(g_expSkipped) / g_expFrames, shotName.c_str(), luma, avgMs, rtMed, rtP95, rtSpikes);
     g_sweepLines.push_back(line);
   }
   if (++g_expPos >= g_expOrder.size()) { exp_finish(L"done, options back at baseline"); return; }
@@ -4353,6 +4378,8 @@ void load_glass_split() {
   g_stickerRef = static_cast<DWORD>((std::min)(255, (std::max)(1, static_cast<int>(GetPrivateProfileIntW(L"glass", L"sticker_ref", 240, path)))));
   g_glassAlphaAdd = (std::min)(255u, GetPrivateProfileIntW(L"glass", L"glass_alpha_add", 48, path));
   g_glassFf = GetPrivateProfileIntW(L"glass", L"ff", 0, path) != 0;
+  g_glassApi = GetPrivateProfileIntW(L"glass", L"api", 1, path) != 0;
+  g_lampsApi = GetPrivateProfileIntW(L"lamps", L"api", 1, path) != 0;
   g_glassAlphaAddCabin = (std::min)(255u, GetPrivateProfileIntW(L"glass", L"glass_alpha_add_cabin", 10, path));
   GetPrivateProfileStringW(L"glass", L"textures", L"", v, 4096, path);
   for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
@@ -4431,6 +4458,21 @@ bool car_glass_captured(IDirect3DDevice9* dev) {
   return g_glassTex.count(h) != 0;
 }
 
+// One pass of the car glass split through the Remix API (apiworld.cpp rbrrtx_apiworld_lamp, the lamp path): the
+// device's current blend / alpha test state decides the look; alphaAdd raises a blended pass's alpha. False = the API
+// did not take it (the caller draws it as D3D9). User 2026-11-13: a captured glass draw lost its sticker pass (Impreza
+// windows clear, no stickers); the end goal is every car part through the API.
+bool glass_api_pass(IDirect3DDevice9* dev, unsigned alphaAdd) {
+  if (!g_glassApi || !g_apiOk || !g_dip.valid || !g_curInfo || !(g_curInfo->flags & SH_CAR) || g_testMode != 0) return false;
+  RbrLampLook look;
+  look.roughness = 0.05f;
+  look.alphaAdd = alphaAdd;
+  const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, false };
+  if (!rbrrtx_apiworld_lamp(dev, wd, g_carWorld, look)) return false;
+  ++g_glassApiDraws;
+  return true;
+}
+
 template <class Draw>
 HRESULT glass_split_draw(IDirect3DDevice9* dev, const GlassPlan& plan, Draw& draw) {
   DWORD blend = 0, zw = 0, at = 0, func = 0, ref = 0;
@@ -4446,7 +4488,7 @@ HRESULT glass_split_draw(IDirect3DDevice9* dev, const GlassPlan& plan, Draw& dra
     o.SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE);
     o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
     o.SetRenderState(dev, D3DRS_ALPHAREF, plan.stickerRef);
-    hr = draw();
+    hr = !plan.hud && glass_api_pass(dev, 0) ? D3D_OK : draw();
     o.SetRenderState(dev, D3DRS_ALPHABLENDENABLE, blend);
     o.SetRenderState(dev, D3DRS_ZWRITEENABLE, zw);
     o.SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_LESS);
@@ -4465,7 +4507,10 @@ HRESULT glass_split_draw(IDirect3DDevice9* dev, const GlassPlan& plan, Draw& dra
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
     o.SetRenderState(dev, D3DRS_TEXTUREFACTOR, (plan.alphaFactor << 24) | 0x00FFFFFFu);
   }
-  if (SUCCEEDED(hr)) hr = draw();
+  if (SUCCEEDED(hr)) {
+    // The API pass takes the alpha factor itself (ADD), so the stage state set above is only for the D3D9 draw.
+    if (plan.hud || plan.alphaOp != D3DTOP_ADD || !glass_api_pass(dev, plan.alphaFactor)) hr = draw();
+  }
   if (factor) {
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, aop);
     o.SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, a1);
@@ -5404,7 +5449,7 @@ void sweep_begin() {
 void sweep_end(const wchar_t* why) {
   if (g_sweepTsv) { fclose(g_sweepTsv); g_sweepTsv = nullptr; }
   g_sweepDumpFrames = 0;
-  std::wstring r = L"RBR-RTX stage sweep: " + std::wstring(why) + L"\nstep\tframe ms\tfps\tdraws hidden\tscreenshot\tmean brightness\n";
+  std::wstring r = L"RBR-RTX stage sweep: " + std::wstring(why) + L"\nstep\tframe ms (RTSS median when RTSS runs)\tfps\tdraws hidden\tscreenshot\tmean brightness\taverage ms\tRTSS median\tRTSS p95\tRTSS spikes\n";
   for (const auto& l : g_sweepLines) r += l + L"\n";
   if (!g_perfRows.empty()) {                                 // perf bisect: what each switched-off suspect saves
     auto rows = g_perfRows;
@@ -7154,6 +7199,36 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     clog(L"    -> proj [3][3] %.3f [2][3] %.3f, zw %lu, colour write 0x%lx, occlusion queries open %d, UI trigger at draw %u",
          p._44, p._34, zw, cw, g_oqActive, g_st.uiTriggerAt);
   }
+  // Car lamp parts through the Remix API (user 2026-11-13: "revert lamps to API"): litparts.cpp says whether this car
+  // draw is a lamp part and whether it glows now; apiworld.cpp draws it as an API mesh in its off or on look (the game's
+  // texture, the glow from its own mask), and the D3D9 draw is skipped. The twin texture below stays for brake discs and
+  // as the path with [lamps] api = 0.
+  void* litTwin = nullptr;
+  const bool litAsked = g_litOn && g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid;
+  if (litAsked) {
+    litTwin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, g_carWorld,
+                                   (g_curInfo->flags & SH_GLASS_VS) != 0);
+    const RbrLitDecision& ld = rbrrtx_litparts_decision();
+    if (g_lampsApi && ld.lampPart && g_testMode == 0) {
+      RbrLampLook look;
+      look.glow = ld.kind >= 0 ? ld.glow : 0.0f;
+      look.emissiveFile = ld.mask.empty() ? nullptr : ld.mask.c_str();
+      DWORD lb = FALSE;
+      dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &lb);
+      look.roughness = ld.glass || lb ? 0.05f : 0.35f;
+      look.alphaAdd = lb ? (rbrrtx_camera_in_cabin() ? g_glassAlphaAddCabin : g_glassAlphaAdd) : 0u;
+      if (ld.kind >= 0) rbrrtx_litparts_nudge(look.nudge);
+      const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, false };
+      if (rbrrtx_apiworld_lamp(dev, wd, g_carWorld, look)) {
+        ++g_apiLampDraws;
+        if (litTwin) rbrrtx_litparts_drop_twin();
+        if (hinted) after_draw(dev);
+        if (refChanged) o.SetRenderState(dev, D3DRS_ALPHAREF, oldRef);
+        if (vpChanged) dev->lpVtbl->SetViewport(dev, &vp);
+        return D3D_OK;
+      }
+    }
+  }
   bool atOff = false;                                  // drawn without alpha test: experiment class or opaque cut-out
   const bool expSolid = exp_solid_draw();
   if (expSolid || g_opaqueAlpha) {
@@ -7215,8 +7290,8 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   IDirect3DBaseTexture9* litPrev = nullptr;
   bool litSwap = false, litMoved = false;
   D3DMATRIX litWorld = {};
-  if (g_litOn && g_enabled && g_apiOk && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_CAR) && g_dip.valid) {
-    if (void* twin = rbrrtx_litparts_draw(dev, g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, g_carWorld, (g_curInfo->flags & SH_GLASS_VS) != 0)) {
+  if (litAsked) {
+    if (void* twin = litTwin) {
       dev->lpVtbl->GetTexture(dev, 0, &litPrev);
       litSwap = SUCCEEDED(dev->lpVtbl->SetTexture(dev, 0, static_cast<IDirect3DBaseTexture9*>(twin)));
       float nudge[3];

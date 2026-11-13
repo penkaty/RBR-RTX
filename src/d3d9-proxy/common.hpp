@@ -219,6 +219,10 @@ struct RbrWorldDraw { int base; unsigned minIdx, numV, startIdx, prims; bool swa
 void rbrrtx_apiworld_init(const RbrApiExt* ext);                // after the API is up (null = unavailable)
 bool rbrrtx_apiworld_wants(bool sway);                          // this class is taken now
 bool rbrrtx_apiworld_draw(void* device, const RbrWorldDraw& d); // true = its instance draws it: skip the D3D9 draw
+// A car lamp part's look through the API (apiworld.cpp rbrrtx_apiworld_lamp): glow 0 = off; emissiveFile = mask file
+// (null = the part's own texture); alphaAdd = alpha raised on a blended (glass) draw; nudge = metres off the surface.
+struct RbrLampLook { float glow = 0.0f; const wchar_t* emissiveFile = nullptr; float roughness = 0.4f; unsigned alphaAdd = 0; float nudge[3] = {}; };
+bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world[16], const RbrLampLook& look);
 bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float world[16]);   // drivers: API mesh drawn now with W (row-major); true = skip the D3D9 draw
 void rbrrtx_apiworld_replay();                                  // first BeginScene of a frame
 void rbrrtx_apiworld_frame_end(const float* viewProj, bool active);   // Present (viewProj null = no world camera)
@@ -255,6 +259,12 @@ std::string rbrrtx_genmod_asset(const std::wstring& path);     // a file path as
 void rbrrtx_litparts_startup();                                // before the backend loads, after rbrrtx_genmod_init
 void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps); // per Present
 void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims, const float* world, bool glassShader);
+// What rbrrtx_litparts_draw decided for the draw just passed (comp.cpp: car lamp parts through the API). lampPart = the
+// draw is one of the car's lamp parts (lit or not); kind >= 0 = it glows now with glow, mask = its emission mask file
+// (null = its own texture); disc = a brake disc (stays on its twin texture).
+struct RbrLitDecision { bool lampPart = false, disc = false, glass = false; int kind = -1; float glow = 0.0f; std::wstring mask; };
+const RbrLitDecision& rbrrtx_litparts_decision();
+void rbrrtx_litparts_drop_twin();                              // the twin just returned was not used (API path)
 bool rbrrtx_litparts_nudge(float out[3]);                       // world offset for the twin just returned, off a coplanar surface
 bool rbrrtx_litparts_lamps_done();                              // the lamp signal gave a clean switch for this car: no more learning pulses
 void rbrrtx_litparts_status(wchar_t* out, size_t n);
@@ -286,6 +296,8 @@ float rbrrtx_wetness_now();
 void rbrrtx_particles_init(const remixapi_Interface* api);    // nullptr = no Remix API: probe only
 void rbrrtx_particles_menu_rain(float percent);                // rain in the main menu's weather, percent as the game's intensity; 0 = none
 void rbrrtx_particles_emit(bool sweeping);                     // once per frame at the first BeginScene; none during a sweep
+// rtss.cpp: the last frame time RTSS measured for the presenting process (the Remix bridge), false without RTSS.
+bool rbrrtx_rtss_frame_ms(double* ms);
 extern bool rbrrtx_precip_half;                                // sweep proxy.precip_half: half the rain/snow (rate and cap)
 extern bool rbrrtx_precip_near;                                // sweep proxy.precip_near: the rain disk cut to 45 m, same density near
 void rbrrtx_particles_frame_end();                            // per Present: key, probe report

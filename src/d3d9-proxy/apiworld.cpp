@@ -551,9 +551,105 @@ namespace {
 std::unordered_map<Key, Entry, KeyHash> g_objects;     // Entry.sway reused: double-sided
 unsigned g_objDrawn = 0, g_objBuilt = 0, g_objRefused = 0;
 
+void lamps_reset();
 void objects_reset() {
   for (auto& kv : g_objects) if (kv.second.mesh && g_destroyMesh) g_destroyMesh(kv.second.mesh);
   g_objects.clear();
+  lamps_reset();
+}
+
+// ---- Car lamp parts through the Remix API (user 2026-11-13: "the correct play is going through API"). The lamp lenses,
+// glass and lamp units the lit-parts code names (litparts.cpp) are API meshes in the car's own space, drawn every frame
+// the game draws them with the draw's world matrix and an "off" or "on" look; the D3D9 draw is skipped. Replaces the
+// twin textures (a new hash per lit look, a generated mod material that loads seconds later: lamps without texture, the
+// glow arriving late, z-fighting with the unlit mesh). Remix binds the material to the mesh, so each look is its own
+// mesh over the same vertices, made the first time the look is needed.
+struct LampLookKey {
+  uint64_t tex; uint32_t emissive; uint32_t glowQ; uint32_t state;
+  bool operator==(const LampLookKey& o) const { return std::memcmp(this, &o, sizeof(*this)) == 0; }
+};
+struct LampLookHash {
+  size_t operator()(const LampLookKey& k) const {
+    return static_cast<size_t>(k.tex * 0x9E3779B97F4A7C15ull ^ (uint64_t(k.emissive) << 32) ^ (uint64_t(k.glowQ) << 7) ^ k.state);
+  }
+};
+struct LampEntry {
+  bool failed = false;
+  std::vector<remixapi_HardcodedVertex> verts;
+  std::vector<uint32_t> idx;
+  std::unordered_map<LampLookKey, remixapi_MeshHandle, LampLookHash> meshes;
+};
+std::unordered_map<Key, LampEntry, KeyHash> g_lampParts;
+std::unordered_map<LampLookKey, Material, LampLookHash> g_lampMats;
+unsigned g_lampDrawn = 0, g_lampBuilt = 0, g_lampRefused = 0;
+
+uint32_t blend_factor(DWORD d3d) {                     // D3DBLEND -> VkBlendFactor
+  switch (d3d) {
+    case D3DBLEND_ZERO: return 0;
+    case D3DBLEND_ONE: return 1;
+    case D3DBLEND_SRCCOLOR: return 2;
+    case D3DBLEND_INVSRCCOLOR: return 3;
+    case D3DBLEND_DESTCOLOR: return 4;
+    case D3DBLEND_INVDESTCOLOR: return 5;
+    case D3DBLEND_SRCALPHA: return 6;
+    case D3DBLEND_INVSRCALPHA: return 7;
+    case D3DBLEND_DESTALPHA: return 8;
+    case D3DBLEND_INVDESTALPHA: return 9;
+    default: return 1;
+  }
+}
+
+remixapi_MaterialHandle lamp_material(IDirect3DBaseTexture9* t, uint64_t hx, const RbrLampLook& look, uint32_t state,
+                                      DWORD alphaFunc, DWORD alphaRef, DWORD wrapU, DWORD wrapV, const LampLookKey& mk) {
+  auto it = g_lampMats.find(mk);
+  if (it != g_lampMats.end()) return it->second.failed ? nullptr : it->second.h;
+  Material& m = g_lampMats[mk];
+  m.failed = true;
+  if (!import_texture(t, hx)) return nullptr;
+  wchar_t path[24];
+  swprintf_s(path, L"0x%016llX", import_hash(hx));
+  remixapi_MaterialInfoOpaqueEXT op = {};
+  op.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+  op.roughnessTexture = L"";
+  op.metallicTexture = L"";
+  op.albedoConstant = { 1.0f, 1.0f, 1.0f };
+  op.opacityConstant = 1.0f;
+  op.roughnessConstant = look.roughness;
+  op.heightTexture = L"";
+  op.alphaTestType = 7;
+  if (alphaFunc >= D3DCMP_NEVER && alphaFunc < D3DCMP_ALWAYS) {
+    op.alphaTestType = static_cast<int>(alphaFunc) - 1;
+    op.alphaReferenceValue = static_cast<uint8_t>(alphaRef & 0xFF);
+  }
+  op.useDrawCallAlphaState = 1;                        // the instance's blend state (glass, lenses) decides
+  op.enableDlssControlMask = 1;
+  op.dlssControlMaskIntensity = 1.0f;
+  op.dlssControlMaskToneStrength = 0.3f;
+  op.dlssControlMaskStructuralStrength = 0.7f;
+  remixapi_MaterialInfo mi = {};
+  mi.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+  mi.pNext = &op;
+  mi.hash = 0x524252574C000000ull ^ (LampLookHash()(mk) * 0x100000001B3ull);   // "RBRWL"
+  if (!mi.hash) mi.hash = 1;
+  mi.albedoTexture = path;
+  mi.normalTexture = L"";
+  mi.tangentTexture = L"";
+  mi.emissiveTexture = look.glow > 0.0f ? (look.emissiveFile && look.emissiveFile[0] ? look.emissiveFile : path) : L"";
+  mi.emissiveIntensity = look.glow;
+  mi.emissiveColorConstant = { 1.0f, 1.0f, 1.0f };
+  mi.filterMode = 1;
+  mi.wrapModeU = wrap_mode(wrapU);
+  mi.wrapModeV = wrap_mode(wrapV);
+  (void)state;
+  if (g_createMat(&mi, &m.h) != REMIXAPI_ERROR_CODE_SUCCESS || !m.h) { m.h = nullptr; return nullptr; }
+  m.failed = false;
+  return m.h;
+}
+
+void lamps_reset() {
+  for (auto& kv : g_lampParts)
+    for (auto& mk : kv.second.meshes) if (mk.second && g_destroyMesh) g_destroyMesh(mk.second);
+  g_lampParts.clear();
 }
 
 }  // namespace
@@ -673,6 +769,124 @@ bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float wor
   return true;
 }
 
+
+// A car lamp part (litparts.cpp names it): its API mesh in the look asked for, drawn now with the draw's world matrix
+// (row vectors, D3D). False = not taken (the caller draws it as D3D9).
+bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world[16], const RbrLampLook& look) {
+  IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+  if (!g_avail || !g_active || !g_ext || !g_ext->drawInstance || !world || !g_createMat) return false;
+  DWORD blend = FALSE, at = FALSE, func = D3DCMP_ALWAYS, ref = 0, cull = D3DCULL_CCW, wu = D3DTADDRESS_WRAP, wv = D3DTADDRESS_WRAP;
+  DWORD src = D3DBLEND_ONE, dst = D3DBLEND_ZERO, zw = TRUE;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  if (blend) {
+    dev->lpVtbl->GetRenderState(dev, D3DRS_SRCBLEND, &src);
+    dev->lpVtbl->GetRenderState(dev, D3DRS_DESTBLEND, &dst);
+  }
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &at);
+  if (at) { dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAFUNC, &func); dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHAREF, &ref); }
+  else func = D3DCMP_ALWAYS;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_CULLMODE, &cull);
+  dev->lpVtbl->GetSamplerState(dev, 0, D3DSAMP_ADDRESSU, &wu);
+  dev->lpVtbl->GetSamplerState(dev, 0, D3DSAMP_ADDRESSV, &wv);
+  IDirect3DVertexBuffer9* vb = nullptr;
+  IDirect3DIndexBuffer9* ib = nullptr;
+  IDirect3DVertexDeclaration9* decl = nullptr;
+  IDirect3DBaseTexture9* tex = nullptr;
+  UINT offset = 0, stride = 0;
+  dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride);
+  dev->lpVtbl->GetIndices(dev, &ib);
+  dev->lpVtbl->GetVertexDeclaration(dev, &decl);
+  dev->lpVtbl->GetTexture(dev, 0, &tex);
+  Key k = {};
+  k.vb = vb; k.ib = ib; k.decl = decl; k.tex = tex;
+  k.vbGen = vb ? g_gen[vb] : 0;
+  k.ibGen = ib ? g_gen[ib] : 0;
+  k.offset = offset; k.stride = stride; k.base = d.base; k.minIdx = d.minIdx; k.numV = d.numV;
+  k.startIdx = d.startIdx; k.prims = d.prims;
+  const uint32_t state = (func & 0xF) | ((ref & 0xFF) << 4) | ((cull & 0x3) << 12) | ((wu & 0x7) << 14) | ((wv & 0x7) << 17);
+  const uint64_t hx = tex ? rbrrtx_texture_hash(tex) : 0;
+  remixapi_MeshHandle mesh = nullptr;
+  auto it = g_lampParts.find(k);
+  if (it == g_lampParts.end() && vb && ib && decl && tex && stride && hx && !g_dynamic.count(vb) && !g_dynamic.count(ib) &&
+      tex->lpVtbl->GetType(tex) == D3DRTYPE_TEXTURE) {
+    LampEntry& e = g_lampParts[k];
+    float c[3], r;
+    const int why = build_vertices(k, e.verts, e.idx, c, r, true);
+    e.failed = why >= 0;
+    if (e.failed && ++g_lampRefused <= 4) wlog(L"api lamps: lamp draw with texture %016llX (%u vertices) stays D3D9: %s", hx, d.numV, kRefuse[why]);
+    if (!e.failed && (g_watched.insert(vb).second | g_watched.insert(ib).second)) rbrrtx_watch_buffer_writes(vb, ib);
+    it = g_lampParts.find(k);
+  }
+  if (it != g_lampParts.end() && !it->second.failed) {
+    LampEntry& e = it->second;
+    LampLookKey lk = {};
+    lk.tex = hx;
+    lk.emissive = look.emissiveFile && look.emissiveFile[0] ? static_cast<uint32_t>(std::wcslen(look.emissiveFile) * 31 + look.emissiveFile[std::wcslen(look.emissiveFile) - 5]) : 0u;
+    lk.glowQ = static_cast<uint32_t>(std::lround(look.glow * 1000.0f)) ^ (static_cast<uint32_t>(std::lround(look.roughness * 100.0f)) << 24);
+    lk.state = state;
+    auto mm = e.meshes.find(lk);
+    if (mm == e.meshes.end()) {
+      remixapi_MeshHandle h = nullptr;
+      if (remixapi_MaterialHandle mat = lamp_material(tex, hx, look, state, func, ref, wu, wv, lk)) {
+        remixapi_MeshInfoSurfaceTriangles sf = {};
+        sf.vertices_values = e.verts.data();
+        sf.vertices_count = e.verts.size();
+        sf.indices_values = e.idx.data();
+        sf.indices_count = e.idx.size();
+        sf.material = mat;
+        remixapi_MeshInfo mi = {};
+        mi.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+        mi.hash = 0x524252574D000000ull + ++g_meshSerial;   // "RBRWM" + a counter
+        mi.surfaces_values = &sf;
+        mi.surfaces_count = 1;
+        if (g_createMesh(&mi, &h) != REMIXAPI_ERROR_CODE_SUCCESS) h = nullptr;
+        else ++g_lampBuilt;
+      }
+      mm = e.meshes.emplace(lk, h).first;
+    }
+    mesh = mm->second;
+  }
+  if (vb) vb->lpVtbl->Release(vb);
+  if (ib) ib->lpVtbl->Release(ib);
+  if (decl) decl->lpVtbl->Release(decl);
+  if (tex) tex->lpVtbl->Release(tex);
+  if (!mesh) return false;
+  remixapi_InstanceInfoBlendEXT bl = {};
+  bl.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+  bl.alphaTestEnabled = at ? 1 : 0;
+  bl.alphaTestReferenceValue = static_cast<uint8_t>(ref & 0xFF);
+  bl.alphaTestCompareOp = at ? (func >= D3DCMP_NEVER && func <= D3DCMP_ALWAYS ? func - 1 : 7) : 7;
+  bl.alphaBlendEnabled = blend ? 1 : 0;
+  bl.srcColorBlendFactor = blend ? blend_factor(src) : 1;
+  bl.dstColorBlendFactor = blend ? blend_factor(dst) : 0;
+  bl.colorBlendOp = 0;
+  bl.textureColorArg1Source = 1; bl.textureColorArg2Source = 0; bl.textureColorOperation = 1;   // texture
+  bl.textureAlphaArg1Source = 1;
+  if (blend && look.alphaAdd > 0) {                    // see-through glass: its alpha raised so its tint and reflection show
+    bl.textureAlphaArg2Source = 3; bl.textureAlphaOperation = 6;   // texture + tFactor
+    bl.tFactor = (static_cast<uint32_t>(look.alphaAdd & 0xFF) << 24) | 0x00FFFFFFu;
+  } else {
+    bl.textureAlphaArg2Source = 0; bl.textureAlphaOperation = 1;
+    bl.tFactor = 0xFFFFFFFFu;
+  }
+  bl.srcAlphaBlendFactor = 1; bl.dstAlphaBlendFactor = 0; bl.alphaBlendOp = 0;
+  bl.writeMask = 0xF;
+  bl.isVertexColorBakedLighting = 0;
+  remixapi_InstanceInfo ii = {};
+  ii.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+  ii.pNext = &bl;
+  ii.mesh = mesh;
+  ii.doubleSided = cull == D3DCULL_NONE ? 1 : 0;
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 4; ++c) ii.transform.matrix[r][c] = world[c * 4 + r];
+  for (int r = 0; r < 3; ++r) ii.transform.matrix[r][3] += look.nudge[r];
+  (void)zw;
+  if (reinterpret_cast<PFN_remixapi_DrawInstance>(g_ext->drawInstance)(&ii) != REMIXAPI_ERROR_CODE_SUCCESS) return false;
+  ++g_lampDrawn;
+  return true;
+}
+
 namespace {
 void objects_reset_outer() { objects_reset(); }
 }  // namespace
@@ -732,7 +946,11 @@ void rbrrtx_apiworld_frame_end(const float* viewProj, bool active) {
     if (g_objBuilt || g_objDrawn)
       wlog(L"api objects (drivers): %zu meshes, %.1f drawn per frame, %u built since last line", g_objects.size(),
            static_cast<double>(g_objDrawn) / g_logFrames, g_objBuilt);
+    if (g_lampBuilt || g_lampDrawn)
+      wlog(L"api lamps: %zu car lamp parts, %.1f drawn per frame through the API, %u looks built since last line", g_lampParts.size(),
+           static_cast<double>(g_lampDrawn) / g_logFrames, g_lampBuilt);
     g_objDrawn = g_objBuilt = 0;
+    g_lampDrawn = g_lampBuilt = 0;
     g_logFrames = g_taken = g_passed = g_built = g_hidden = g_shown = 0;
     g_sentMB = 0;
     std::memset(g_refused, 0, sizeof(g_refused));

@@ -103,6 +103,10 @@ struct Settings {
   float pitch = 0.0f;                                  // beam aimed this many degrees below the car's forward axis (+ = down)
   float forward = 0.08f;                               // lamp moved this far ahead of its node (in front of the lens glass)
   float volumetric = 1.0f;                             // volumetricRadianceScale (beams in fog / dust)
+  // The rear lamps' (tail, brake, reverse, backfire, rear extras): NUMOS draws every lamp with a volumetric scale as a
+  // glow in the air, per pixel (8 taps per lamp, composite pass). Sweeps 2026-11-13 18:37-18:48: the car's lamps cost
+  // 0.5-1.4 ms of Composition in rain / snow haze, most of it lamps behind the car. 0 = no glow in the air.
+  float rearVolumetric = 0.0f;
   bool fallbackOn = true;                              // keep Remix's fallback light while the lights are on at night
   float historyFrames = 0.0f;                          // NUMOS froxel history while car lamps are lit (0 = leave NUMOS's)
   V3 fallback = { 0.6f, 0.5f, -1.8f };                 // model offset of the left lamp when the model has none
@@ -371,6 +375,7 @@ void load_settings() {
     s.pitch = std::clamp(ini_float(path, L"pitch", s.pitch), -30.0f, 30.0f);
     s.forward = std::clamp(ini_float(path, L"forward", s.forward), -1.0f, 1.0f);
     s.volumetric = std::clamp(ini_float(path, L"volumetric", s.volumetric), 0.0f, 100.0f);
+    s.rearVolumetric = std::clamp(ini_float(path, L"rear_volumetric", s.rearVolumetric), 0.0f, 100.0f);
     s.fallbackOn = ini_float(path, L"keep_fallback_light", 1.0f) != 0.0f;
     s.rear = ini_float(path, L"tail_lights", 1.0f) != 0.0f;
     s.brakeLights = ini_float(path, L"brake_lights", 1.0f) != 0.0f;
@@ -1082,14 +1087,17 @@ bool fix_front_nodes() {
   const bool li = inside(g_car.lf, side[1]), ri = inside(g_car.rf, side[2]);
   if (li && ri) return true;
   if (inside(g_car.lf, side[2]) && inside(g_car.rf, side[1])) return true;   // named the other way round: both are in a lamp
-  const float c = (side[1].lo.x + side[1].hi.x + side[2].lo.x + side[2].hi.x) * 0.25f;
+  // The car's centre line: the rear lamps' midpoint (on the car's axis), else the two lamp parts' middle. The boxes' middle
+  // put it 22 cm off on the Kalina RC2 (a part of the right side reaches across), and its mirrored left beam with it
+  // (user 2026-11-13: "lights offcenter to the left").
+  const float c = g_car.rear ? 0.5f * (g_car.lb.x + g_car.rb.x) : (side[1].lo.x + side[1].hi.x + side[2].lo.x + side[2].hi.x) * 0.25f;
   const V3 wasL = g_car.lf, wasR = g_car.rf;
   if (ri && !li) {
     g_car.lf = { 2.0f * c - g_car.rf.x, g_car.rf.y, g_car.rf.z };
-    if (!inside(g_car.lf, side[1])) g_car.lf = side[1].mid;
+    if (!inside(g_car.lf, side[1])) { g_car.lf = side[1].mid; g_car.rf = side[2].mid; }   // the mirror misses too: both mids
   } else if (li && !ri) {
     g_car.rf = { 2.0f * c - g_car.lf.x, g_car.lf.y, g_car.lf.z };
-    if (!inside(g_car.rf, side[2])) g_car.rf = side[2].mid;
+    if (!inside(g_car.rf, side[2])) { g_car.lf = side[1].mid; g_car.rf = side[2].mid; }
   } else {
     g_car.lf = side[1].mid;
     g_car.rf = side[2].mid;
@@ -1718,7 +1726,7 @@ void set_mode(int m, const wchar_t* why) {
 }
 
 // cone >= 180 = a plain point light (no shaping; dir unused). radius 0 = the headlights' radius.
-void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float radIn[3], float softness, float radius = 0.0f) {
+void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float radIn[3], float softness, float radius = 0.0f, bool rear = false) {
   const float k = &l == &g_lamps[7] ? 1.0f : g_dayK;     // daylight dimming; the backfire flash stays
   const float rad[3] = { radIn[0] * k, radIn[1] * k, radIn[2] * k };
   const bool moved = g_lampResend > 0 || !l.h || len(pos - l.pos) > 0.005f || dot(dir, l.dir) < 0.99998f || cone != l.cone ||
@@ -1737,7 +1745,7 @@ void draw_lamp(Lamp& l, V3 pos, V3 dir, float cone, const float radIn[3], float 
     sphere.shaping_value.coneAngleDegrees = cone;
     sphere.shaping_value.coneSoftness = softness;
     sphere.shaping_value.focusExponent = g_cfg.focus;
-    sphere.volumetricRadianceScale = g_cfg.volumetric;
+    sphere.volumetricRadianceScale = rear ? g_cfg.rearVolumetric : g_cfg.volumetric;
     remixapi_LightInfo info = {};
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     info.pNext = &sphere;
@@ -2076,17 +2084,17 @@ void send_lamps(const float C[16], const wchar_t* src) {
     const V3 rdir = norm(fwd * -std::cos(pr) - up * std::sin(pr));
     const float* rad = g_braking ? g_cfg.brakeRadiance : g_cfg.tailRadiance;
     if (g_tailOn || g_braking) {
-      draw_lamp(g_lamps[5], to_world(C, g_car.lb + back(g_car.lb)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
-      draw_lamp(g_lamps[6], to_world(C, g_car.rb + back(g_car.rb)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+      draw_lamp(g_lamps[5], to_world(C, g_car.lb + back(g_car.lb)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness, 0.0f, true);
+      draw_lamp(g_lamps[6], to_world(C, g_car.rb + back(g_car.rb)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness, 0.0f, true);
     }
     if (g_reversing) {                                 // two white reversing lamps, as the game lights both lenses
-      draw_lamp(g_lamps[8], to_world(C, g_car.revl + back(g_car.revl)), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness);
-      draw_lamp(g_lamps[9], to_world(C, g_car.revr + back(g_car.revr)), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness);
+      draw_lamp(g_lamps[8], to_world(C, g_car.revl + back(g_car.revl)), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness, 0.0f, true);
+      draw_lamp(g_lamps[9], to_world(C, g_car.revr + back(g_car.revr)), rdir, g_cfg.rearCone, g_cfg.reverseRadiance, g_cfg.rearSoftness, 0.0f, true);
     }
   }
   if (g_popOn && g_car.exhaust)                        // backfire: a point light just beyond the pipe tip
     draw_lamp(g_lamps[7], to_world(C, g_car.exhaustTip + g_car.exhaustDir * g_cfg.popOut), up, 180.0f, g_cfg.popRadiance,
-              0.0f, g_cfg.popRadius);
+              0.0f, g_cfg.popRadius, true);
   if (g_mode != kOff) {
     const V3 dir = aim(g_cfg.pitch);
     draw_lamp(g_lamps[1], wl, dir, g_cfg.cone, g_cfg.radiance, g_cfg.softness);
@@ -2135,7 +2143,7 @@ void send_lamps(const float C[16], const wchar_t* src) {
       const CarModel::Extra& e = g_car.extras[i];
       if (!e.brake) continue;
       const float rad[3] = { g_cfg.brakeRadiance[0] * e.rgb[0], g_cfg.brakeRadiance[1] * e.rgb[1], g_cfg.brakeRadiance[2] * e.rgb[2] };
-      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_behind(e.pos, g_cfg.rearBack, true)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_behind(e.pos, g_cfg.rearBack, true)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness, 0.0f, true);
     }
   }
   for (Lamp& l : g_lamps) if (l.h && l.sent != g_frameNo) destroy_lamp(l);

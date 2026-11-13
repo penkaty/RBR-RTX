@@ -714,7 +714,18 @@ void class_part(IDirect3DDevice9* dev, Part& p, int base, unsigned minIdx, unsig
 }
 
 // The twin for (texture, kind), once Remix has its material.
+RbrLitDecision g_dec;                                   // rbrrtx_litparts_decision: the draw just passed
+
 void* twin_for(IDirect3DDevice9* dev, uint64_t src, int kind, UINT w, UINT h) {
+  if (kind >= 0 && kind < kKinds && !(kind >= kDisc && kind < kDisc + kDiscLevels)) {   // the look, whether or not the twin is ready
+    g_dec.kind = kind;
+    g_dec.glow = kind == kLampBody ? 0.0f : g_cfg.glow[kind];   // the lamp body: an "on" marker, no emission
+    std::wstring m;
+    if (kind == kLampsBright) m = bright_mask_path(src);
+    else if (kind == kLampGlass) m = glass_mask_path(src);
+    else if (kind == kLamps) m = lamp_dds();
+    g_dec.mask = !m.empty() && GetFileAttributesW(m.c_str()) != INVALID_FILE_ATTRIBUTES ? m : std::wstring();
+  }
   uint64_t th = 0;
   IDirect3DTexture9* twin = make_twin(dev, src, kind, &th);
   if (!twin) return nullptr;
@@ -880,6 +891,7 @@ bool rbrrtx_litparts_nudge(float out[3]) {
 
 void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned numV, unsigned startIdx, unsigned prims,
                            const float* world, bool glassShader) {
+  g_dec = RbrLitDecision();
   if (!g_cfg.enabled || g_carFile.empty()) return nullptr;
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   ++g_carDrawsThisFrame;
@@ -923,6 +935,11 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
     llog(L"lit parts: a %u-triangle part is an unlit brake lens by the car's model: it glows as a tail lamp while the lamps are on", prims);
   }
   if ((p.mask || p.tail) && !p.classed) class_part(dev, p, base, minIdx, numV, world);
+  g_dec.glass = glassShader;
+  g_dec.disc = p.wheelPart() || p.disc();
+  g_dec.lampPart = !g_dec.disc && prims <= kLensMaxPrims * 40 &&
+                   (p.tail || p.tailLens || p.rearRole > 0 || (p.mask && !p.never) || rbrrtx_headlights_is_head_lamp(numV) ||
+                    rbrrtx_headlights_is_lamp_glass(numV) || rbrrtx_headlights_is_aux(numV) || rbrrtx_headlights_is_aux_glass(numV));
   if (!g_litAtlas.empty()) {                             // the always-drawn lit lamp atlas follows the lamps
     IDirect3DBaseTexture9* cur = nullptr;
     dev->lpVtbl->GetTexture(dev, 0, &cur);
@@ -1058,6 +1075,9 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
 }
 
 bool rbrrtx_litparts_lamps_done() { return g_lampSwitchClean; }
+
+const RbrLitDecision& rbrrtx_litparts_decision() { return g_dec; }
+void rbrrtx_litparts_drop_twin() { if (g_swapped) --g_swapped; }
 
 void rbrrtx_litparts_status(wchar_t* out, size_t n) {
   size_t entries;
