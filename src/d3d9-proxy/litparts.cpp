@@ -90,6 +90,10 @@ struct Part {
   int rearRole = -1;                                     // rbrrtx_headlights_rear_lens: -1 not asked yet, 0 none, 1 tail, 2 brake
   unsigned rearTries = 0;
   int head = -1;                                         // rbrrtx_headlights_head_lamp_at: -1 not known yet, 0 no, 1 a head lamp part
+  // The car model names this draw as a lamp part (a rear lens role, a head lamp, or a lamp part's exact vertex count): never
+  // a wheel part or brake disc, however its matrix moves against the body (Hyundai i20 WRC, user 2026-11-14: its brake
+  // lenses were judged to turn with a wheel, so only the halo sprites showed when braking).
+  bool named = false;
   unsigned headTries = 0;
   bool never = false;                                    // drawn with every signal off: an ordinary part
   unsigned prims = 0;
@@ -98,7 +102,7 @@ struct Part {
   // Turned against the body (a lens never is) = moves with a wheel. A brake disc is a small wheel part: the 220-triangle
   // parts (one per wheel) of the Whaanga run; a 2316-triangle part that turns with a wheel is the whole brake assembly or
   // hub, not a disc (user 2026-11-02: "discs glowed from the very start, bluish"), and a few-triangle part is a lens.
-  bool wheelPart() const { return offBody >= 3; }
+  bool wheelPart() const { return offBody >= 3 && !named; }
   bool disc() const { return wheelPart() && prims >= kDiscMinPrims && prims <= kDiscMaxPrims; }
   bool settled() const { return onBody + offBody >= kJudgeFrames; }   // seen long enough to tell lens from disc
   bool discQueued = false;                               // its heat steps are on their way to the generated mod
@@ -851,11 +855,17 @@ void rbrrtx_litparts_frame(const wchar_t* carFile, int lamps) {
       // A lens can sit tilted on its own node (Lancia Delta, run 20261102-234217: its brake lens was taken for a disc and
       // stayed dark until "hot"), so a fixed offset is no wheel: only a CHANGE of the turn against the body between
       // frames (spinning or steering) counts. A standing car's disc is not hot, so nothing is lost while still.
+      // The part's rotation relative to the body's, M x B^-1 (rows: row-vector matrices, B a rotation times a scale): fixed
+      // for anything on the car, however the car turns. The old measure, M - B, changed with every turn of the car for a
+      // node tilted against the body, and such lamps were taken for wheels on a winding road (Hyundai i20 WRC brake lenses,
+      // user 2026-11-14: only the halo sprites when braking).
       Part& p = it->second;
       float turn = 0.0f, rel[9];
       for (int r = 0; r < 3; ++r)
         for (int k = 0; k < 3; ++k) {
-          rel[r * 3 + k] = d.m[r * 4 + k] - body[r * 4 + k];
+          const float s2 = body[k * 4] * body[k * 4] + body[k * 4 + 1] * body[k * 4 + 1] + body[k * 4 + 2] * body[k * 4 + 2];
+          rel[r * 3 + k] = (d.m[r * 4] * body[k * 4] + d.m[r * 4 + 1] * body[k * 4 + 1] + d.m[r * 4 + 2] * body[k * 4 + 2]) /
+                           (s2 > 1e-12f ? s2 : 1.0f);
           if (p.hasRel) turn = (std::max)(turn, std::fabs(rel[r * 3 + k] - p.rel[r * 3 + k]));
         }
       memcpy(p.rel, rel, sizeof rel);
@@ -919,10 +929,13 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   // (user 2026-11-09: rear lights only came on after toggling L). A part drawn while braking stops being one (judge_frame).
   // Which rear lens of the model it is: by vertex count, and by place where a tail and a brake lens share the count
   // (Celica TA64: both 14 vertices; the tail lens taken for a brake lens lost its glow at the first brake press).
-  if (p.rearRole < 0 && prims <= kLensMaxPrims) {
+  // A big lens part is looked up too when its vertex count names it (i20 WRC: e_light_lb, 705 vertices, over the small-lens
+  // limit, so its tail lamps never glowed); a place-only match stays with small draws.
+  if (p.rearRole < 0) {
     bool needPos = false;
     int role = rbrrtx_headlights_rear_lens(numV, nullptr, &needPos);
-    if (needPos) {
+    if (needPos && prims > kLensMaxPrims) role = 0;
+    else if (needPos) {
       float w[3];
       role = draw_centre(dev, base, minIdx, numV, world, w) ? rbrrtx_headlights_rear_lens(numV, w, nullptr) : -1;
       if (role < 0 && ++p.rearTries > 120) role = 0;   // never placed: no role
@@ -936,6 +949,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
       }
     }
   }
+  if (!p.named && (p.rearRole > 0 || p.head > 0 || rbrrtx_headlights_is_lamp_count(numV))) p.named = true;
   if (p.head < 0) {                                      // a head lamp part of the model: by vertex count, or by place
     bool needPos = false;
     int head = rbrrtx_headlights_head_lamp_at(numV, nullptr, &needPos) ? 1 : 0;

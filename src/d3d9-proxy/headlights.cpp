@@ -2833,6 +2833,8 @@ bool rbrrtx_headlights_is_head_lamp(unsigned numV) {
   return std::find(g_car.headLampVerts.begin(), g_car.headLampVerts.end(), numV) != g_car.headLampVerts.end();
 }
 
+bool rbrrtx_headlights_is_lamp_count(unsigned numV) { return numV >= 3 && g_lampCounts.count(numV) != 0; }
+
 bool rbrrtx_headlights_is_brake_lens(unsigned numV) {
   return std::find(g_car.brakeLensVerts.begin(), g_car.brakeLensVerts.end(), numV) != g_car.brakeLensVerts.end();
 }
