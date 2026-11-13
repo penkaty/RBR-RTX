@@ -20,6 +20,9 @@ def Xform "RootNode"
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/asphalt_035_n.dds@ (
                     colorSpace = "raw"
                 )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/road_tarmac_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -33,6 +36,9 @@ def Xform "RootNode"
                 float inputs:reflection_roughness_constant = 0.82
                 float inputs:metallic_constant = 0
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/gravel_030_n.dds@ (
+                    colorSpace = "raw"
+                )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/road_generic_r.dds@ (
                     colorSpace = "raw"
                 )
                 token outputs:out
@@ -50,6 +56,9 @@ def Xform "RootNode"
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/gravel_045_n.dds@ (
                     colorSpace = "raw"
                 )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/road_gravel_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -63,6 +72,9 @@ def Xform "RootNode"
                 float inputs:reflection_roughness_constant = 0.55
                 float inputs:metallic_constant = 0
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/snow_020_n.dds@ (
+                    colorSpace = "raw"
+                )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/road_snow_r.dds@ (
                     colorSpace = "raw"
                 )
                 token outputs:out
@@ -80,6 +92,9 @@ def Xform "RootNode"
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/asphalt_020_n.dds@ (
                     colorSpace = "raw"
                 )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/road_line_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -93,6 +108,9 @@ def Xform "RootNode"
                 float inputs:reflection_roughness_constant = 0.9
                 float inputs:metallic_constant = 0
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/dirt_030_n.dds@ (
+                    colorSpace = "raw"
+                )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/ground_generic_r.dds@ (
                     colorSpace = "raw"
                 )
                 token outputs:out
@@ -110,6 +128,9 @@ def Xform "RootNode"
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/dirt_035_n.dds@ (
                     colorSpace = "raw"
                 )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/ground_dirt_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -122,6 +143,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.95
                 float inputs:metallic_constant = 0
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/ground_grass_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -134,6 +158,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.95
                 float inputs:metallic_constant = 0
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/ground_far_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -147,6 +174,9 @@ def Xform "RootNode"
                 float inputs:reflection_roughness_constant = 0.8
                 float inputs:metallic_constant = 0
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/rock_050_n.dds@ (
+                    colorSpace = "raw"
+                )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/rock_r.dds@ (
                     colorSpace = "raw"
                 )
                 token outputs:out
@@ -164,6 +194,9 @@ def Xform "RootNode"
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/concrete_025_n.dds@ (
                     colorSpace = "raw"
                 )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/building_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -179,6 +212,9 @@ def Xform "RootNode"
                 asset inputs:normalmap_texture = @../a_rbrrtx_classmat/textures/wood_030_n.dds@ (
                     colorSpace = "raw"
                 )
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/wood_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -191,6 +227,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.5
                 float inputs:metallic_constant = 0.6
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/metal_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -203,6 +242,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.5
                 float inputs:metallic_constant = 0.3
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/vehicle_prop_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -215,6 +257,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.6
                 float inputs:metallic_constant = 0
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/sign_banner_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -227,6 +272,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.65
                 float inputs:metallic_constant = 0.4
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/fence_cutout_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -239,6 +287,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.85
                 float inputs:metallic_constant = 0
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/cutout_generic_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -251,6 +302,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.8
                 float inputs:metallic_constant = 0
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/people_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }
@@ -263,6 +317,9 @@ def Xform "RootNode"
                 uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
                 float inputs:reflection_roughness_constant = 0.75
                 float inputs:metallic_constant = 0
+                asset inputs:reflectionroughness_texture = @../a_rbrrtx_classmat/textures/prop_r.dds@ (
+                    colorSpace = "raw"
+                )
                 token outputs:out
             }
         }

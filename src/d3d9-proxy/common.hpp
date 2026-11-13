@@ -260,6 +260,14 @@ void rbrrtx_foliage_startup();                                 // before the bac
 void rbrrtx_foliage_draw(void* texture);                       // a swaying foliage draw's stage-0 texture
 void rbrrtx_foliage_frame(bool inMenu);                        // per Present; new foliage reaches the mod in the menu only
 void rbrrtx_foliage_status(wchar_t* out, size_t n);
+// surfmap.cpp: a ground texture's surface from the game's physics (tarmac, gravel, grass ...): wet lists with and without
+// puddles, class materials in the generated mod (section "classes"). Settings: materials.ini [surfaces].
+void rbrrtx_surfmap_startup(const wchar_t* modsDir);           // before the backend loads, after rbrrtx_genmod_init
+bool rbrrtx_surfmap_wants(unsigned long long hash);            // read this draw's triangles for the texture?
+void rbrrtx_surfmap_samples(unsigned long long hash, const float* pts, unsigned n);   // points on its up-facing triangles
+void rbrrtx_surfmap_twins(const char* list);                   // comp.cpp's ground twins, sent with rtx.wetTextures
+void rbrrtx_surfmap_frame(bool inMenu, bool apiOk);            // per Present
+void rbrrtx_surfmap_status(wchar_t* out, size_t n);
 // comp.cpp: set a Remix option through the API (logged to rbrrtx_api_options.log; dropped from user.conf at the next start
 // if listed in d3d9_proxy.cpp proxy_owned_option). False before the API is up.
 bool rbrrtx_remix_set(const char* key, const char* value);

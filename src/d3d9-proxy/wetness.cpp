@@ -18,7 +18,12 @@ namespace {
 bool g_on = true, g_loaded = false;
 float g_base[3] = { 0.0f, 0.40f, 0.80f };             // RBR's Dry / Damp / Wet track condition (user 2026-11-05)
 float g_fog = 0.15f, g_rainLight = 0.40f, g_rainHeavy = 0.80f, g_snowTarget = -1.0f;
-std::string g_option = "rtx.wet.globalWetness", g_rainOption, g_dropsOption;
+std::string g_option = "rtx.wet.globalWetness", g_rainOption, g_dropsOption, g_darkOption;
+// The game has its own wet look: a Damp or Wet track loads repainted texture sets (measured over 3072 dry/wet pairs of
+// the catalog, 2026-11-13: every class, signs and people included, at about 0.78x and 0.60x the dry brightness, a
+// little more saturated, no hue change). The runtime's darkening of wet ground comes on top, so it is scaled down by
+// the set that is loaded; rain on a Dry track has dry textures and gets all of it.
+float g_dark = 0.5f, g_darkSet[3] = { 1.0f, 0.6f, 0.25f }, g_darkSent = -1.0f;
 float g_w = 0.0f, g_sent = -1.0f, g_rainSent = -1.0f, g_rainNow = 0.0f, g_logged = -1.0f;
 int g_dropsSent = -1;
 unsigned g_frames = 0;
@@ -52,6 +57,10 @@ void load() {
   g_option = ini_s(path, L"option", "rtx.wet.globalWetness");
   g_rainOption = ini_s(path, L"rain_option", "rtx.wet.rainIntensity");
   g_dropsOption = ini_s(path, L"raindrops_option", "rtx.wet.raindrops");
+  g_darkOption = ini_s(path, L"darkening_option", "rtx.wet.albedoDarkening");
+  g_dark = ini_f(path, L"darkening", g_dark);
+  g_darkSet[1] = ini_f(path, L"darkening_damp_textures", g_darkSet[1]);
+  g_darkSet[2] = ini_f(path, L"darkening_wet_textures", g_darkSet[2]);
   rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness (%s): %s, dry %.2f (fog %.2f) damp %.2f wet %.2f, light rain %.2f, heavy rain %.2f, -> %S%s%S",
                 path, g_on ? L"on" : L"OFF", g_base[0], g_fog, g_base[1], g_base[2], g_rainLight, g_rainHeavy, g_option.c_str(),
                 g_rainOption.empty() ? L"" : L", rain -> ", g_rainOption.c_str());
@@ -90,7 +99,7 @@ void rbrrtx_wetness_frame(bool hold) {
   if (stage != wasStage) {
     wasStage = stage;
     rbrrtx_menu_release_stage_locks();
-    g_sent = g_rainSent = -1.0f;
+    g_sent = g_rainSent = g_darkSent = -1.0f;
     g_dropsSent = -1;
   }
   bool snow = false;
@@ -109,6 +118,16 @@ void rbrrtx_wetness_frame(bool hold) {
     char v[32];
     sprintf_s(v, "%.3f", g_w);
     if (rbrrtx_remix_set(g_option.c_str(), v)) g_sent = g_w;
+  }
+  const float dark = g_dark * g_darkSet[stage && info ? std::clamp(si.wetness, 0, 2) : 0];
+  if (!g_darkOption.empty() && std::fabs(dark - g_darkSent) > 0.004f && !rbrrtx_menu_option_locked(g_darkOption.c_str(), &menuValue)) {
+    char v[32];
+    sprintf_s(v, "%.3f", dark);
+    if (rbrrtx_remix_set(g_darkOption.c_str(), v)) {
+      g_darkSent = dark;
+      if (stage) rbrrtx_log_to(L"rbrrtx_comp.log", L"wetness: %S = %.2f (the %s track's own textures are already %s)", g_darkOption.c_str(), dark,
+                               rbrrtx_wetness_name(std::clamp(si.wetness, 0, 2)), si.wetness > 0 ? L"darkened by the game" : L"dry");
+    }
   }
   const float drops = g_rainNow;                       // raindrop rings on puddles and wet ground while it rains
   if (!g_rainOption.empty() && std::fabs(drops - g_rainSent) > 0.01f && !rbrrtx_menu_option_locked(g_rainOption.c_str(), &menuValue)) {

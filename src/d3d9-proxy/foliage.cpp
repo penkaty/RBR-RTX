@@ -49,6 +49,9 @@ struct Cfg {
   float brightest = 0.8f;                                // scattering albedo = texture colour, brightest channel this
   float albedo[3] = { 0.6f, 0.75f, 0.45f };              // scattering albedo when the texture's colour is unknown
   float anisotropy = 0.3f;                               // forward scattering
+  // Leaves are matte. Without a value the material takes Remix's default 0.5: glossy cards that catch every light and
+  // reflection and come out brighter than the game drew them (user 2026-11-13).
+  float roughness = 1.0f;
 } g_cfg;
 
 struct Leaf { float t[3]; };                             // the texture's colour, brightest channel 1 (0 0 0: unknown)
@@ -118,6 +121,7 @@ void load_cfg() {
   c.brightest = std::clamp(f(L"scattering_brightest", c.brightest), 0.0f, 1.0f);
   rgb(L"scattering_albedo", c.albedo);
   c.anisotropy = std::clamp(f(L"anisotropy", c.anisotropy), -0.99f, 0.99f);
+  c.roughness = std::clamp(f(L"roughness", c.roughness), 0.0f, 1.0f);
   g_cfg = c;
   wchar_t nf[2048] = {};
   GetPrivateProfileStringW(L"foliage", L"not_foliage", L"", nf, 2048, path);
@@ -143,15 +147,18 @@ void publish() {
     float a[3];
     const bool known = (std::max)({ l.t[0], l.t[1], l.t[2] }) > 0.0f;
     for (int i = 0; i < 3; ++i) a[i] = known ? (std::max)(0.05f, l.t[i] * g_cfg.brightest) : g_cfg.albedo[i];
-    char in[768];
-    sprintf_s(in,
+    char in[1024];
+    const int head = sprintf_s(in, "                float inputs:reflection_roughness_constant = %.3f\n"
+                                   "                float inputs:metallic_constant = 0\n", g_cfg.roughness);
+    if (g_cfg.enabled)
+      sprintf_s(in + head, sizeof(in) - head,
               "                float inputs:subsurface_measurement_distance = %.4f\n"
               "                color3f inputs:subsurface_transmittance_color = (%.4f, %.4f, %.4f)\n"
               "                color3f inputs:subsurface_single_scattering_albedo = (%.4f, %.4f, %.4f)\n"
               "                float inputs:subsurface_volumetric_anisotropy = %.4f\n",
               g_cfg.thickness, g_cfg.transmittance[0], g_cfg.transmittance[1], g_cfg.transmittance[2], a[0], a[1], a[2],
               g_cfg.anisotropy);
-    if (g_cfg.enabled) body += rbrrtx_genmod_material(kv.first, "swaying foliage: thin opaque", in);
+    body += rbrrtx_genmod_material(kv.first, g_cfg.enabled ? "swaying foliage: matte, thin opaque" : "swaying foliage: matte", in);
     char line[96];
     sprintf_s(line, "%016llX %.4f %.4f %.4f\n", static_cast<unsigned long long>(kv.first), l.t[0], l.t[1], l.t[2]);
     cache += line;

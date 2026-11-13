@@ -312,6 +312,7 @@ bool g_groundBaseFF = true;                            // bake mode: opaque RLDo
 unsigned g_layerDraws = 0, g_layerMissing = 0, g_layerUntagged = 0, g_groundFFBases = 0;
 void ground_tag_layer(unsigned long long hx);
 void ground_note_draw(IDirect3DDevice9* dev, bool vsDriven);
+void surfmap_note_draw(IDirect3DDevice9* dev);
 void ground_frame();
 void ground_tags_flush(bool force);
 void ground_tags_load();
@@ -3211,7 +3212,7 @@ void end_frame(IDirect3DDevice9* dev) {
   if (g_apiOk) {                                            // generated mod: lit car parts, foliage (Remix reloads it)
     { RBR_ZONE(PZ_EF_LITPARTS); rbrrtx_litparts_frame(rbrrtx_car_model_path(), rbrrtx_headlights_game_lamps()); }
     { RBR_ZONE(PZ_EF_CARPAINT); rbrrtx_carpaint_frame(rbrrtx_car_model_path()); }
-    { RBR_ZONE(PZ_EF_FOLIAGE); rbrrtx_foliage_frame(g_inMenu); }
+    { RBR_ZONE(PZ_EF_FOLIAGE); rbrrtx_foliage_frame(g_inMenu); rbrrtx_surfmap_frame(g_inMenu, g_apiOk); }
     { RBR_ZONE(PZ_EF_GENMOD); rbrrtx_genmod_tick(); }
   }
   if (g_sweepDumpFrames && --g_sweepDumpFrames == 0) sweep_dump_end();
@@ -5647,7 +5648,8 @@ struct GroundGeom { unsigned samples = 0, unreadable = 0; double area = 0, up = 
 std::unordered_map<unsigned long long, GroundGeom> g_groundGeom;
 unsigned g_groundGeomFrame = 0, g_groundGeomThisFrame = 0, g_groundNotGround = 0;
 
-bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area, double minUp = 0.9) {
+// centroids: the centres of the up-facing triangles (xyz each), for surfmap.cpp's physics probe.
+bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area, double minUp = 0.9, std::vector<float>* centroids = nullptr) {
   if (!g_curInfo || !(g_curInfo->flags & SH_WORLDSPACE) || g_drawNumVert == 0 || g_drawNumVert > 60000) return false;
   int posOff = -1, uvOff = -1, uvType = -1;
   stream0_layout(dev, &posOff, &uvOff, &uvType);
@@ -5696,7 +5698,10 @@ bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area, double minUp 
     const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
     if (len < 1e-9) return;
     a += len;
-    if (std::fabs(n[1]) / len > minUp) u += len;          // up or down: the winding does not matter
+    if (std::fabs(n[1]) / len > minUp) {                  // up or down: the winding does not matter
+      u += len;
+      if (centroids) for (int k = 0; k < 3; ++k) centroids->push_back((A[k] + B[k] + C[k]) / 3.0f);
+    }
   };
   if (g_drawType == D3DPT_TRIANGLELIST) for (size_t i = 0; i + 2 < seq.size(); i += 3) tri(seq[i], seq[i + 1], seq[i + 2]);
   else if (g_drawType == D3DPT_TRIANGLESTRIP) for (size_t i = 0; i + 2 < seq.size(); ++i) tri(seq[i], seq[i + 1], seq[i + 2]);
@@ -5705,6 +5710,27 @@ bool draw_up_area(IDirect3DDevice9* dev, double* up, double* area, double minUp 
   *up = u;
   *area = a;
   return true;
+}
+
+// A static world-space scenery draw: surfmap.cpp asks the game's physics what surface lies under the texture's triangles
+// (tarmac, gravel, grass ...). Up to 12 points per draw, spread over its up-facing triangles.
+void surfmap_note_draw(IDirect3DDevice9* dev) {
+  DWORD blend = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  if (blend) return;
+  IDirect3DBaseTexture9* t0 = nullptr;
+  dev->lpVtbl->GetTexture(dev, 0, &t0);
+  if (!t0) return;
+  const unsigned long long hx = rbrrtx_texture_hash(t0);
+  t0->lpVtbl->Release(t0);
+  if (!rbrrtx_surfmap_wants(hx)) return;
+  double up = 0, area = 0;
+  std::vector<float> c;
+  if (!draw_up_area(dev, &up, &area, 0.8, &c) || c.empty()) { rbrrtx_surfmap_samples(hx, nullptr, 0); return; }
+  const size_t tris = c.size() / 3, want = (std::min)(tris, static_cast<size_t>(12));
+  std::vector<float> pts(want * 3);
+  for (size_t i = 0; i < want; ++i) std::memcpy(&pts[i * 3], &c[((i * tris + tris / 2) / want) * 3], 12);
+  rbrrtx_surfmap_samples(hx, pts.data(), static_cast<unsigned>(want));
 }
 
 // 1 = the texture counts as ground, 0 = not (walls, roofs, signs, steep slopes), -1 = still open. At most 4 geometry reads
@@ -6043,7 +6069,7 @@ void send_decal_list() {
       twins += t;
     }
     remix_set("rtx.smoothNormalsTextures", twins.c_str());
-    remix_set("rtx.wetTextures", twins.c_str());
+    rbrrtx_surfmap_twins(twins.c_str());                  // rtx.wetTextures has one sender: surfmap.cpp adds the road textures
   }
 }
 
@@ -7028,6 +7054,9 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_DOUBLE) && g_vin == kVinDecl)   // RLDouble ground: terrain tags, stage log
     ground_note_draw(dev, ff_scenery_class() != 1);
+  if (g_enabled && g_primaryRT && g_curInfo && (g_curInfo->flags & SH_WORLDSPACE) &&
+      !(g_curInfo->flags & (SH_CAR | SH_SKY | SH_GLASS | SH_PARTICLE | SH_SWAY | SH_ANIM)))
+    surfmap_note_draw(dev);                              // which surface the game's physics has under this texture
   // Registered once as a retained Remix API instance (apiworld.cpp): not sent again (alpha state as lowered above).
   if (g_dip.valid && api_world_class()) {
     const bool sway = (g_curInfo->flags & SH_SWAY) != 0;
