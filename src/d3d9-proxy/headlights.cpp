@@ -490,6 +490,8 @@ struct CarModel {
   struct Extra { std::string name; V3 pos = {}; float rgb[3] = { 1, 1, 1 }; bool weak = false; bool brake = false; };
   std::vector<Extra> extras;
   std::vector<V3> lampPts;                             // vertices of the lamp parts, root frame (lens_front)
+  std::vector<V3> auxPts;                              // the same of the auxiliary lamps (pod, bumper, ramp): only their own beams clear them
+  std::vector<unsigned> headLampVerts;                 // vertex counts of the head lamp parts (e_light_lf / _rf, lit and unlit; not their glass)
   bool hasLens = false;                                // lamp glass / lens / cover meshes of its own: the light is inside them
   std::vector<unsigned> brakeLensVerts;                // vertex counts of the unlit brake lamp lenses (e_light_brake_*, not *_lit)
   std::vector<unsigned> auxVerts;                      // vertex counts of the auxiliary lamp meshes (not their glass)
@@ -814,7 +816,7 @@ bool cockpit_quad(float c[4][3]) {                     // camera space (x right,
 
 // The vertices of a car's lamp parts (e_light*, e_lamp*, e_bumperlight*, lens or cover glass) in the root frame, for
 // lens_front. Same mesh records as load_windscreen: tag 0xC 0 k 1, size, name\0, +136 count, +144 (position, normal).
-struct LampBox { V3 lo, hi; };
+struct LampBox { V3 lo, hi; int side = 0; V3 mid = {}; unsigned n = 0; };   // side: 1 = e_light*_lf, 2 = _rf (head lamps)
 std::vector<LampBox> g_lampBoxes;                      // bounds of each lamp part of this car (not the aux lamps), root frame
 
 // A light node that lies outside every lamp part is moved onto the nearest one (within kSnapReach): on some models the
@@ -864,19 +866,30 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
     total_of(nodes, node->second, false, R, t);
     V3 mid = {};
     LampBox box = { { 1e9f, 1e9f, 1e9f }, { -1e9f, -1e9f, -1e9f } };
+    const bool auxPt = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
+                       low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
+    std::vector<V3>& pts = auxPt ? g_car.auxPts : g_car.lampPts;
     for (uint32_t k = 0; k < n; ++k) {
       float v[3];
       std::memcpy(v, p + a + 144 + k * 24, 12);
-      g_car.lampPts.push_back({ R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2] + t.x,
+      pts.push_back({ R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2] + t.x,
                                 R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2] + t.y,
                                 R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2] + t.z });
-      const V3& w = g_car.lampPts.back();
+      const V3& w = pts.back();
       mid = mid + w * (1.0f / n);
       box.lo = { (std::min)(box.lo.x, w.x), (std::min)(box.lo.y, w.y), (std::min)(box.lo.z, w.z) };
       box.hi = { (std::max)(box.hi.x, w.x), (std::max)(box.hi.y, w.y), (std::max)(box.hi.z, w.z) };
     }
     const bool auxPart = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
                          low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
+    // The head lamps by the model's own names: where they are (fix_front_nodes) and which draws they are (litparts.cpp).
+    if (!auxPart && (!low.compare(0, 10, "e_light_lf") || !low.compare(0, 10, "e_light_rf") ||
+                     !low.compare(0, 15, "e_lightglass_lf") || !low.compare(0, 15, "e_lightglass_rf"))) {
+      box.side = low.find("_lf") != std::string::npos ? 1 : 2;
+      box.mid = mid;
+      box.n = n;
+      if (low.find("glass") == std::string::npos && n >= 16) g_car.headLampVerts.push_back(n);
+    }
     if (n >= 16 && !auxPart) g_lampBoxes.push_back(box);   // placeholder parts of a few vertices are not lamps
     if (low.find("glass") != std::string::npos) {      // the flat front that glows (user 2026-11-09)
       const bool aux = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
@@ -894,29 +907,76 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
 constexpr float kLensAxis = 0.12f, kLensReach = 0.35f;
 struct LensHit { V3 pos; float front; };
 std::vector<LensHit> g_lensHits;                       // per lamp position, this car
-float lens_front(const V3& pos, const V3& axis) {
+// aux: an auxiliary lamp's own beam, which also clears the auxiliary lamp parts. A head lamp does not: the Golf's lamp pod
+// (e_light_ramp_n_lit) lies 11.6 cm ahead of the right head lamp and pushed that beam out in front of the car (user 2026-11-13).
+float lens_front(const V3& pos, const V3& axis, bool aux = false) {
   for (const LensHit& h : g_lensHits) if (len(h.pos - pos) < 1e-3f) return h.front;
   float front = 0.0f;
-  for (const V3& v : g_car.lampPts) {
-    const V3 r = v - pos;
-    const float along = dot(r, axis);
-    if (along < -0.05f || along > kLensReach || along <= front) continue;
-    const V3 side = r - axis * along;
-    if (dot(side, side) < kLensAxis * kLensAxis) front = along;
-  }
+  auto scan = [&](const std::vector<V3>& pts) {
+    for (const V3& v : pts) {
+      const V3 r = v - pos;
+      const float along = dot(r, axis);
+      if (along < -0.05f || along > kLensReach || along <= front) continue;
+      const V3 side = r - axis * along;
+      if (dot(side, side) < kLensAxis * kLensAxis) front = along;
+    }
+  };
+  scan(g_car.lampPts);
+  if (aux) scan(g_car.auxPts);
   g_lensHits.push_back({ pos, front });
   return front;
 }
 
 // Where a beam starts relative to its node: `wanted` metres ahead, but at least clear of the lamp's glass.
-V3 beam_ahead(const V3& node, float wanted) {
-  return g_car.forward * (std::max)(wanted, lens_front(node, g_car.forward) + g_cfg.radius + 0.01f);
+V3 beam_ahead(const V3& node, float wanted, bool aux = false) {
+  return g_car.forward * (std::max)(wanted, lens_front(node, g_car.forward, aux) + g_cfg.radius + 0.01f);
+}
+
+// The head lamp nodes against the head lamp parts (e_light_lf / _rf and their glass). The game shows no glow sprite at
+// Point_light_lf / _rf on many cars (no [LightN] for them in <car>_settings.ini: Golf, Yaris Rally2), so nobody ever saw
+// where the modeller left them: the Golf's left node lies in the lamp pod, 23 cm from its lamp. A node outside its own
+// part takes the other side's place mirrored, if that one is inside its part, else the middle of its part.
+// False = the model has no such parts (the nodes stay; snap_to_lamp looks at them).
+bool fix_front_nodes() {
+  LampBox side[3];
+  bool have[3] = {};
+  for (const LampBox& b : g_lampBoxes) {
+    if (!b.side) continue;
+    LampBox& s = side[b.side];
+    if (!have[b.side]) { s = b; have[b.side] = true; continue; }
+    if (b.n > s.n) { s.mid = b.mid; s.n = b.n; }
+    s.lo = { (std::min)(s.lo.x, b.lo.x), (std::min)(s.lo.y, b.lo.y), (std::min)(s.lo.z, b.lo.z) };
+    s.hi = { (std::max)(s.hi.x, b.hi.x), (std::max)(s.hi.y, b.hi.y), (std::max)(s.hi.z, b.hi.z) };
+  }
+  if (!have[1] || !have[2]) return false;
+  auto inside = [](const V3& p, const LampBox& b) {
+    return p.x >= b.lo.x && p.x <= b.hi.x && p.y >= b.lo.y && p.y <= b.hi.y && p.z >= b.lo.z - 0.15f && p.z <= b.hi.z + 0.15f;
+  };
+  const bool li = inside(g_car.lf, side[1]), ri = inside(g_car.rf, side[2]);
+  if (li && ri) return true;
+  if (inside(g_car.lf, side[2]) && inside(g_car.rf, side[1])) return true;   // named the other way round: both are in a lamp
+  const float c = (side[1].lo.x + side[1].hi.x + side[2].lo.x + side[2].hi.x) * 0.25f;
+  const V3 wasL = g_car.lf, wasR = g_car.rf;
+  if (ri && !li) {
+    g_car.lf = { 2.0f * c - g_car.rf.x, g_car.rf.y, g_car.rf.z };
+    if (!inside(g_car.lf, side[1])) g_car.lf = side[1].mid;
+  } else if (li && !ri) {
+    g_car.rf = { 2.0f * c - g_car.lf.x, g_car.lf.y, g_car.lf.z };
+    if (!inside(g_car.rf, side[2])) g_car.rf = side[2].mid;
+  } else {
+    g_car.lf = side[1].mid;
+    g_car.rf = side[2].mid;
+  }
+  hlog(L"headlights: head lamp node(s) outside their own lamp part (left %s, right %s): lf (%.3f %.3f %.3f) -> (%.3f %.3f %.3f), "
+       L"rf (%.3f %.3f %.3f) -> (%.3f %.3f %.3f)", li ? L"inside" : L"OUTSIDE", ri ? L"inside" : L"OUTSIDE",
+       wasL.x, wasL.y, wasL.z, g_car.lf.x, g_car.lf.y, g_car.lf.z, wasR.x, wasR.y, wasR.z, g_car.rf.x, g_car.rf.y, g_car.rf.z);
+  return true;
 }
 
 // The same behind the car: a tail lamp inside its lens lit the glass itself (user 2026-11-09: "the taillight's glass gets hazy and opaque").
-V3 beam_behind(const V3& node, float wanted) {
+V3 beam_behind(const V3& node, float wanted, bool aux = false) {
   const V3 back = g_car.forward * -1.0f;
-  return back * (std::max)(wanted, lens_front(node, back) + g_cfg.radius + 0.01f);
+  return back * (std::max)(wanted, lens_front(node, back, aux) + g_cfg.radius + 0.01f);
 }
 
 void load_car_model(const std::wstring& file) {
@@ -1007,7 +1067,9 @@ void load_car_model(const std::wstring& file) {
   if (g_car.lamps) {
     int moved = 0;
     float farthest = 0.0f;
+    const bool frontByPart = fix_front_nodes();
     for (V3* n : { &g_car.lf, &g_car.rf, &g_car.lb, &g_car.rb, &g_car.revl, &g_car.revr }) {
+      if (frontByPart && (n == &g_car.lf || n == &g_car.rf)) continue;
       const V3 was = *n;
       if (snap_to_lamp(*n)) { ++moved; farthest = (std::max)(farthest, len(*n - was)); }
     }
@@ -1892,7 +1954,7 @@ void send_lamps(const float C[16], const wchar_t* src) {
       const float k = g_cfg.extraIntensity * (e.weak ? g_cfg.extraWeak : 1.0f);
       const float rad[3] = { g_cfg.brightsRadiance[0] * k * e.rgb[0], g_cfg.brightsRadiance[1] * k * e.rgb[1],
                              g_cfg.brightsRadiance[2] * k * e.rgb[2] };
-      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_ahead(e.pos, g_cfg.forward)), e.weak ? wdir : edir, e.weak ? g_cfg.cone : g_cfg.extraCone, rad,
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_ahead(e.pos, g_cfg.forward, true)), e.weak ? wdir : edir, e.weak ? g_cfg.cone : g_cfg.extraCone, rad,
                 e.weak ? g_cfg.softness : g_cfg.brightsSoftness);
     }
   }
@@ -1903,7 +1965,7 @@ void send_lamps(const float C[16], const wchar_t* src) {
       const CarModel::Extra& e = g_car.extras[i];
       if (!e.brake) continue;
       const float rad[3] = { g_cfg.brakeRadiance[0] * e.rgb[0], g_cfg.brakeRadiance[1] * e.rgb[1], g_cfg.brakeRadiance[2] * e.rgb[2] };
-      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_behind(e.pos, g_cfg.rearBack)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
+      draw_lamp(g_extraLamps[i], to_world(C, e.pos + beam_behind(e.pos, g_cfg.rearBack, true)), rdir, g_cfg.rearCone, rad, g_cfg.rearSoftness);
     }
   }
   for (Lamp& l : g_lamps) if (l.h && l.sent != g_frameNo) destroy_lamp(l);
@@ -1938,8 +2000,13 @@ void pose_log(const float* body) {
   if (g_frameNo % 120 == 0) fflush(g_poseCsv);
 }
 
+// A sweep step (proxy.headlights = 0): no lamp is sent, so the step measures what the car's lights cost.
+bool g_muted = false;
+void rbrrtx_headlights_mute(bool on) { g_muted = on; }
+
 void rbrrtx_headlights_emit() {
   if (g_emitted || !g_api || !g_cfg.enabled || g_track < 0) return;
+  if (g_muted) { destroy_all(); return; }
   g_emitted = true;
   g_frameT = now_s();
   hist_push(g_frameT);
@@ -2533,6 +2600,10 @@ bool rbrrtx_headlights_forward(float out[3]) {
   const V3 f = norm(row(g_lastRoot, 2) * g_car.forward.z);
   out[0] = f.x; out[1] = f.y; out[2] = f.z;
   return true;
+}
+
+bool rbrrtx_headlights_is_head_lamp(unsigned numV) {
+  return std::find(g_car.headLampVerts.begin(), g_car.headLampVerts.end(), numV) != g_car.headLampVerts.end();
 }
 
 bool rbrrtx_headlights_is_brake_lens(unsigned numV) {

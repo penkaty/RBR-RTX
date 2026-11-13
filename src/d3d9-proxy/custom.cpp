@@ -399,6 +399,22 @@ bool rbrrtx_dds_neutral_mask(const wchar_t* src, const wchar_t* dst) {
   return write_rgba_dds(dst, w, h, px);
 }
 
+// An emission mask of a DDS's bright parts only: a head lamp's reflectors, bulbs and LED strips are painted bright, its housing
+// and trim are not, so the lamps glow and the lamp unit around them stays dark (user 2026-11-13, Yaris Rally2: "the headlight
+// body is getting lit not the actual lamps inside it").
+bool rbrrtx_dds_bright_mask(const wchar_t* src, const wchar_t* dst) {
+  std::vector<uint32_t> px;
+  unsigned w = 0, h = 0;
+  if (!read_dds_rgba(src, px, w, h)) return false;
+  for (uint32_t& p : px) {
+    const float v = static_cast<float>((std::max)((std::max)((p >> 16) & 0xFF, (p >> 8) & 0xFF), p & 0xFF)) / 255.0f;
+    const float t = std::clamp((v - 0.45f) / 0.40f, 0.0f, 1.0f), m = t * t * (3.0f - 2.0f * t) * 255.0f;
+    auto ch = [&](float tint) { return static_cast<uint32_t>(std::lround(std::clamp(m * tint, 0.0f, 255.0f))); };
+    p = 0xFF000000u | (ch(1.0f) << 16) | (ch(0.96f) << 8) | ch(0.88f);
+  }
+  return write_rgba_dds(dst, w, h, px);
+}
+
 void rbrrtx_custom_init(const remixapi_Interface* api) { g_api = api; }
 
 // ---- lights

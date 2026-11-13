@@ -453,14 +453,14 @@ void mask_frame(bool inMenu) {
     for (int xx = 0, last = -100000; xx < n; ++xx) {
       if (m.v[static_cast<size_t>(z) * n + xx] > 0) {
         ++road;
-        for (int k = (std::max)(last + 1, xx - r); k <= (std::min)(n - 1, xx + r); ++k) rows[static_cast<size_t>(z) * n + k] = 1;
+        for (int k = (std::max)((std::max)(last + 1, xx - r), 0); k <= (std::min)(n - 1, xx + r); ++k) rows[static_cast<size_t>(z) * n + k] = 1;
         last = (std::min)(n - 1, xx + r);
       }
     }
   for (int xx = 0; xx < n; ++xx)
     for (int z = 0, last = -100000; z < n; ++z) {
       if (rows[static_cast<size_t>(z) * n + xx]) {
-        for (int k = (std::max)(last + 1, z - r); k <= (std::min)(n - 1, z + r); ++k) wide[static_cast<size_t>(k) * n + xx] = 1;
+        for (int k = (std::max)((std::max)(last + 1, z - r), 0); k <= (std::min)(n - 1, z + r); ++k) wide[static_cast<size_t>(k) * n + xx] = 1;
         last = (std::min)(n - 1, z + r);
       }
     }

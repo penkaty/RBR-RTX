@@ -55,11 +55,12 @@ constexpr unsigned kDiscMinPrims = 60, kDiscMaxPrims = 800, kLensMaxPrims = 600,
 // A brake disc has kDiscLevels glow kinds, one per heat step (kDisc .. kDisc + kDiscLevels - 1; a twin and a material each).
 constexpr int kDiscLevels = 6;
 // kLampsOwn: a lamp that glows from its own picture (the mask is the texture), so the lens pattern stays (user 2026-11-09, E30 and aux lamps).
-enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kLampsOwn = kDisc + kDiscLevels, kLampBody = kLampsOwn + 1, kLampGlass = kLampBody + 1, kKinds = kLampGlass + 1 };
+enum { kBrake = 0, kLamps = 1, kReverse = 2, kSignals = 3, kTail = 3, kLampsDay = 4, kDisc = 5, kLampsOwn = kDisc + kDiscLevels, kLampBody = kLampsOwn + 1, kLampGlass = kLampBody + 1, kLampsBright = kLampGlass + 1, kKinds = kLampsBright + 1 };
+// kLampsBright: a head lamp part named by the car model (e_light_lf / _rf): only the bright parts of its picture glow (2026-11-13).
 // kLampBody: a lit lamp's body on its own lit picture, no glow. kLampGlass: the lamp's flat glass front, the part that glows (user 2026-11-09).
 const wchar_t* const kSignalName[kKinds] = { L"brake", L"lamps", L"reverse", L"tail", L"lamps by day", L"brake disc heat 1/6",
                                               L"brake disc heat 2/6", L"brake disc heat 3/6", L"brake disc heat 4/6",
-                                              L"brake disc heat 5/6", L"brake disc heat 6/6", L"lamps (own picture)", L"lamp body", L"lamp glass" };
+                                              L"brake disc heat 5/6", L"brake disc heat 6/6", L"lamps (own picture)", L"lamp body", L"lamp glass", L"head lamp (bright parts)" };
 
 struct Cfg {
   bool enabled = true;
@@ -98,7 +99,7 @@ struct Part {
   bool discQueued = false;                               // its heat steps are on their way to the generated mod
   // A lit part's class, read once from its own draw: glass over a lamp stays clear, a rear lamp keeps its own colour.
   int end = 0;                                           // +1 front lamp, -1 rear lamp, 0 not known
-  bool blended = false, classed = false;
+  bool blended = false, classed = false, headLogged = false;
   unsigned classTries = 0;
 };
 std::unordered_map<uint64_t, Part> g_parts;              // this car's draws
@@ -193,6 +194,7 @@ void load_cfg() {
   c.glow[kLampsOwn] = std::clamp(f(L"lamp_glow_own", c.glow[kLamps]), 0.0f, 10000.0f);
   c.glow[kLampBody] = 1.0f;                              // only has to pass the "is it on" tests: its material has no emission
   c.glow[kLampGlass] = c.glow[kLampsOwn];
+  c.glow[kLampsBright] = std::clamp(f(L"head_lamp_glow", 0.3f), 0.0f, 10000.0f);
   c.discGlow = std::clamp(f(L"brake_disc_glow", c.discGlow), 0.0f, 10000.0f);
   c.discRate = std::clamp(f(L"brake_disc_heat_rate", c.discRate), 0.0f, 10.0f);
   c.discCool = std::clamp(f(L"brake_disc_cool_seconds", c.discCool), 1.0f, 3600.0f);
@@ -307,13 +309,25 @@ std::wstring glass_mask_path(uint64_t src) {
   return std::wstring(dir) + name;
 }
 
+std::wstring bright_mask_path(uint64_t src) {
+  const wchar_t* dir = rbrrtx_genmod_dir();
+  if (!dir || !dir[0]) return std::wstring();
+  wchar_t name[48];
+  swprintf_s(name, L"\\litparts_bright_%016llX.dds", static_cast<unsigned long long>(src));
+  return std::wstring(dir) + name;
+}
+
 std::string material_for(const Entry& e) {
   const std::string a = rbrrtx_genmod_asset(e.file);
   char glow[64];
   sprintf_s(glow, "%.3f", g_cfg.glow[e.signal]);
   // A heat step's emission mask is its own colour file, not the atlas (lens and lamp glow keep the atlas as the mask).
   std::string mask = a;
-  if (e.signal >= kDisc) {
+  const bool heat = e.signal >= kDisc && e.signal < kDisc + kDiscLevels;   // (2026-11-13: the later kinds were taken for heat steps)
+  if (e.signal == kLampsBright) {
+    const std::wstring bm = bright_mask_path(e.src);
+    if (!bm.empty() && GetFileAttributesW(bm.c_str()) != INVALID_FILE_ATTRIBUTES) mask = rbrrtx_genmod_asset(bm);
+  } else if (heat) {
     const std::wstring hd = heat_dds(e.signal);
     if (!hd.empty()) mask = rbrrtx_genmod_asset(hd);
   } else if (e.signal == kLamps) {
@@ -341,7 +355,7 @@ std::string material_for(const Entry& e) {
       "                )\n"
       "                float inputs:emissive_intensity = " + glow + "\n";
   std::string in2 = in;
-  if (e.signal >= kDisc) {                               // the same colour as the constant, whichever of the two the material takes
+  if (heat) {                                            // the same colour as the constant, whichever of the two the material takes
     float c[3];
     heat_rgb(e.signal, c);
     char col[120];
@@ -434,6 +448,11 @@ void resolve_pending() {
     }
     llog(L"lit parts: %s part on atlas %016llX glows with %s (%s), twin %016llX", kSignalName[p.signal],
          static_cast<unsigned long long>(p.src), found->path.c_str(), how, static_cast<unsigned long long>(p.twin));
+    if (p.signal == kLampsBright) {
+      const std::wstring bm = bright_mask_path(p.src);
+      if (bm.empty() || !rbrrtx_dds_bright_mask(found->path.c_str(), bm.c_str()))
+        llog(L"lit parts: FAILED to write the bright-parts mask of atlas %016llX: the whole head lamp part glows", static_cast<unsigned long long>(p.src));
+    }
     if (p.signal == kLampGlass) {
       const std::wstring gm = glass_mask_path(p.src);
       if (gm.empty() || !rbrrtx_dds_neutral_mask(found->path.c_str(), gm.c_str()))
@@ -925,6 +944,28 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
       gt->lpVtbl->Release(gt);
       if (p.end >= 0 && gsrc && ok2d)
         if (void* twin = twin_for(dev, gsrc, kLampGlass, gd.Width, gd.Height)) return twin;
+    }
+  }
+  // Head lamps by the model's names (e_light_lf / _rf, lit or unlit: the game shows one of the two, and which one is "on"
+  // differs per car: Predicate on / off are swapped on the Yaris Rally2 and the Golf). No learning: the Fabia Rally2's were
+  // never learnt (run 20261113-050319). The lamp's inner face block, not its glass; only the bright parts of the picture glow.
+  if (!glassShader && g_raw[kLamps] > 0 && g_cfg.glow[kLampsBright] > 0.0f && !(p.mask & ((1u << kBrake) | (1u << kReverse))) &&
+      !p.tail && rbrrtx_headlights_is_head_lamp(numV)) {
+    if (!p.classed) class_part(dev, p, base, minIdx, numV, world);
+    if (p.end > 0) {
+      IDirect3DBaseTexture9* ht = nullptr;
+      dev->lpVtbl->GetTexture(dev, 0, &ht);
+      if (ht) {
+        const uint64_t hsrc = rbrrtx_texture_hash(ht);
+        D3DSURFACE_DESC hd = {};
+        const bool ok2d = ht->lpVtbl->GetType(ht) == D3DRTYPE_TEXTURE &&
+                          SUCCEEDED(reinterpret_cast<IDirect3DTexture9*>(ht)->lpVtbl->GetLevelDesc(reinterpret_cast<IDirect3DTexture9*>(ht), 0, &hd));
+        ht->lpVtbl->Release(ht);
+        if (hsrc && ok2d) {
+          if (!p.headLogged) { p.headLogged = true; llog(L"lit parts: a %u-triangle part is a head lamp by the car's model: its bright parts glow while the lamps are on", prims); }
+          return twin_for(dev, hsrc, kLampsBright, hd.Width, hd.Height);   // until its material is loaded: as the game draws it
+        }
+      }
     }
   }
   // Auxiliary lamps (bumper, bonnet, ramp lights): their meshes never switch, so learning finds nothing. The model names them; they

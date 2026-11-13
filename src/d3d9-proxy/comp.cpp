@@ -560,6 +560,14 @@ bool is_scenery_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curI
 // The VS is unbound lazily: consecutive FF draws keep it null, the next shader draw rebinds the game's VS (g_vsUnbound).
 bool g_ffCar = true;                                   // the car without its vertex shaders (RBRRTX_FF_CAR=0, ff_car key)
 unsigned g_ffCarDraws = 0;
+// The cockpit interior the same way (2026-11-13): it is drawn with a plugin's vertex shaders (no RBR .vso), 20 draws and
+// ~141,000 triangles that were captured and refitted every frame. Taken: a draw whose c0 is world x view x projection
+// (before_draw: g_drawUnkExact), opaque, 64 triangles or more (gauge layers and needles stay as they are), placed within
+// 6 m of the player's car. RBRRTX_FF_INTERIOR=0 or sweep switch proxy.ffinterior = 0 brings the capture back.
+bool g_ffInterior = true;
+unsigned g_ffIntDraws = 0;
+bool g_drawUnkExact = false;                           // this draw: plugin vertex shader, placed with the exact world matrix
+float g_drawUnkPos[3] = {};                            // that matrix's origin
 int g_ffMode = 2, g_ffBase = 2;                        // g_ffBase: start value (env), restored after K steps
 bool g_vsUnbound = false;                              // device has no VS while the game thinks g_curVS is bound
 unsigned g_ffDraws = 0, g_ffSwayFar = 0;                // FF scenery draws / of those swaying ones, since the last log line
@@ -2677,7 +2685,12 @@ bool before_draw(IDirect3DDevice9* dev) {
         const double z = wvp.m[r][2], w = wvp.m[r][3];
         bad = (std::max)(bad, std::fabs(fwd.m[r * 4 + 2] - z) / (std::max)({ 1.0, std::fabs(z), std::fabs(w) }));
       }
-      if (bad < 1e-3) { world = w2; ++g_st.unknownExact; } else ++g_st.unknownKept;
+      if (bad < 1e-3) {
+        world = w2;
+        ++g_st.unknownExact;
+        g_drawUnkExact = true;
+        g_drawUnkPos[0] = w2._41; g_drawUnkPos[1] = w2._42; g_drawUnkPos[2] = w2._43;
+      } else ++g_st.unknownKept;
     }
   }
   if (g_curInfo && (g_curInfo->flags & SH_USES_C8) && all_set(8, 4)) {
@@ -2768,6 +2781,9 @@ void log_frame(const wchar_t* why) {
   clog(L"  car %s: %.0f car draws per frame without their vertex shader", g_ffCar ? L"without vertex capture" : L"vertex-captured",
        g_logFrames ? static_cast<double>(g_ffCarDraws) / g_logFrames : 0.0);
   g_ffCarDraws = 0;
+  clog(L"  cockpit interior %s: %.0f plugin-shader draws per frame without their vertex shader",
+       g_ffInterior && g_ffCar ? L"without vertex capture" : L"vertex-captured", g_logFrames ? static_cast<double>(g_ffIntDraws) / g_logFrames : 0.0);
+  g_ffIntDraws = 0;
   if (g_st.unknownExact || g_st.unknownKept || g_st.apiObjects)
     clog(L"  this frame: %u draws of plugin (non-.vso) vertex shaders placed with the exact matrix, %u kept c0 x VP^-1 (c0 not world x view x projection); %u driver draws by the API",
          g_st.unknownExact, g_st.unknownKept, g_st.apiObjects);
@@ -2874,10 +2890,13 @@ struct ExpStep {
 };
 // Proxy switches a sweep step can set (proxy.<name> = 0/1); all go back to their run-start values after each step.
 bool g_litOn = true;                                         // lit car parts twin textures (litparts.cpp)
-bool g_sweepPrecip = false;                                  // emit Remix rain/drops while a sweep runs (normally not)
+bool g_sweepPrecip = true;                                   // Remix rain/drops stay on while a sweep runs (2026-11-13: every step of a rain sweep
+                                                             // measured a frame without rain); a step switches them off with proxy.precip = 0
+bool g_sweepLamps = true;                                    // proxy.headlights = 0: the car's Remix lamps off for a step
 extern bool g_dirtOn, g_glassOn;
 const std::pair<const wchar_t*, bool*> g_expSwitches[] = {
   {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip}, {L"ffcar", &g_ffCar},
+  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps},
 };
 bool g_expSwitchSaved[std::size(g_expSwitches)] = {};
 struct PerfRow { std::wstring name; double ms, ref; };
@@ -3854,6 +3873,7 @@ HRESULT STDMETHODCALLTYPE hk_BeginScene(IDirect3DDevice9* dev) {
     g_sunDrawn = true;
     if (g_apiOk) rbrrtx_apiworld_replay();             // retained world instances, before this frame's draws
     update_sun();
+    rbrrtx_headlights_mute(g_sweep && !g_sweepLamps);
     if (g_enabled && g_apiOk) rbrrtx_headlights_emit();   // once per frame, with the sun: from RBR's car object
     if (g_enabled && g_apiOk) {                            // particles.cpp, windscreen.cpp (a sweep stops them unless proxy.precip)
       const bool quiet = g_sweep && !g_sweepPrecip;
@@ -7098,6 +7118,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     vpChanged = SUCCEEDED(dev->lpVtbl->SetViewport(dev, &skyVp));
     ++g_st.skyDraws;
   }
+  g_drawUnkExact = false;
   const bool hinted = before_draw(dev);
   if (g_dumpFrames && !g_curVS && g_dumpDraws <= 1500) {   // what Remix's UI check reads for this draw
     D3DMATRIX p = {};
@@ -7121,7 +7142,17 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     }
   }
   // Fixed-function scenery (g_ffMode): unbind the VS for this draw, or give the game's VS back after FF draws.
-  const int ffClass = g_curVS ? ff_scenery_class() : 0;
+  int ffClass = g_curVS ? ff_scenery_class() : 0;
+  if (!ffClass && g_curVS && !g_curInfo && g_drawUnkExact && g_ffInterior && g_ffCar && g_ffMode != 0 && g_enabled && g_primaryRT &&
+      g_testMode == 0 && g_dip.valid && g_dip.count >= 64) {   // the cockpit interior: see g_ffInterior
+    DWORD blend = 0;
+    float car[20];
+    dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+    if (!blend && rbrrtx_player_car_raw(car)) {          // physics x, y, z = render x, z, y
+      const float dx = g_drawUnkPos[0] - car[16], dy = g_drawUnkPos[1] - car[18], dz = g_drawUnkPos[2] - car[17];
+      if (dx * dx + dy * dy + dz * dz < 36.0f) { ffClass = 3; ++g_ffIntDraws; }
+    }
+  }
   const bool carFf = ffClass == 3;
   if (carFf) ++g_ffCarDraws;
   const bool ff = ffClass == 1 || carFf || (ffClass == 2 && ff_sway_far(dev));
@@ -7475,6 +7506,7 @@ void rbrrtx_comp_install(void* d3d9, HMODULE backend) {
     g_clockOn = rbrrtx_env_flag(L"RBRRTX_CLOCK", true);
     g_ffNormals = rbrrtx_env_flag(L"RBRRTX_FF_NORMALS", false);
     g_ffCar = rbrrtx_env_flag(L"RBRRTX_FF_CAR", true);
+    g_ffInterior = rbrrtx_env_flag(L"RBRRTX_FF_INTERIOR", true);
     g_uiTriggerOn = rbrrtx_env_flag(L"RBRRTX_UI_TRIGGER", true);
     g_skipOffscreen = !rbrrtx_env_flag(L"RBRRTX_OFFSCREEN", false);
     wchar_t fol[16];

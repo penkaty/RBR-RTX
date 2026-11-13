@@ -151,6 +151,7 @@ struct remixapi_Interface;
 void rbrrtx_headlights_init(const remixapi_Interface* api);   // nullptr = no Remix API: headlights off
 // each car draw on the primary target (row-major W); cockpitGlass = CarGlassInternal.vso (the windscreen seen from the cockpit)
 void rbrrtx_headlights_car_draw(const float* world, unsigned prims, bool blended, bool cockpitGlass);
+void rbrrtx_headlights_mute(bool on);                          // a sweep step without the car's lamps
 void rbrrtx_headlights_emit();                                 // once per frame at the first BeginScene (with the sun)
 void rbrrtx_headlights_refine();                               // before Remix takes the frame's lights (UI trigger, else Present)
 void rbrrtx_headlights_frame_end(float sunElevation, bool layerOn);   // per Present: key, automatic switch
@@ -173,6 +174,8 @@ bool rbrrtx_headlights_has_aux_glass();                         // this model's 
 bool rbrrtx_dds_neutral_mask(const wchar_t* src, const wchar_t* dst);   // custom.cpp: an emission mask of a DDS's brightness, near white
 bool rbrrtx_headlights_is_aux(unsigned numV);                   // a draw of this vertex count is one of the model's auxiliary lamp meshes
 bool rbrrtx_headlights_aux_on();                                // the auxiliary lamps are on now
+bool rbrrtx_headlights_is_head_lamp(unsigned numV);             // a draw of this vertex count is one of the model's head lamp parts (e_light_lf / _rf, lit or unlit)
+bool rbrrtx_dds_bright_mask(const wchar_t* src, const wchar_t* dst);    // custom.cpp: an emission mask of a DDS's bright parts only, near white
 bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu

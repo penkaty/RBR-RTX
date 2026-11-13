@@ -23,6 +23,7 @@ constexpr LONG kMaxEntries = 300;
 volatile LONG g_entries = 0;
 volatile LONG g_dumps = 0;
 LONG g_max_dumps = 0;
+bool g_lock_ready = false;
 wchar_t g_dir[MAX_PATH] = {};
 CRITICAL_SECTION g_lock;
 __declspec(thread) bool t_busy = false;
@@ -162,6 +163,41 @@ LONG CALLBACK on_exception(PEXCEPTION_POINTERS ep) {
   return EXCEPTION_CONTINUE_SEARCH;   // observe only; the game's own handling continues
 }
 
+// A secure CRT call with a bad argument (sprintf_s on a too-small buffer, ...) ends the process by fast fail, which no
+// exception handler sees (2026-10-30, 2026-11-13). Our CRT is static, so this handler covers the proxy alone: it logs
+// the callers and returns, and the CRT call then fails with an error code in place of killing the game.
+void on_invalid_parameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {
+  static LONG seen = 0;
+  if (InterlockedIncrement(&seen) > 8 || !g_lock_ready) return;
+  char text[2048];
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  int len = sprintf_s(text, "#crt %02u:%02u:%02u.%03u thread %lu: invalid parameter in a secure CRT call of the proxy (call failed, game continues)",
+                      t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, GetCurrentThreadId());
+  const NT_TIB* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+  DWORD marker = 0;
+  const DWORD* sp = &marker;
+  const DWORD* top = reinterpret_cast<const DWORD*>(tib->StackBase);
+  int frames = 0;
+  DWORD last = 0;
+  for (const DWORD* p = sp; p < top && p < sp + 0x1000 && frames < 16; ++p) {
+    const DWORD v = *p;
+    if (v < 0x10000 || v == last || !is_executable(reinterpret_cast<const void*>(v))) continue;
+    if (!preceded_by_call(reinterpret_cast<const unsigned char*>(v))) continue;
+    char m[160];
+    if (!module_of(reinterpret_cast<const void*>(v), m, sizeof(m))) continue;
+    len += sprintf_s(text + len, sizeof(text) - len, "\n  [sp+0x%03X] %s", static_cast<unsigned>((p - sp) * 4), m);
+    last = v;
+    ++frames;
+  }
+  EnterCriticalSection(&g_lock);
+  wchar_t path[MAX_PATH * 2];
+  swprintf_s(path, L"%s\\rbrrtx_exceptions.log", g_dir);
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, path, L"a") == 0 && f) { fprintf(f, "%s\n", text); fclose(f); }
+  LeaveCriticalSection(&g_lock);
+}
+
 }  // namespace
 
 void rbrrtx_exception_trace_install() {
@@ -172,5 +208,7 @@ void rbrrtx_exception_trace_install() {
   wchar_t dumps[8];
   if (GetEnvironmentVariableW(L"RBRRTX_TRACE_DUMPS", dumps, 8)) g_max_dumps = _wtoi(dumps);
   InitializeCriticalSection(&g_lock);
+  g_lock_ready = true;
+  _set_invalid_parameter_handler(on_invalid_parameter);
   AddVectoredExceptionHandler(1, on_exception);
 }
