@@ -42,6 +42,10 @@ bool rbrrtx_screenshot(HWND, const wchar_t* path, double*) {
   write_text(path, L"not a png");
   return true;
 }
+void rbrrtx_headlights_status(wchar_t* out, size_t n) { wcscpy_s(out, n, L"headlights: test"); }
+void rbrrtx_litparts_status(wchar_t* out, size_t n) { wcscpy_s(out, n, L"lit parts: test"); }
+bool rbrrtx_gauge_probe_on = false;
+void rbrrtx_gauge_probe_mark() {}
 const wchar_t* rbrrtx_backend_path() { return L"C:\\Windows\\System32\\d3d9.dll"; }
 
 int fails = 0;

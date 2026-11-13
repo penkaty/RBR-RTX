@@ -44,7 +44,7 @@ Action g_actions[RBRKEY_COUNT] = {
   {L"raytracing", '0', L"ray tracing on/off (raster comparison)"},
   {L"opaque_alpha", 0, L"opaque cut-outs without alpha test on/off"},   // no key: ~0 ms with OMM on (adr-001)
   {L"alpha_cut", kAlt | '9', L"alpha-card cut-outs (clipped foliage cards) on/off"},
-  {L"report_mark", '9', L"stage report: mark a problem now"},
+  {L"report_mark", '9', L"report: mark a problem now (on a stage or in the menu)"},
   {L"sun_save", VK_OEM_5, L"keep this sun for the stage and time (sun-saved.ini)"},   // backslash
   {L"ground_layer", kAlt | 'Y', L"ground second layer: bake -> decal -> off"},
   {L"headlights", 'L', L"headlights: two lamps -> brights (four lamps) -> off"},

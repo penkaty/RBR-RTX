@@ -45,6 +45,10 @@ struct Hitch { double t; float ms; float pos[3]; int mode; unsigned creates; boo
 
 struct Rec {
   bool on = false;
+  // A menu report (user 2026-11-13: "mark 8 and 9 in main menu"; the BMW's lamps stayed off at night in the menu):
+  // started by key 9 outside a stage, closed 20 s after its last mark or when a stage loads.
+  bool menu = false;
+  LARGE_INTEGER lastMark = {};
   std::wstring dir, name, stage;
   int trackId = 0, mode = 0;
   FILE* perf = nullptr;
@@ -485,7 +489,7 @@ const wchar_t* mode_name(int m) {
   return m == 1 ? L"driving" : m == 2 ? L"pause" : m == 3 ? L"menu" : m == 5 ? L"loading" : m == 8 ? L"replay" : m == 10 ? L"pre-stage" : L"other";
 }
 
-void start(const RbrStageInfo& si, const LARGE_INTEGER& now) {
+void start(const RbrStageInfo& si, const LARGE_INTEGER& now, bool menu = false) {
   SYSTEMTIME t;
   GetLocalTime(&t);
   std::wstring stage;
@@ -512,10 +516,11 @@ void start(const RbrStageInfo& si, const LARGE_INTEGER& now) {
     return;
   }
   g_rec.on = true;
+  g_rec.menu = menu;
   g_rec.trackId = si.trackId;
   g_rec.mode = si.gameMode;
   g_rec.start = g_rec.last = now;
-  g_rec.stage = rbrrtx_stage_line(si);
+  g_rec.stage = menu ? L"main menu (no stage loaded); game state: " + rbrrtx_stage_line(si) : rbrrtx_stage_line(si);
   fwprintf(g_rec.perf, L"second\tclock\tgame mode\tframes\tfps\tavg ms\tworst ms\tdraws\ttransformed\tfixed-function\tBTB\tcar x\tcar y\tcar z\n");
   fwprintf(g_rec.events, L"second\tevent\n");
   fwprintf(g_rec.problems, L"==== RBR-RTX log warnings (second\tline; before = logged before the stage)\n");
@@ -524,7 +529,7 @@ void start(const RbrStageInfo& si, const LARGE_INTEGER& now) {
   for (const auto& l : g_early) if (l.find(L"not recognised") != std::wstring::npos) g_rec.shadersUnknown = true;
   g_early.clear();
   write_text(g_rec.dir + L"\\stage.txt", L"RBR-RTX stage report " + g_rec.name + L"\n" + g_rec.stage + L"\n");
-  ev((L"stage loaded: " + g_rec.stage).c_str());
+  ev(((menu ? L"menu report: " : L"stage loaded: ") + g_rec.stage).c_str());
   rbrrtx_log_to(L"rbrrtx_comp.log", L"report: recording %s", name);
 }
 
@@ -629,6 +634,13 @@ void mark(const LARGE_INTEGER& now, const RbrReportFrame& f) {
   ev(line);
   g_rec.markLines.push_back(line);
   rbrrtx_log_to(L"rbrrtx_comp.log", L"report: %s", line);
+  g_rec.lastMark = now;
+  // What the car's lamps were doing at the mark (lamps that did not come on, lit parts that did not glow).
+  wchar_t st[512];
+  rbrrtx_headlights_status(st, 512);
+  ev((std::wstring(L"  at the mark: ") + st).c_str());
+  rbrrtx_litparts_status(st, 512);
+  ev((std::wstring(L"  at the mark: ") + st).c_str());
   if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_mark();
   if (g_rec.burstAt) write_burst();                        // a second mark before the first burst was written
   g_rec.markFrame = g_rec.ringFrames;
@@ -650,7 +662,11 @@ void second(const LARGE_INTEGER& now, const RbrReportFrame& f) {
   const bool ok = rbrrtx_stage_info(&si);
   const bool inStage = ok && si.trackId > 0 &&
                        (si.gameMode == 1 || si.gameMode == 2 || si.gameMode == 5 || si.gameMode == 8 || si.gameMode == 10);
-  if (g_rec.on && (!inStage || si.trackId != g_rec.trackId)) stop(inStage ? L"another stage loaded" : L"stage left", now);
+  if (g_rec.on && g_rec.menu) {
+    if (inStage || secs(g_rec.lastMark, now) > 20.0) stop(inStage ? L"a stage loaded" : L"menu report closed 20 s after its last mark", now);
+  } else if (g_rec.on && (!inStage || si.trackId != g_rec.trackId)) {
+    stop(inStage ? L"another stage loaded" : L"stage left", now);
+  }
   if (!g_rec.on) {
     if (inStage) start(si, now);
     return;
@@ -708,6 +724,13 @@ void rbrrtx_report_frame(HWND wnd, const RbrReportFrame& f) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   if (now.QuadPart - g_lastCheck.QuadPart >= g_qpf.QuadPart) { g_lastCheck = now; second(now, f); }
+  if (marked && !g_rec.on) {                               // key 9 outside a stage: a menu report around the mark
+    RbrStageInfo si = {};
+    rbrrtx_stage_info(&si);                                // car, time of day, weather as the menu has them
+    wcscpy_s(si.name, L"main menu");
+    start(si, now, true);
+    if (g_rec.on) g_rec.last.QuadPart = now.QuadPart - 1;  // record this frame (the check below skips a report's first frame)
+  }
   if (!g_rec.on) {
     // Outside a stage report (menu, loading): slow frames go to the log with what our side did in them (user 2026-11-13:
     // a frame time spike every 3-5 s in the main menu). Average over ~1 s; a spike = over 2.5 x that and over 25 ms.

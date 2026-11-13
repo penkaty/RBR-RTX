@@ -1797,6 +1797,12 @@ unsigned g_worldCarFrames = 0;
 // and the game's own lamp meshes switch with them (so its lit lenses glow, litparts.cpp).
 bool g_menuCar = false, g_menuDark = false;
 unsigned g_menuRootMissed = 0;
+// Which Cars.ini slot the menu shows. RBRMapSettings carID is the last stage's car (0 after the game starts), while the
+// menu can show another one (user 2026-11-13, run 20261113-215443: the BMW in slot 5 shown, slot 0's Xsara loaded, its
+// lamps never found among the draws, so none came on at night). When the loaded model is not among the car draws, the
+// other slots are tried one by one until one is; the slot found stays until the stage car id changes.
+int g_menuSlot = -1, g_menuSlotFor = -1;               // slot found, for this RBRMapSettings carID
+unsigned g_menuTried = 0, g_menuTryFrame = 0;          // slots tried (bit mask), frame of the last try
 
 void* find_hh_world() {
   HMODULE hh = GetModuleHandleW(L"HedgeHog3D.dll");
@@ -2433,15 +2439,17 @@ void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& g
     g_hhWorld = nullptr;
     if (g_mode != kOff) set_mode(kOff, L"menu");
   }
-  const std::wstring model = car_model_path(si.carId);
-  if (model.empty()) return;
-  if (model != g_car.file) {
+  if (g_menuSlotFor != si.carId) { g_menuSlot = -1; g_menuSlotFor = si.carId; g_menuTried = 0; }
+  const int slot = g_menuSlot >= 0 ? g_menuSlot : si.carId;
+  const std::wstring model = car_model_path(slot);
+  if (model.empty() && g_menuSlot < 0) return;
+  if (!model.empty() && model != g_car.file) {
     const size_t slash = model.find_last_of(L"\\/"), dot = model.find_last_of(L'.');
     g_carSection = model.substr(slash + 1, dot != std::wstring::npos && dot > slash ? dot - slash - 1 : std::wstring::npos);
-    g_carSlot = si.carId;
+    g_carSlot = slot;
     load_settings();
     load_car_model(model);
-    hlog(L"headlights: menu car %s (lamps on below sun %.1f deg)", model.c_str(), g_cfg.autoBelow);
+    hlog(L"headlights: menu car %s (slot %d; lamps on below sun %.1f deg)", model.c_str(), slot, g_cfg.autoBelow);
   }
   {
     const float t = std::clamp((sunEl - g_cfg.dayFade[0]) / (g_cfg.dayFade[1] - g_cfg.dayFade[0]), 0.0f, 1.0f);
@@ -2463,11 +2471,30 @@ void menu_lamps(const RbrStageInfo& si, float sunEl, const std::vector<Group>& g
   if (!g_lampsLit) return;
   float C[16];
   if (!menu_root(groups, C)) {                         // not drawn this frame: the lamps stay where they were
-    if (++g_menuRootMissed == 1 || g_menuRootMissed % 3600 == 0)
+    if (++g_menuRootMissed == 30 || g_menuRootMissed % 3600 == 0)   // 30: not a frame or two of a menu change
       hlog(L"headlights: menu car not found among this frame's car draws (%zu groups); %u frames so far", groups.size(), g_menuRootMissed);
+    // A car is drawn but it is not this model: try the next untried slot (one model load per 30 frames).
+    if (groups.size() >= 4 && g_menuRootMissed >= 30 && g_frameNo - g_menuTryFrame >= 30) {
+      g_menuTried |= 1u << slot;
+      int next = -1;
+      for (int k = 1; k <= 8 && next < 0; ++k) {
+        const int c = (slot + k) % 8;
+        if (!(g_menuTried & (1u << c)) && !car_model_path(c).empty()) next = c;
+      }
+      if (next >= 0) {
+        g_menuTryFrame = g_frameNo;
+        g_menuSlot = next;
+        g_menuRootMissed = 0;
+        hlog(L"headlights: menu car is not slot %d's model (not among the car draws): trying slot %d", slot, next);
+      }
+    }
     for (Lamp& l : g_lamps) if (l.h) { g_api->DrawLightInstance(l.h); l.sent = g_frameNo; }
     return;
   }
+  if (g_menuRootMissed >= 30 || (g_menuSlot >= 0 && g_menuTried))
+    hlog(L"headlights: menu car found among the car draws: slot %d (%s)", slot, g_car.file.c_str());
+  g_menuTried = 0;
+  g_menuRootMissed = 0;
   send_lamps(C, L"menu");
 }
 
