@@ -7220,7 +7220,15 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       look.alphaAdd = lb ? (rbrrtx_camera_in_cabin() ? g_glassAlphaAddCabin : g_glassAlphaAdd) : 0u;
       if (ld.kind >= 0) rbrrtx_litparts_nudge(look.nudge);
       const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, false };
-      if (rbrrtx_apiworld_lamp(dev, wd, g_carWorld, look)) {
+      const bool took = rbrrtx_apiworld_lamp(dev, wd, g_carWorld, look);
+      // In a frame dump (key 8): what the lamp path did with each car lamp draw (user 2026-11-13: Lancia tail lamps kept
+      // disappearing; the dump lines are written before this decision).
+      if (g_dumpFrames)
+        clog(L"  api lamp: %s; %u vertices %u triangles, kind %d glow %.2f%s%s%s, blended %d, alpha +%u, world origin (%.2f %.2f %.2f)",
+             took ? L"API" : L"refused, D3D9", g_dip.numV, g_dip.count, ld.kind, look.glow, ld.lampPart ? L", lamp part" : L"",
+             ld.brakeDisc ? L", brake disc" : L"", ld.texture ? L", atlas swapped" : L"", static_cast<int>(lb), look.alphaAdd,
+             g_carWorld[12], g_carWorld[13], g_carWorld[14]);
+      if (took) {
         ++g_apiLampDraws;
         if (litTwin) rbrrtx_litparts_drop_twin();
         if (hinted) after_draw(dev);
