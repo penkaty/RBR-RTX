@@ -177,6 +177,9 @@ bool rbrrtx_headlights_aux_on();                                // the auxiliary
 bool rbrrtx_headlights_is_head_lamp(unsigned numV);             // a draw of this vertex count is one of the model's head lamp parts (e_light_lf / _rf, lit or unlit)
 bool rbrrtx_dds_bright_mask(const wchar_t* src, const wchar_t* dst);    // custom.cpp: an emission mask of a DDS's bright parts only, near white
 bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of this vertex count is one of the model's unlit brake lamp lenses
+// A rear lens of the model: 1 tail lens (e_light_lb / _rb), 2 unlit brake lens, 0 none / not known. When a tail and a
+// brake lens share the vertex count (*needPos = true) only the draw's place (world, its vertices' centre) tells them apart.
+int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* needPos);
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu
 float rbrrtx_sun_shown_elevation();                             // the sun's height as lit now (comp.cpp; debug sun, night hold)
@@ -283,6 +286,8 @@ float rbrrtx_wetness_now();
 void rbrrtx_particles_init(const remixapi_Interface* api);    // nullptr = no Remix API: probe only
 void rbrrtx_particles_menu_rain(float percent);                // rain in the main menu's weather, percent as the game's intensity; 0 = none
 void rbrrtx_particles_emit(bool sweeping);                     // once per frame at the first BeginScene; none during a sweep
+extern bool rbrrtx_precip_half;                                // sweep proxy.precip_half: half the rain/snow (rate and cap)
+extern bool rbrrtx_precip_near;                                // sweep proxy.precip_near: the rain disk cut to 45 m, same density near
 void rbrrtx_particles_frame_end();                            // per Present: key, probe report
 void rbrrtx_particles_destroy();
 // effects.cpp: the camera for the distance cull of the game-emitter rows.

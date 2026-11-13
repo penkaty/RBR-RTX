@@ -2896,7 +2896,8 @@ bool g_sweepLamps = true;                                    // proxy.headlights
 extern bool g_dirtOn, g_glassOn;
 const std::pair<const wchar_t*, bool*> g_expSwitches[] = {
   {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip}, {L"ffcar", &g_ffCar},
-  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps},
+  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps}, {L"precip_half", &rbrrtx_precip_half},
+  {L"precip_near", &rbrrtx_precip_near},
 };
 bool g_expSwitchSaved[std::size(g_expSwitches)] = {};
 struct PerfRow { std::wstring name; double ms, ref; };

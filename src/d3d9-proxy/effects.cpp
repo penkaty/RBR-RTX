@@ -25,6 +25,8 @@
 #pragma intrinsic(_ReturnAddress)
 
 bool rbrrtx_surface_lookup_on = false;
+bool rbrrtx_precip_half = false;                       // sweep switches (common.hpp)
+bool rbrrtx_precip_near = false;
 
 namespace {
 
@@ -1286,6 +1288,14 @@ float disk_mesh(const DustCfg& c, float y, std::vector<remixapi_HardcodedVertex>
   return weighted;
 }
 
+// Sweep switch proxy.precip_near (2026-11-13 rain cost question): the disk ends at 45 m, density near the car unchanged.
+constexpr float kNearRadius = 45.0f;
+DustCfg precip_cfg(int kind) {
+  DustCfg c = g_pre[kind];
+  if (rbrrtx_precip_near && c.radius > kNearRadius) c.radius = kNearRadius;
+  return c;
+}
+
 bool make_precip(int kind) {                            // kind = preset (PRE_*)
   PrecipFx& f = g_fx[kind];
   if (f.mesh && g_fxEpoch[kind] != g_precipEpoch && g_api) {   // particles.ini saved: layers/texture may have changed
@@ -1296,7 +1306,7 @@ bool make_precip(int kind) {                            // kind = preset (PRE_*)
   g_fxEpoch[kind] = g_precipEpoch;
   if (f.mesh) return true;
   if (f.failed || !g_api) return false;
-  const DustCfg& c = g_pre[kind];
+  const DustCfg c = precip_cfg(kind);
   const bool snow = kind >= PRE_SNOW_LIGHT;
   static wchar_t tex[PRE_COUNT][MAX_PATH * 2] = {};
   wcscpy_s(tex[kind], g_cfgPath);                      // the sprite sits next to particles.ini
@@ -1609,8 +1619,10 @@ void draw_precip() {
     }
   }
   if (pre < 0) return;
+  static bool nearWas = false;                         // a sweep step changed the disk: new spawner mesh
+  if (rbrrtx_precip_near != nearWas) { nearWas = rbrrtx_precip_near; ++g_precipEpoch; }
   update_cam_speed();
-  draw_one(pre, 1.0f);
+  draw_one(pre, rbrrtx_precip_half ? 0.5f : 1.0f);
   // The snow wake (snow the car stirred up, outside views only) is gone (user 2026-11-12: "never looked or behaved
   // properly"; the snow dust from the wheels, [snow_dust], does that job like the gravel dust). PRE_SNOW_WAKE and
   // make_shell remain only as dead presets; nothing draws them.
@@ -1619,8 +1631,9 @@ void draw_precip() {
 // One preset's spawner. rateScale: a few fixed steps only (a new rate = a new Remix particle system).
 void draw_one(int pre, float rateScale) {
   if (!make_precip(pre)) return;
-  DustCfg c = g_pre[pre];
+  DustCfg c = precip_cfg(pre);
   c.perWheelRate *= rateScale;
+  c.maxParticles = static_cast<unsigned>(c.maxParticles * rateScale + 0.5f);
   const bool disk = graded_disk(c);
   if (disk) {                                          // the square's density near the camera, over the whole disk
     const float k = disk_area_ratio(c, pre);

@@ -54,6 +54,7 @@
 #include <string>
 #include <array>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -521,8 +522,12 @@ std::string ini_field(const std::string& block, const char* key) {
   return std::string();
 }
 
+int aux_set_state(const std::string& nodeLow);          // below, after the model's lamp parts are read
+std::vector<std::string> aux_sets_on();
+
 // RBR's [LightN] Id says what switches a lamp: 4 / 5 (6-11 on light bars) light with the headlights, 16-18 with the
 // brake, 21 / 22 are position lamps. Only active lamps that are not one of the stock ones (placed elsewhere) count.
+// A lamp of an auxiliary set the car .ini knows (aux_set_state) follows the .ini, not its Active flag.
 template <class NodeFn>
 void load_extra_lamps(const std::wstring& modelFile, NodeFn node) {
   const size_t slash = modelFile.find_last_of(L"\\/");
@@ -548,7 +553,8 @@ void load_extra_lamps(const std::wstring& modelFile, NodeFn node) {
     const std::string block = text.substr(at, next == std::string::npos ? std::string::npos : next + 1 - at);
     at = next == std::string::npos ? text.size() : next + 1;
     const std::string part = ini_field(block, "Car Part"), lpart = lower(part);
-    if (part.empty() || lower(ini_field(block, "Active")) != "true") continue;
+    const int setState = aux_set_state(lpart);
+    if (part.empty() || setState == 0 || (setState < 0 && lower(ini_field(block, "Active")) != "true")) continue;
     if (std::any_of(std::begin(kStock), std::end(kStock), [&](const char* k) { return lpart == k; })) continue;
     const int id = std::atoi(ini_field(block, "Id").c_str());
     CarModel::Extra e;
@@ -566,6 +572,18 @@ void load_extra_lamps(const std::wstring& modelFile, NodeFn node) {
     else if (e.brake) { e.rgb[1] = e.rgb[2] = 0.0f; }
     g_car.extras.push_back(e);
   }
+  for (const std::string& set : aux_sets_on())         // a set that is on but has no [LightN] block: warm white lamps
+    for (const char* side : { "_l", "_r" }) {
+      CarModel::Extra e;
+      e.name = "Point_light_" + set + side;
+      if (g_car.extras.size() >= kMaxExtra ||
+          std::any_of(g_car.extras.begin(), g_car.extras.end(), [&](const CarModel::Extra& o) { return lower(o.name) == lower(e.name); }))
+        continue;
+      if (!node(e.name.c_str(), e.pos)) continue;
+      e.rgb[1] = 0.85f;
+      e.rgb[2] = 0.62f;
+      g_car.extras.push_back(e);
+    }
   std::wstring names;
   for (const CarModel::Extra& e : g_car.extras)
     names += std::wstring(e.name.begin(), e.name.end()) + (e.brake ? L" (brake) " : e.weak ? L" (position) " : L" ");
@@ -819,6 +837,78 @@ bool cockpit_quad(float c[4][3]) {                     // camera space (x right,
 struct LampBox { V3 lo, hi; int side = 0; V3 mid = {}; unsigned n = 0; };   // side: 1 = e_light*_lf, 2 = _rf (head lamps)
 std::vector<LampBox> g_lampBoxes;                      // bounds of each lamp part of this car (not the aux lamps), root frame
 
+// Rear lenses by the model's names, with their place (root frame): the Celica TA64's tail lens e_light_lb and its brake
+// lens e_light_brake_lb both have 14 vertices, so the vertex count alone took the tail lens for an unlit brake lens; the
+// first brake press then "proved" it was none and the tail lamps stopped glowing (user 2026-11-13: "applying brakes makes
+// them DIMMER"). Role: 1 tail lens (e_light_lb / _rb, lit or not), 2 unlit brake lens (e_light_brake_*, not _lit).
+struct RearPart { int role = 0; unsigned n = 0; LampBox box; };
+std::vector<RearPart> g_rearParts;
+
+// Auxiliary lamp sets named like the stock lamps (Celica TA64: e_light_bumper, e_light_upper, e_light_84 .. _86,
+// e_light_wing with _lit and _cover variants, each with its own Point_light_<set>_l / _r). Which set the car carries is in
+// its live <car>.ini (RSF rewrites it when the car is loaded, from the Customize choice): [part] Switch = false = always
+// drawn; Switch = true with Predicate on / off = drawn with the lamp switch; Switch = true with Predicate NotUsed = never.
+// The <car>_settings.ini Active flags are not kept in step (Celica: the wing lamps Active, but the car showed their covers
+// and carried the bumper and grille lamps; user 2026-11-13).
+struct AuxSet { std::string name; bool known = false, lamp = false, cover = false; std::vector<unsigned> verts; };
+std::vector<AuxSet> g_auxSets;
+
+std::string lower_str(std::string x) {
+  for (char& c : x) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return x;
+}
+
+// "e_light_bumper_lit" -> "bumper" when the model has Point_light_bumper_l or _r; "" for the stock lamps and the rest.
+std::string aux_set_of(const std::string& low, const std::unordered_set<std::string>& nodesLow) {
+  if (low.compare(0, 8, "e_light_")) return std::string();
+  std::string rest = low.substr(8);
+  for (const char* stock : { "lf", "rf", "lb", "rb", "brake", "reverse" }) {
+    const size_t k = std::strlen(stock);
+    if (!rest.compare(0, k, stock) && (rest.size() == k || rest[k] == '_')) return std::string();
+  }
+  for (const char* suf : { "_lit", "_cover" }) {
+    const size_t k = std::strlen(suf);
+    if (rest.size() > k && !rest.compare(rest.size() - k, k, suf)) { rest.resize(rest.size() - k); break; }
+  }
+  for (int tries = 0; tries < 2 && !rest.empty(); ++tries) {   // "86_bar" -> "86"
+    if (nodesLow.count("point_light_" + rest + "_l") || nodesLow.count("point_light_" + rest + "_r")) return rest;
+    const size_t us = rest.find_last_of('_');
+    if (us == std::string::npos) break;
+    rest.resize(us);
+  }
+  return std::string();
+}
+
+// <car>.ini next to the model: part name (lower case) -> drawn at all.
+std::unordered_map<std::string, bool> read_part_switches(const std::wstring& modelFile) {
+  std::unordered_map<std::string, bool> out;
+  const size_t dot = modelFile.find_last_of(L'.');
+  if (dot == std::wstring::npos) return out;
+  std::ifstream f(modelFile.substr(0, dot) + L".ini", std::ios::binary);
+  std::string sec, pred, sw;
+  auto flush = [&]() { if (!sec.empty()) out[sec] = !(sw == "true" && pred == "notused"); };
+  for (std::string line; std::getline(f, line);) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    if (!line.empty() && line[0] == '[') {
+      flush();
+      const size_t e = line.find(']');
+      sec = lower_str(line.substr(1, e == std::string::npos ? std::string::npos : e - 1));
+      pred.clear();
+      sw.clear();
+      continue;
+    }
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+    while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+    while (!v.empty() && (v[0] == ' ' || v[0] == '\t')) v.erase(0, 1);
+    if (k == "Predicate") pred = lower_str(v);
+    else if (k == "Switch") sw = lower_str(v);
+  }
+  flush();
+  return out;
+}
+
 // A light node that lies outside every lamp part is moved onto the nearest one (within kSnapReach): on some models the
 // nodes float well clear of the lenses (yaris_rally2: tail nodes 10 cm, reversing nodes 15-20 cm behind the glass and
 // one 13 cm too low; user 2026-11-12: "beams a noticeable distance away from the physical lamps").
@@ -838,7 +928,10 @@ bool snap_to_lamp(V3& pos) {
 }
 
 void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsigned, Node>& nodes,
-                      const std::unordered_map<std::string, unsigned>& byName) {
+                      const std::unordered_map<std::string, unsigned>& byName,
+                      const std::unordered_map<std::string, bool>& switches) {
+  std::unordered_set<std::string> nodesLow;
+  for (const auto& kv : byName) nodesLow.insert(lower_str(kv.first));
   const char* p = d.data();
   for (size_t i = 0; i + 20 + 64 + 144 <= d.size() && g_car.lampPts.size() < 60000; ++i) {
     if (p[i] != 0xC) continue;
@@ -859,15 +952,27 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
     std::memcpy(&n, p + a + 136, 4);
     if (n < 3 || n > 20000 || a + 144 + static_cast<size_t>(n) * 24 > d.size()) continue;
     if (!low.compare(0, 13, "e_light_brake") && low.find("_lit") == std::string::npos) g_car.brakeLensVerts.push_back(n);
-    if ((low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos || low.find("bumper_light") != std::string::npos ||
-         low.find("light_ramp") != std::string::npos) && low.find("glass") == std::string::npos) g_car.auxVerts.push_back(n);
+    const std::string set = aux_set_of(low, nodesLow);
+    const bool namedAux = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
+                          low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
+    if (namedAux && low.find("glass") == std::string::npos) g_car.auxVerts.push_back(n);
+    if (!set.empty()) {                                // its vertex counts go to auxVerts once the set is known to be on
+      auto it = std::find_if(g_auxSets.begin(), g_auxSets.end(), [&](const AuxSet& s) { return s.name == set; });
+      if (it == g_auxSets.end()) { g_auxSets.push_back(AuxSet()); g_auxSets.back().name = set; it = g_auxSets.end() - 1; }
+      const auto sw = switches.find(low);
+      const bool cover = low.size() > 6 && !low.compare(low.size() - 6, 6, "_cover");
+      if (sw != switches.end()) {
+        it->known = true;
+        if (sw->second) (cover ? it->cover : it->lamp) = true;
+      }
+      if (!cover && low.find("glass") == std::string::npos) it->verts.push_back(n);
+    }
     float R[3][3];
     V3 t;
     total_of(nodes, node->second, false, R, t);
     V3 mid = {};
     LampBox box = { { 1e9f, 1e9f, 1e9f }, { -1e9f, -1e9f, -1e9f } };
-    const bool auxPt = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
-                       low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
+    const bool auxPt = namedAux || !set.empty();
     std::vector<V3>& pts = auxPt ? g_car.auxPts : g_car.lampPts;
     for (uint32_t k = 0; k < n; ++k) {
       float v[3];
@@ -880,8 +985,13 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
       box.lo = { (std::min)(box.lo.x, w.x), (std::min)(box.lo.y, w.y), (std::min)(box.lo.z, w.z) };
       box.hi = { (std::max)(box.hi.x, w.x), (std::max)(box.hi.y, w.y), (std::max)(box.hi.z, w.z) };
     }
-    const bool auxPart = low.find("extralight") != std::string::npos || low.find("bumperlight") != std::string::npos ||
-                         low.find("bumper_light") != std::string::npos || low.find("light_ramp") != std::string::npos;
+    const bool auxPart = auxPt;
+    {
+      const bool tailName = (!low.compare(0, 10, "e_light_lb") || !low.compare(0, 10, "e_light_rb")) &&
+                            (low.size() == 10 || low.compare(10, std::string::npos, "_lit") == 0);
+      const bool brakeUnlit = !low.compare(0, 13, "e_light_brake") && low.find("_lit") == std::string::npos;
+      if (tailName || brakeUnlit) g_rearParts.push_back({ tailName ? 1 : 2, n, box });
+    }
     // The head lamps by the model's own names: where they are (fix_front_nodes) and which draws they are (litparts.cpp).
     if (!auxPart && (!low.compare(0, 10, "e_light_lf") || !low.compare(0, 10, "e_light_rf") ||
                      !low.compare(0, 15, "e_lightglass_lf") || !low.compare(0, 15, "e_lightglass_rf"))) {
@@ -898,6 +1008,23 @@ void load_lamp_points(const std::vector<char>& d, const std::unordered_map<unsig
       else if (dot(mid - g_car.lf, g_car.forward) > -0.5f) g_car.lampGlassVerts.push_back(n);   // near the front lamps' plane
     }
   }
+  for (const AuxSet& s : g_auxSets)                    // drawn and not covered, or not in the car .ini at all (as before)
+    if (!s.known || (s.lamp && !s.cover)) g_car.auxVerts.insert(g_car.auxVerts.end(), s.verts.begin(), s.verts.end());
+}
+
+// The aux set a lamp node belongs to, if the car .ini says whether it is on: 1 on, 0 off, -1 not known.
+int aux_set_state(const std::string& nodeLow) {
+  for (const AuxSet& s : g_auxSets) {
+    const std::string pre = "point_light_" + s.name + "_";
+    if (s.known && !nodeLow.compare(0, pre.size(), pre)) return s.lamp && !s.cover ? 1 : 0;
+  }
+  return -1;
+}
+
+std::vector<std::string> aux_sets_on() {
+  std::vector<std::string> on;
+  for (const AuxSet& s : g_auxSets) if (s.known && s.lamp && !s.cover) on.push_back(s.name);
+  return on;
 }
 
 // How far ahead of a lamp node the front of its own lamp (reflector, lens, cover glass) is, on the car's forward axis:
@@ -984,6 +1111,8 @@ void load_car_model(const std::wstring& file) {
   g_car = CarModel();
   g_lensHits.clear();
   g_lampBoxes.clear();
+  g_rearParts.clear();
+  g_auxSets.clear();
   g_car.file = file;
   std::ifstream f(file, std::ios::binary);
   const std::vector<char> d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -1062,8 +1191,14 @@ void load_car_model(const std::wstring& file) {
     g_car.exhaust = true;
     g_car.exhaustDir = g_car.forward * -1.0f;
   }
+  load_lamp_points(d, nodes, byName, read_part_switches(file));   // first: the aux sets decide which extras count
   load_extra_lamps(file, lamp);
-  load_lamp_points(d, nodes, byName);
+  if (!g_auxSets.empty()) {
+    std::wstring sets;
+    for (const AuxSet& s : g_auxSets)
+      sets += std::wstring(s.name.begin(), s.name.end()) + (!s.known ? L" (not in the car .ini) " : s.lamp && !s.cover ? L" ON " : s.cover && s.lamp ? L" covered " : L" off ");
+    hlog(L"headlights: auxiliary lamp sets of the model, by its live .ini: %s", sets.c_str());
+  }
   if (g_car.lamps) {
     int moved = 0;
     float farthest = 0.0f;
@@ -2608,6 +2743,30 @@ bool rbrrtx_headlights_is_head_lamp(unsigned numV) {
 
 bool rbrrtx_headlights_is_brake_lens(unsigned numV) {
   return std::find(g_car.brakeLensVerts.begin(), g_car.brakeLensVerts.end(), numV) != g_car.brakeLensVerts.end();
+}
+
+int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* needPos) {
+  int role = 0;
+  bool mixed = false;
+  for (const RearPart& r : g_rearParts)
+    if (r.n == numV) { mixed = mixed || (role && role != r.role); role = r.role; }
+  if (needPos) *needPos = mixed;
+  if (!mixed) return role;
+  if (!worldPos || !g_haveRoot) return 0;
+  const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(g_lastRoot, 3);
+  V3 l = {};                                           // root frame (rows of the root matrix are its axes)
+  const V3 ax[3] = { row(g_lastRoot, 0), row(g_lastRoot, 1), row(g_lastRoot, 2) };
+  float* lc[3] = { &l.x, &l.y, &l.z };
+  for (int k = 0; k < 3; ++k) { const float s = dot(ax[k], ax[k]); *lc[k] = s > 1e-8f ? dot(d, ax[k]) / s : 0.0f; }
+  float best = 0.10f;                                  // the centre of a lens lies in (or within 10 cm of) its own box
+  role = 0;
+  for (const RearPart& r : g_rearParts) {
+    if (r.n != numV) continue;
+    const V3 c = { std::clamp(l.x, r.box.lo.x, r.box.hi.x), std::clamp(l.y, r.box.lo.y, r.box.hi.y), std::clamp(l.z, r.box.lo.z, r.box.hi.z) };
+    const float dist = len(c - l);
+    if (dist < best) { best = dist; role = r.role; }
+  }
+  return role;
 }
 
 int rbrrtx_headlights_lamp_end(const float worldPos[3]) {
