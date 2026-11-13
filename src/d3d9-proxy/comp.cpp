@@ -476,6 +476,12 @@ bool is_sky_draw() { return g_enabled && g_primaryRT && g_curInfo && (g_curInfo-
 // RBRRTX_GLASS=0 skips it.
 bool g_glassOn = true;
 bool g_glassSplit = true;                              // materials.ini [glass] split (load_glass_split)
+// Car glass without vertex capture (materials.ini [glass] ff, sweep proxy.glassff). Off: car glass (CarGlass.vso: outside
+// windows, mirrors, lamp covers; blended car draws with a glass-list texture) stays captured, like the cockpit windscreen.
+// User 2026-11-13 18:10: the glass and the outer layer of the lamps were gone in ray tracing, raster showed them; the
+// captured cockpit windscreen always rendered, the glass that took the car's no-capture path (2026-11-05) did not.
+bool g_glassFf = false;
+unsigned g_glassCaptured = 0;                         // car glass draws kept captured since the last log line
 unsigned g_glassHudDraws = 0;                         // of them, cockpit windscreen draws with RBRHUD's F4 opacity
 unsigned g_glassSplitDraws = 0;                       // car glass draws split into stickers + glass (load_glass_split) since the last log line
 
@@ -2792,10 +2798,12 @@ void log_frame(const wchar_t* why) {
   clog(L"  car dirt decals %s: %.0f per frame (%u with an untagged render-target dirt map) since last line",
        g_dirtOn ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_dirtDraws) / g_logFrames : 0.0, g_dirtUntagged);
   g_dirtDraws = g_dirtUntagged = 0;
-  clog(L"  glass split %s: %.0f car glass draws per frame drawn as solid stickers + blended glass (%.0f cockpit windscreen with RBRHUD's opacity)",
+  clog(L"  glass split %s: %.0f car glass draws per frame drawn as solid stickers + blended glass (%.0f cockpit windscreen with RBRHUD's opacity); "
+       L"%.0f car glass draws per frame kept vertex-captured (glass ff %s)",
        g_glassSplit ? L"ON" : L"off", g_logFrames ? static_cast<double>(g_glassSplitDraws) / g_logFrames : 0.0,
-       g_logFrames ? static_cast<double>(g_glassHudDraws) / g_logFrames : 0.0);
-  g_glassSplitDraws = g_glassHudDraws = 0;
+       g_logFrames ? static_cast<double>(g_glassHudDraws) / g_logFrames : 0.0,
+       g_logFrames ? static_cast<double>(g_glassCaptured) / g_logFrames : 0.0, g_glassFf ? L"on" : L"off");
+  g_glassSplitDraws = g_glassHudDraws = g_glassCaptured = 0;
   {
     unsigned held = 0, twins = 0;
     double mb = 0;
@@ -2896,7 +2904,7 @@ bool g_sweepLamps = true;                                    // proxy.headlights
 extern bool g_dirtOn, g_glassOn;
 const std::pair<const wchar_t*, bool*> g_expSwitches[] = {
   {L"dirt", &g_dirtOn}, {L"glass", &g_glassOn}, {L"litparts", &g_litOn}, {L"precip", &g_sweepPrecip}, {L"ffcar", &g_ffCar},
-  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps}, {L"precip_half", &rbrrtx_precip_half},
+  {L"ffinterior", &g_ffInterior}, {L"headlights", &g_sweepLamps}, {L"glassff", &g_glassFf}, {L"precip_half", &rbrrtx_precip_half},
   {L"precip_near", &rbrrtx_precip_near},
 };
 bool g_expSwitchSaved[std::size(g_expSwitches)] = {};
@@ -4344,6 +4352,7 @@ void load_glass_split() {
   g_glassSplit = GetPrivateProfileIntW(L"glass", L"split", 1, path) != 0;
   g_stickerRef = static_cast<DWORD>((std::min)(255, (std::max)(1, static_cast<int>(GetPrivateProfileIntW(L"glass", L"sticker_ref", 240, path)))));
   g_glassAlphaAdd = (std::min)(255u, GetPrivateProfileIntW(L"glass", L"glass_alpha_add", 48, path));
+  g_glassFf = GetPrivateProfileIntW(L"glass", L"ff", 0, path) != 0;
   g_glassAlphaAddCabin = (std::min)(255u, GetPrivateProfileIntW(L"glass", L"glass_alpha_add_cabin", 10, path));
   GetPrivateProfileStringW(L"glass", L"textures", L"", v, 4096, path);
   for (wchar_t* ctx = nullptr, *t = wcstok_s(v, L", ", &ctx); t; t = wcstok_s(nullptr, L", ", &ctx))
@@ -4405,6 +4414,21 @@ bool glass_split_plan(IDirect3DDevice9* dev, GlassPlan& plan) {
   plan.alphaOp = D3DTOP_ADD;
   plan.alphaFactor = rbrrtx_camera_in_cabin() ? g_glassAlphaAddCabin : g_glassAlphaAdd;
   return true;
+}
+
+// A car draw that must keep vertex capture (g_glassFf off): the glass shader, or a blended draw with a car glass texture.
+bool car_glass_captured(IDirect3DDevice9* dev) {
+  if (g_glassFf || !g_curInfo) return false;
+  if (g_curInfo->flags & SH_GLASS_VS) return true;
+  DWORD blend = 0, zw = 0;
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
+  dev->lpVtbl->GetRenderState(dev, D3DRS_ZWRITEENABLE, &zw);
+  if (!blend || zw || g_glassTex.empty()) return false;
+  IDirect3DBaseTexture9* t = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &t)) || !t) return false;
+  const unsigned long long h = rbrrtx_texture_hash(t);
+  t->lpVtbl->Release(t);
+  return g_glassTex.count(h) != 0;
 }
 
 template <class Draw>
@@ -7144,6 +7168,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   }
   // Fixed-function scenery (g_ffMode): unbind the VS for this draw, or give the game's VS back after FF draws.
   int ffClass = g_curVS ? ff_scenery_class() : 0;
+  if (ffClass == 3 && car_glass_captured(dev)) { ffClass = 0; ++g_glassCaptured; }
   if (!ffClass && g_curVS && !g_curInfo && g_drawUnkExact && g_ffInterior && g_ffCar && g_ffMode != 0 && g_enabled && g_primaryRT &&
       g_testMode == 0 && g_dip.valid && g_dip.count >= 64) {   // the cockpit interior: see g_ffInterior
     DWORD blend = 0;
