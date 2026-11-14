@@ -32,7 +32,6 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sk
 
 <div align="center">
 <img src=".github/img/bmw_030.webp" alt="BMW, path traced, 0.3.0" width="90%">
-<img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
 </div>
 
 ## Requirements
@@ -54,6 +53,10 @@ Expect about 60 fps on a clear day and 35 to 50 fps at night in rain, measured o
 
 **Updating from an older version:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
 **Uninstall:** run `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
+
+<div align="center">
+<img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
+</div>
 
 ## The keys worth knowing
 
