@@ -79,19 +79,15 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Pl
 
 **F3** opens RBR-RTX's own menu inside the game. The game keeps running behind it, and most pages work on whatever is under the crosshair in the middle of the screen. Stop the car first: the keyboard and mouse go to the menu, the steering wheel does not.
 
+The full guide is in [The F3 menu](docs/f3-menu.md).
+
 | Page | What you do there |
 |---|---|
-| **Info** | See the stage, weather, time and every key |
-| **Wetness** | Move every wet-road slider: puddles, ripples, raindrops, darkening |
-| **Textures** | Aim at a surface and tag it Terrain, Decal, Water or Ignore, live |
-| **Car paint** | Set how shiny and how metallic car paint is |
-| **Atmosphere**, **Per stage** | Edit weather, haze and sun rules, for all stages or for the one you are on |
+| **Info** | See the stage, weather, time and every hotkey |
 | **Headlights** | Edit lamp brightness, colour, beam and the automatic switching |
 | **Lamps** | Make a street lamp, floodlight or window glow and cast light, or place a free light anywhere |
 | **Debug** | Switch single parts of the mod on and off to compare |
 | **Save** | Write your values to `rbr-rtx\config\menu.ini` |
-
-The full guide is in [The F3 menu](docs/f3-menu.md).
 
 ## Reporting a problem
 
