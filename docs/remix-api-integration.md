@@ -216,7 +216,8 @@ nothing can be seen.
   (`rtx.particles.antiGhostCoverage`). Without both, every flake left a trail of copies one frame's fall apart under RR.
 - **Particle objects live one frame** without a draw. A particle system's draw carries new geometry each frame
   (its hash mixes count and generation), so with `numFramesToKeepInstances > 1` the old frames' objects stayed in the
-  BVH: a stack of copies per flake.
+  BVH: a stack of copies per flake. Remix Plus `dev` already handles this (`newGeometryEveryFrame`); our base
+  predates it.
 - **Trails and velocity alignment relative to the moving camera** (`0x20`): streaks look right from a car at 150 km/h.
 - **Car kill box** (`0x40` + `__rbrrtx.carbox`): an oriented box around the player car, updated every frame, kills
   particles inside it. Kim's spawn shelter probe runs once at spawn against last frame's world, so a moving car drove
@@ -229,7 +230,7 @@ nothing can be seen.
 ### 4.5 Lighting the particles
 - **Sky light was compiled out.** `RESOLVE_SKY_LIT_PARTICLES` is defined nowhere upstream, so API particles only saw the
   froxel radiance cache, which holds analytic lights only. Under NUMOS, dust was black. Restored, with
-  `rtx.particleSkyAmbientScale` (reported as RemixProjGroup/dxvk-remix#48).
+  `rtx.particleSkyAmbientScale` (reported as RemixProjGroup/dxvk-remix#48, fix offered as #51).
 - **Local lights did not reach them.** The cache is multiplied by `rtx.volumetrics.volumetricConsumerGain` (0.008
   under NUMOS) and is coarse with volumetrics off, so a headlight beam never showed in rain. New
   `rtx.particles.localLightGain`: the particle hit adds the **unshadowed** contribution of sphere lights within
@@ -422,30 +423,42 @@ per frame on both the game and render threads.
 
 ## 9. Upstream candidates
 
-Our runtime branch sits on Kim's `fnv/main` line. Each item below is one self-contained PR against Remix Plus,
-rebased onto its current main, with the option documented and **off or unchanged by default** where it changes
-behaviour. RBR-only commits (welcome-window buttons, RBR texture-grid tweaks) stay on our branch.
+Our runtime branch sits on Kim's `fnv/main` line. Each item below is one self-contained PR against Remix Plus's
+trunk (`dev`), with the option documented and **off or unchanged by default** where it changes behaviour. Each PR is
+one squashed commit with its `docs/CHANGELOG.md` entry, as Remix Plus's `AGENTS.md` asks. RBR-only commits
+(welcome-window buttons, the 16 px grid buttons) stay on our branch.
 
-### Tier 1: bug fixes any API host hits
+### Opened (2026-11-14)
+All five were rebuilt together on `dev` 7c03bfd4f before opening: everything compiles and `d3d9.dll` links.
+
+| PR | From our commits | What it does |
+|---|---|---|
+| [#51](https://github.com/RemixProjGroup/dxvk-remix/pull/51) Sky light on particles | `9b25c6e43`, `63b6319c1` | Restores `RESOLVE_SKY_LIT_PARTICLES`; API materials carry the sky-lit particle flag; `rtx.particles.skyAmbientScale` (default 1) with a menu control. Linked to issue [#48](https://github.com/RemixProjGroup/dxvk-remix/issues/48). Our runtime still names the option `rtx.particleSkyAmbientScale`. |
+| [#52](https://github.com/RemixProjGroup/dxvk-remix/pull/52) Minimum authored particle size | `0d98a4610` | The geometry pass drops only degenerate sizes (0.001) instead of everything under 0.1 authored units |
+| [#53](https://github.com/RemixProjGroup/dxvk-remix/pull/53) Texture grid thumbnail IDs | `477422e2e` | Each Alt+X thumbnail button scoped by its texture hash |
+| [#54](https://github.com/RemixProjGroup/dxvk-remix/pull/54) Inactive window keeps the world | D3D9 part of `314a53ce5` | A present always clears "ending frames without present"; an inactive window starts it only after 4x + 8 the presented frame's scenes |
+| [#55](https://github.com/RemixProjGroup/dxvk-remix/pull/55) `rtx.particles.minScreenSize` | option part of `68e0d83ab`, menu part of `e04562d5d` | The fixed 2-pixel screen-size cull as an option, default 2 |
+
+**Not opened, already upstream:** the particle lifetime fix (`6eda0cb14`). Remix Plus `dev` flags particle draws
+`newGeometryEveryFrame`, so the draw-call tracker collects them after one frame and never anti-culls them.
+
+### Tier 1: bug fixes still to offer
 | PR | Commits on `rbr-main` | Why generic |
 |---|---|---|
-| Restore sky light for API particles (`RESOLVE_SKY_LIT_PARTICLES`) + `rtx.particleSkyAmbientScale` | `9b25c6e43`, `63b6319c1` | Every API particle under NUMOS or a sky-lit scene is dark. Issue #48 |
-| Particle objects live at most one frame without a draw; drop spawns older than a frame | `6eda0cb14`, `82ebf25c2`, `e7efe9026` | Ghost copies with `numFramesToKeepInstances > 1`; stale instance indices when ray tracing is toggled |
-| Minimum authored particle size only drops degenerate sizes (or scale by `sceneScale`) | `0d98a4610` | Breaks every game whose unit is not a centimetre |
-| Host `SetConfigVariable` values in non-saved layers; texture lists below `rtx.conf` with `-0x` removals; `override:` layer | `6e5922182`, `de2427eb1` | Any host that sets options per level currently pollutes `user.conf` on Save |
+| Drop particle spawns older than a frame | `82ebf25c2`, `e7efe9026` | Stale instance indices when ray tracing is toggled. Check against `dev` first, like the lifetime fix |
+| Host `SetConfigVariable` values in non-saved layers; texture lists below `rtx.conf` with `-0x` removals; `override:` layer | `6e5922182`, `de2427eb1` | Any host that sets options per level pollutes `user.conf` on Save. Compare with the config-layer API `dev` added on 2026-11-02 before offering |
 | Stability: ray tracing waits for the TLAS build; keep a dropped BLAS's micromaps until in-flight frames finish; skip present without a swap chain | `245a2adf6`, `786cbf8df`, `7f31c7cc3` | Generic device-lost and crash paths |
-| x86 bridge client links with current MSVC (`dllexport` of `remix_c.h` entry points); packman link warnings under `/WX` | `1c56e9a60`, `e87fbbcba`, `72488fc2f` | Build fixes |
+| Link fixes: ignore LNK4099 for packman's `sentry.lib`; HydraTestRender links with packman's static-CRT glfw3 | `e87fbbcba`, `72488fc2f` | `dev` 7c03bfd4f does not link on this machine without both (`/WX`) |
+| x86 bridge client links with current MSVC (`dllexport` of `remix_c.h` entry points) | `1c56e9a60` | Build fix |
 
-### Tier 2: features with a clear generic use
+### Tier 2: features still to offer
 | PR | Commits | Note |
 |---|---|---|
-| Particle local lights: `rtx.particles.localLightGain`, range, max count | `e04562d5d` (+ range part of `314a53ce5`) | Headlights in rain, torches in smoke. Off by default |
+| Particle local lights: `rtx.particles.localLightGain`, range, max count, falloff start | `e04562d5d` (+ falloff part of `314a53ce5`) | Headlights in rain, torches in smoke. Off by default |
 | Particle motion vectors and anti-ghost mask for non-emissive particles | `0c3e0510a`, `3b8a82550` | Any falling precipitation under RR |
-| `rtx.particles.minScreenSize` and `maxScreenCoverage` | parts of `68e0d83ab`, `c85b1ffa9` | Render-pixel cull under DLSS; overdraw near the lens |
+| `rtx.particles.maxScreenCoverage` | part of `c85b1ffa9` | Overdraw near the lens |
 | API draws merge their own material into USD replacements (as D3D9's `mergeLegacyMaterial`) | `175749913` | A mod can replace an API mesh's material without losing the host's textures |
 | Mesh materials: a `material:binding` on a preserved `mesh_<hash>` replaces that draw's material | `175bdf51f`, `7a2ed40f6` | Per-mesh materials where textures are shared (atlases). `documentation/MeshMaterials.md` |
-| Inactive window keeps the ray-traced world | part of `314a53ce5` | Alt-tab no longer drops the scene |
-| Alt+X texture grid thumbnails scoped by texture hash | `477422e2e` | Generic UI fix |
 
 ### Tier 3: needs an API design first
 The behaviour is generic, but our transport is a stop-gap and should not go upstream as is.
