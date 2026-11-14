@@ -46,7 +46,10 @@ Copy-Item (Join-Path $here 'LICENSE'), (Join-Path $here 'THIRD-PARTY.md') (Join-
 # 0.4.0: the installed proxy reads rbr-rtx\config; the Remix Plus settings replace the 1.5.2 ones of the same name.
 $cfg = Join-Path $dist 'rbr-rtx\config'
 $plus = Join-Path $dist 'rbr-rtx\config-remixplus'
-foreach ($n in 'pbr-material.conf', 'legacy-material-no-pbr.conf', 'material-classes.ini', 'bridge.conf') { Remove-Item (Join-Path $plus $n) -Force }   # dev only; the runtime brings its bridge.conf
+# The bridge reads <runtime>\.trex\bridge.conf: the Remix Plus one, as the dev launcher puts there. package\rbr-rtx\remix\.trex
+# holds the 1.5.2 file and was copied over it just above (the 2026-11-08 package shipped that one: command queue 10000, not 16384).
+Copy-Item (Join-Path $plus 'bridge.conf') (Join-Path $remixDst '.trex\bridge.conf') -Force
+foreach ($n in 'pbr-material.conf', 'legacy-material-no-pbr.conf', 'material-classes.ini', 'bridge.conf') { Remove-Item (Join-Path $plus $n) -Force }   # dev only
 Get-ChildItem $plus -Force | Copy-Item -Destination $cfg -Recurse -Force
 Remove-Item $plus -Recurse -Force
 $rtxConf = Join-Path $cfg 'rtx.conf'
@@ -77,7 +80,7 @@ if (Test-Path $bridgeConf) {
   [IO.File]::WriteAllText($bridgeConf, $b, (New-Object Text.UTF8Encoding $false))
 }
 # Dev runs write into the runtime folder (crash dumps, logs, ReShade injected into NvRemixBridge.exe): never ship those.
-$leftovers = '*.pdb', '*.dmp', '*.log', 'ReShade*', 'nrc_session_log.txt', 'user.conf', 'imgui.ini'
+$leftovers = '*.pdb', '*.dmp', '*.log', 'ReShade*', 'nrc_session_log.txt', 'user.conf', 'imgui.ini', '*.dll.own', '*.dll.remixplus'   # the last two: the launcher's spare Ray Reconstruction DLLs (the active nvngx_dlssd.dll ships)
 Get-ChildItem $remixDst -Recurse -Force -File | Where-Object { $n = $_.Name; $leftovers | Where-Object { $n -like $_ } } |
   ForEach-Object { "left out (dev-run leftover): $($_.FullName.Substring($remixDst.Length + 1))"; Remove-Item $_.FullName -Force }
 Get-ChildItem $remixDst -Recurse -Force -Directory -Filter 'reshade-shaders' |
