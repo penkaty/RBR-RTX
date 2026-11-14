@@ -14,6 +14,7 @@ Start with the [main page](../README.md) for requirements and installation. Thes
 | [Known issues](known-issues.md) | You wonder whether a problem is already known |
 | [Remix settings for strong PCs](remix-settings.md) | Your GPU has headroom and you want a better picture |
 | [0.4.0 technical notes](release-0.4.0.md) | You want the engineering findings and the runtime options |
+| [How the Remix API is driven](remix-api-integration.md) | You work on a Remix runtime or port another game: particles, lamps, F3 emissives, materials, precision, performance, upstream candidates |
 | [Contributing](../CONTRIBUTING.md) | You want to help with reports, sun fixes or code |
 
 New pages go in this folder and get a row here.
