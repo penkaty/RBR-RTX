@@ -1,8 +1,8 @@
 # RBR-RTX 0.4.0: technical release notes
 
-**Status: being prepared, not released.** Items marked *not yet seen* were built but have not been confirmed in game.
+**Status: release candidate, 2026-11-14.** Items marked *not yet seen* were built but have not been confirmed in game.
 
-This page is for people who want the detail. For an introduction, see the [main page](../README.md). The change list is in the [changelog](../CHANGELOG.md).
+This page is for people who want the detail. For an introduction, see the [main page](../README.md); for what each system is, [How it works](how-it-works.md). The change list is in the [changelog](../CHANGELOG.md).
 
 ## What moved
 0.3.0 ran on stock RTX Remix 1.5.2. 0.4.0 runs on **Remix Plus**, Kim2091's fork of `dxvk-remix`, with a short patch queue of our own. The source is [penkaty/dxvk-remix](https://github.com/penkaty/dxvk-remix), branch `rbr-main`.
@@ -11,8 +11,8 @@ This page is for people who want the detail. For an introduction, see the [main 
 |---|---|
 | `d3d9.dll` (x86) | Our proxy. It rebuilds camera and object transforms from RBR's vertex shader constants, then drives lights, particles, sky and options through the Remix API |
 | Bridge | 32-bit game to 64-bit renderer. Remix Plus's bridge forwards the API from 32-bit hosts |
-| Runtime (x64) | Remix Plus 2.0.0 plus Kim's `fnv/main` line and our patches |
-| `rbr-rtx\config-remixplus\` | Its own `rtx.conf`, weather presets, `atmosphere.ini` and terrain catalog |
+| Runtime (x64) | Remix Plus 2.0.0 plus Kim's `fnv/main` line (1.2.0-rc7) and 44 patches of our own |
+| `rbr-rtx\config\` | `rtx.conf` and `user-seed.conf` (copied once to the game folder), weather presets, `atmosphere.ini`, terrain catalog, `start-options.ini` |
 
 ## Findings
 
@@ -43,6 +43,7 @@ RBR's ground shader computes `mix(t0, t1, t1.a * v.a)` per pixel. Stages disagre
 - **The Alt+X click reached the baked map's hash.** The lookup now remembers the game texture from before the bake.
 
 ### Sky and weather
+- **NUMOS owns all weather.** The proxy used to set fog distance and aerosol per stage on top of the preset; the two fought, and a saved preset never looked the same twice. Now the proxy only names the weather and sends the sun and the time; the presets carry the fog. `rtx.volumetrics.enable` and `rtx.enableFog` are off.
 - NUMOS draws the sun, clouds, fog and aerosol from the game's weather. Ids go most specific first (`stage456_Hazy_LightCloud`, ... `Hazy`, `LightCloud`, `RBR`), and the first bound preset wins. A stage can therefore have its own sky, as Legazpi-Gabiria now does.
 - Rain presets use `cloudLayer2` as a low bank instead of a high deck. It is lit and cut by the scene, unlike height fog. *Not yet seen.*
 - The main menu drifts between random presets over 120 s through `gameWeatherOutgoing` and `gameWeatherBlend`, with a 10 % chance of bad weather. *Not yet seen.*
@@ -60,6 +61,30 @@ RBR's ground shader computes `mix(t0, t1, t1.a * v.a)` per pixel. Stages disagre
 - **Sweep crash (device lost, `nvlddmkm` event 153).** Two Alt+K sweeps died in the same place: 10 to 12 s after the "opacity micromaps off" step, right as its second `Integrate Indirect` pipeline finished compiling. The stalled frame held an OMM bake of about 507,000 micro-triangles. The cause is not proven, and no Aftermath dump exists yet. The OMM steps are out of the sweep. *Not yet seen.*
 - **Key 0 can still lose the device.** It rebuilds every BLAS at once.
 
+### Lamps
+- **Twins were the wrong tool for lamps.** A lit lamp part used to be a second texture ("twin") whose emissive material came from a generated mod. Remix reloads a mod asynchronously, so lamps lagged, and brake lamps switched a frame or more late. Lamp parts, car glass and brake discs are now Remix API meshes, one per look (off, on, braking), and the D3D9 draw is skipped.
+- **Car UVs are on vertex stream 1.** The first API build drew nothing because it read stream 0.
+- **Lamp roles cannot be read from names alone.** Cars share vertex counts between tail and brake lenses (Celica TA64), draw one lamp as several face blocks over one vertex block (Fabia RS Rally2, Hyundai i20 WRC), draw lamp blocks opaque with the glass shader (Yaris Rally2), or leave the bumper lamps out (Porsche 911 SC RS). Roles are decided by model name, then exact vertex count, then place within the part's box. The lamp learning pulse at stage start confirms which parts answer the game's lamp signal.
+- **The wheel test compared the wrong thing.** Parts that turn with a wheel are brake discs. Testing `M - B` (part matrix minus body matrix) changes with every turn of the car for a tilted node, so i20 brake lenses were taken for discs. The test is now `M x B^-1`.
+- **Emissive colour is ignored when a mask is set.** Remix takes the colour from the mask texture, so the colour is baked into the mask.
+- **Lamp glow in the air is the main cost of lamps.** NUMOS computes the airlight of every lamp per pixel in the composite pass: 4 to 5 ms at night in heavy rain with street lamps on a 2080 Ti. Its budget and cutoff options changed nothing measurable. Reported with six ideas as [Kim2091/numos-sky#2](https://github.com/Kim2091/numos-sky/issues/2). Rear lamps are left out of the airlight.
+
+### Materials
+- **The game's physics is the best classifier.** Every ground triangle carries a surface id for the tyre model. The proxy reads the same collision data, looks up the id under each ground texture and caches texture to class in `rtx-remix\modsbr_rtx_lit\surfaces.txt`.
+- **The terrain baker ignores material constants,** so class materials carry small roughness maps instead of numbers.
+- **Road mask.** The same physics data gives the road's outline. It goes to the runtime as a mask, widened 5 m with a soft edge, and the wetness shader lowers the water level across it: puddles on the road, wet ground without puddles beside it (`rtx.wetNoPuddleTextures`).
+- **Card normals only on cut-outs.** Applied to every foliage-class texture, they reached car parts and walls. They now apply to cut-out alpha only, and never to a texture you classified otherwise in `rtx.conf`.
+
+### Effects
+- **One hook instead of one feature per effect.** `CEmitter_Emit` is the game's single spawn function. Hooking it gives every emitter with its position, velocity and amount; a table maps each effect type to a Remix particle system. Wheel dust and smoke are driven per wheel, rain and snow by one spawner around the camera.
+- **Rain cost is rain times lamps, not the drop count.** Halving the drops or shrinking the area gained little; switching lamps off in rain gained more than both.
+- **Precipitation needs its own motion vectors.** Without them each flake left copies of itself a frame's fall apart under Ray Reconstruction (`rtx.particles.motionVector*`, `antiGhostCoverage`).
+- **The game's windscreen drops are world-space additive quads** and work as particle textures. Their second, subtractive pass cannot be drawn by Remix and is ignored.
+
+### Logging
+- **The profiler was always on.** About 8000 timed zones a frame, two `QueryPerformanceCounter` calls each, also when no log folder existed. Zones now time nothing without a log folder.
+- **A release install logs on demand.** Key 8 and Alt+K point the log at `rbr-rtx\logs` for the rest of the session. `diagnostics.txt` still logs from the start. The bridge's periodic performance breakdown is off in the package.
+
 ## Options added by our runtime patches
 | Option | Default | Here | Purpose |
 |---|---|---|---|
@@ -71,6 +96,9 @@ RBR's ground shader computes `mix(t0, t1, t1.a * v.a)` per pixel. Stages disagre
 | `rtx.particles.localLightGain` | 0 (off) | 1 | Sphere lights (headlights, lamps) on API particles |
 | `rtx.particles.localLightRangeMeters` | 40 | 40 | Lights farther from a particle are skipped |
 | `rtx.particles.localLightMaxCount` | 64 | 64 | Most sphere lights looked at per particle hit |
+| `rtx.particles.motionVector*`, `rtx.particles.antiGhostCoverage` | off | set by the proxy while rain or snow falls | Motion vectors and anti-ghost mask for precipitation |
+| `rtx.wetNoPuddleTextures` | empty | sent by the proxy | Wet surfaces that hold no standing water |
+| `rtx.cardNormals.dome`, `domeSpread` | off | see `rtx.conf` | Card normals as a dome per card |
 
 `rtx.numFramesToKeepInstances = 0` was tried against brake lenses lingering behind the car and undone: it did not help, and it stopped rain and snow from showing.
 
@@ -78,7 +106,8 @@ RBR's ground shader computes `mix(t0, t1, t1.a * v.a)` per pixel. Stages disagre
 Comparison runs against earlier versions are still to come, and this section will carry their numbers. Measured so far, on an RTX 2080 Ti at 1080p: the menu and car figures above, and about 2.8 ms saved by the car path on Gabiria.
 
 ## What is not done
-- Material response without PBR: every unmodded texture shares one legacy material, so surfaces can look too shiny or flat. Per-class roughness and specular are next.
+- Materials are per class of surface, not per texture. Finer materials come after 0.4.0.
+- Lancia Delta tail lamps, car dirt, and the cost of lamp glow in rain at night.
 - Bob's Track Builder stages still fail under path tracing.
 - See [Known issues](known-issues.md).
 

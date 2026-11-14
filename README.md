@@ -7,7 +7,7 @@
 [![Remix Plus](https://img.shields.io/badge/Remix%20Plus-2.0-76b900)](https://github.com/penkaty/dxvk-remix)
 [![Issues](https://img.shields.io/github/issues/penkaty/RBR-RTX?label=open%20issues)](https://github.com/penkaty/RBR-RTX/issues)
 
-Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sky, weather and wet roads, through
+Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sky, weather, wet roads and lamps, through
 [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 
 <img src=".github/img/aston_030.webp" alt="Aston Martin, path traced, 0.3.0" width="90%">
@@ -21,12 +21,13 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sk
 ## What it does
 
 - **Path tracing on the original game.** RBR draws everything with vertex shaders, which Remix cannot place in 3D. The mod rebuilds camera and object positions from the game's shader data and hands them to Remix.
-- **Sun, sky and weather.** The NUMOS sky follows each stage's sun, weather and time of day: real clouds, fog and haze, and a main menu whose weather slowly changes.
-- **Wet roads.** Damp and wet tracks darken the road and fill its hollows with puddles, and rain leaves ripples and raindrop rings.
-- **Particles.** Dust takes the colour of the ground, and tarmac smokes under a slide. Rain, snow and windscreen drops are real particles, lit by the sun and sky.
-- **Dynamic lights.** Headlights by car year in real candela, brake and reversing lights, hot brake discs, backfire flashes and street lamps.
-- **An in-game menu.** **F3** has wetness sliders, a texture tagger, custom lights, car paint and per-stage atmosphere.
-- **Reporting tools.** Every stage you drive is logged and zipped locally. Nothing is sent anywhere.
+- **Sun, sky and weather.** The NUMOS sky follows each stage's sun, weather and time of day: real clouds, fog, haze, a moon at night and lightning in heavy rain.
+- **Wet roads.** Damp and wet tracks darken, the road fills its hollows with puddles, and rain leaves ripples and raindrop rings. Off the road the ground gets wet without standing water.
+- **Surfaces that differ.** Gravel, tarmac, snow, grass, rock, wood and metal each get their own roughness, taken from what the game's physics says the surface is.
+- **Particles.** Every effect the game has (dust, tyre smoke, water splashes, engine steam, rain, snow) is a real particle, lit by the sun, the sky and your headlights.
+- **Dynamic lights.** Headlights by car year in real candela, tail, brake and reversing lights on the car's own lamp parts, glowing brake discs, backfire flashes, street lamps and lit windows at night.
+- **An in-game menu.** **F3** has wetness sliders, a texture tagger, a lamp tool, car paint, headlight and per-stage atmosphere settings.
+- **Reporting tools.** Three keys (**8**, **9**, **Alt+K**) collect everything needed for a bug report. Nothing is sent anywhere.
 - **A pure add-on.** It adds `d3d9.dll` and an `rbr-rtx\` folder. No game file is changed.
 
 <div align="center">
@@ -48,10 +49,10 @@ Expect about 60 fps on a clear day and 35 to 50 fps at night in rain, measured o
 ## Installation
 
 1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) (`.7z` opens with [7-Zip](https://www.7-zip.org/)) and unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`.
-2. RSF launcher settings: **Cubic env maps off**, **Render car shadows off**, **Particles off**.
+2. RSF launcher: **Graphics mode = Normal**. Keep **Particles on** if you want raindrops on the windscreen.
 3. Start the game. The first start compiles shaders and takes longer.
 
-**Updating from 0.3 or older:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
+**Updating from an older version:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
 **Uninstall:** run `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
 
 ## The keys worth knowing
@@ -63,21 +64,40 @@ You need none of these to drive. [All keys](docs/keybinds.md) can be changed in 
 | **F3** | In-game menu |
 | **Alt+X** | Remix's own menu |
 | **L** | Headlights: off, two lamps, brights |
-| **0** | Ray tracing on/off, to compare with the original picture and the game's own rain and snow |
+| **0** | Ray tracing on/off, to compare with the original picture |
 | **9** | Mark a problem while driving |
+| **8** | Record everything drawn in one frame |
 | **Alt+K** | Stage sweep for bug reports: hold still until the beep |
 
-## Help wanted
+## The F3 menu
 
-RBR bakes each stage's light into the scenery, so the path-traced sun and weather have to agree with the bake, stage by stage. **Only a player looking at the stage can tell when they do not.** Every stage you set right is fixed for all players in the next release.
+**F3** opens RBR-RTX's own menu inside the game. The game keeps running behind it, and most pages work on whatever is under the crosshair in the middle of the screen. Stop the car first: the keyboard and mouse go to the menu, the steering wheel does not.
 
-- **A sky that blocks the sun:** flag the texture as a sky texture in **Alt+X** and tell me the stage.
-- **A sun in the wrong place:** it takes under 20 seconds, see [Fixing the sun](docs/fixing-the-sun.md).
-- **A bug:** run **Alt+K** on the spot and send the report, see [Troubleshooting](docs/troubleshooting.md).
+| Page | What you do there |
+|---|---|
+| **Info** | See the stage, weather, time and every key |
+| **Wetness** | Move every wet-road slider: puddles, ripples, raindrops, darkening |
+| **Textures** | Aim at a surface and tag it Terrain, Decal, Water or Ignore, live |
+| **Car paint** | Set how shiny and how metallic car paint is |
+| **Atmosphere**, **Per stage** | Edit weather, haze and sun rules, for all stages or for the one you are on |
+| **Headlights** | Edit lamp brightness, colour, beam and the automatic switching |
+| **Lamps** | Make a street lamp, floodlight or window glow and cast light, or place a free light anywhere |
+| **Debug** | Switch single parts of the mod on and off to compare |
+| **Save** | Write your values to `rbr-rtx\config\menu.ini` |
 
-**Work in progress:** unusual weather, rare stages and Bob's Track Builder stages can look wrong. See [Known issues](docs/known-issues.md).
+The full guide is in [The F3 menu](docs/f3-menu.md).
 
-**Car lamps:** beams and rear lights work on every car. Glowing lamp lenses depend on how the car was built, and some cars, such as the Ford Focus WRC, show beams only for now.
+## Reporting a problem
+
+Three keys do the logging. While you just drive, the mod only keeps a small report per stage; the detailed log starts when you ask for it. Nothing is sent anywhere.
+
+| Key | Use it when | What you get |
+|---|---|---|
+| **9** | Something goes wrong while you drive | A beep, a screenshot and the frame times around that moment. The stage's report zip in `rbr-rtx\logs\reports` is kept and named `-marked`. It works in the main menu too. |
+| **8** | One thing on screen is wrong right now (a lamp, a texture, a missing part) | Every draw of the next frame, written to `rbr-rtx\logs\rbrrtx_comp.log` |
+| **Alt+K** | The whole picture or the frame rate is wrong | A sweep of about a minute that switches parts off one by one: screenshots, frame times per part, texture hashes and a Remix scene capture |
+
+How to send them: [Troubleshooting](docs/troubleshooting.md).
 
 ## Documentation
 
@@ -85,16 +105,34 @@ RBR bakes each stage's light into the scenery, so the path-traced sun and weathe
 |---|---|
 | [Installation](docs/installation.md) | Step by step, updating, uninstalling, RSF launcher settings |
 | [Keybinds](docs/keybinds.md) | Every key |
+| [The F3 menu](docs/f3-menu.md) | Every page of the in-game menu, with how-tos for lamps and texture tags |
+| [How it works](docs/how-it-works.md) | NUMOS and every other system under the hood, in plain words |
 | [Particles, rain, snow and weather](docs/particles-and-weather.md) | What the settings do and how to change them |
 | [Fixing the sun](docs/fixing-the-sun.md) | Set a stage's sun and send it in |
 | [Troubleshooting](docs/troubleshooting.md) | Black picture, low FPS, crashes, how to report a problem |
 | [Known issues](docs/known-issues.md) | What is not working yet |
 | [Remix settings for strong PCs](docs/remix-settings.md) | Raise the quality if your GPU has headroom |
-| [0.4.0 technical notes](docs/release-0.4.0.md) | How it works, what we found, runtime options |
+| [0.4.0 technical notes](docs/release-0.4.0.md) | What we found and changed, runtime options |
 | [Changelog](CHANGELOG.md) | What changed in each version, and why |
 | [Contributing](CONTRIBUTING.md) | Reports, sun fixes, code, building from source |
 
-**A separate project, still in progress:** physically based materials for the stages. They are not part of this release.
+### What runs under the hood
+
+Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock runtime did not have. Each one is explained in [How it works](docs/how-it-works.md).
+
+| System | What it is |
+|---|---|
+| **Remix Plus** | The community runtime the mod is built on. Unlike stock Remix, its bridge lets a 32-bit game like RBR use the full Remix API, which everything below depends on. |
+| **NUMOS** | Kim2091's physically based sky. It draws the atmosphere, sun, moon, volumetric clouds, fog and haze, and it lights the stage with them. RBR-RTX tells it the stage's sun, time and weather; NUMOS does the rest from a weather preset per RBR sky type. |
+| **Remix API** | How RBR-RTX adds what the game never had: light sources, particle systems and meshes with real materials (lamp lenses, car glass, brake discs, the crew). |
+| **Effects** | Every particle emitter of the game is replaced by a Remix particle system at the same place. |
+| **Wetness** | xoxor4d's wet-surface shading: puddles, ripples, raindrop rings, darkening. RBR-RTX drives it from the stage's track condition and rain, and keeps puddles on the road with a mask from the game's physics. |
+| **Material system** | Each ground texture gets its surface class from the game's physics, and each class has its own material. Lamps, foliage, car paint and gauges get materials generated while you play. |
+| **Car and world lamps** | Lamp parts are learnt from each car model when a stage starts. Street lamps and windows come from textures marked in the F3 menu. |
+| **Terrain baker, card normals** | Remix's ground blending for hand-tagged terrain, and xoxor4d's foliage shading for flat leaf cards. |
+| **Radiance cache and Ray Reconstruction** | SHaRC for bounce light, RTXDI for direct light, DLSS Ray Reconstruction as the denoiser. |
+
+**Still in progress:** unusual weather, rare stages and Bob's Track Builder stages can look wrong, see [Known issues](docs/known-issues.md).
 
 <details>
 <summary><b>Credits</b></summary>

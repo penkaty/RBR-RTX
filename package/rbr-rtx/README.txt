@@ -1,4 +1,4 @@
-RBR-RTX - RTX Remix path tracing for Richard Burns Rally (RSF), as a removable add-on
+RBR-RTX 0.4.0 - path tracing for Richard Burns Rally (RSF) through Remix Plus, as a removable add-on
 Full documentation, changelog and updates: https://github.com/penkaty/RBR-RTX
 
 REQUIREMENTS (read this first)
@@ -9,141 +9,81 @@ REQUIREMENTS (read this first)
     properly. Remove them first (for ReShade also its Vulkan layer and shader folders). RBR-RTX has its own
     headlights (key L).
 
-What it adds to the game folder (nothing else is changed):
-  d3d9.dll        RBR-RTX proxy; loads RTX Remix from rbr-rtx\remix\ and feeds it the camera, objects and sun
-  rbr-rtx\        Remix runtime, configs, logs, these scripts; Remix mods in rbr-rtx\rtx-remix\mods, Alt+X
-                  captures in rbr-rtx\rtx-remix\captures (the folder name the RTX Remix Toolkit expects)
-                  rtx-remix\mods\rbr_rtx_materials = RBR-RTX's own hand-tuned materials (so far: the mirrors
-                  of the BMW M3 E30 GrpA reflect for real, the exhaust backfire flame glows)
+What it adds to the game folder (no game file is changed):
+  d3d9.dll        RBR-RTX; loads the Remix Plus runtime from rbr-rtx\remix\ and feeds it the camera, objects,
+                  sun, weather, lamps and particles
+  rbr-rtx\        runtime, settings (config\), logs, these scripts; Remix mods in rbr-rtx\rtx-remix\mods
+  rtx.conf, user.conf   created in the game folder at the first start, from rbr-rtx\config. They are yours from
+                  then on: Alt+X saves go there and no update overwrites them.
 
 Install
   1. Remove ReShade and the RBR Lights Plugin if you have them. RSF launcher: Graphics mode = Normal.
-  2. From the unpacked RBR-RTX folder, in PowerShell:  .\rbr-rtx\install.ps1 -Game "<your RBR folder>"
-     (or copy d3d9.dll and rbr-rtx\ into the game folder by hand).
-  3. Start the game as usual. The first start compiles shaders and takes longer. Alt+X opens the Remix menu.
-  Updating from 0.3 or older: unpack over the old files, then delete user.conf in the RBR folder (and an edited
-  rbr-rtx\config\keys.ini): old saved settings override the new defaults.
+  2. Unpack into the game folder, next to RichardBurnsRally_SSE.exe (d3d9.dll and rbr-rtx\ land there).
+     Or, from the unpacked folder in PowerShell:  .\rbr-rtx\install.ps1 -Game "<your RBR folder>"
+  3. Start the game as usual. The first start compiles shaders and takes longer.
+  Updating from an older version: unpack over the old files, then delete rtx.conf and user.conf in the RBR folder
+  (and an edited rbr-rtx\config\keys.ini): old saved settings override the new defaults. Copy your own
+  rbr-rtx\config\menu.ini and sun-saved.ini out first if you want to keep them.
 
-Recommended game settings (RSF launcher / in-game options)
-  Cubic env maps: off, Render car shadows: off. RBR-RTX path traces car reflections and shadows; the game's
-  reflection cube map pass and blob shadow only cost time (RBR-RTX skips the cube map draws anyway).
-  Particles: off (Remix uses its own particle renderer).
-  Normal or windowed "Fullscreen mode" in the launcher is recommended (stage sweep screenshots are black in
-  exclusive fullscreen).
+Game settings (RSF launcher / in-game options)
+  Particles: on (any quality) if you want raindrops on the windscreen; dust, smoke, rain and snow work either way.
+  Cubic env maps, Render car shadows: either setting; RBR-RTX skips both passes and path traces the real thing.
+  Windowed or borderless is recommended (stage sweep screenshots are black in exclusive fullscreen).
 
-Weather: RBR's sky type (crisp, hazy, rain, snow, fog), cloud cover, time of day and the stage's country set the
-  Remix haze, sky light and sun automatically (rbr-rtx\config\atmosphere.ini; enable = 0 there turns it off).
+The menus
+  F3      RBR-RTX's own menu. Stop the car first: keyboard and mouse go to the menu while it is open.
+            Info         stage, weather, time, every key
+            Wetness      wet-road sliders: puddles, ripples, raindrops, darkening
+            Textures     aim the middle of the screen at a surface and tag it Terrain / Decal / Water / Ignore
+            Car paint    how shiny and how metallic car paint is
+            Atmosphere, Per stage   weather and sun rules, for all stages or the one you are on
+            Headlights   lamp brightness, colour, beam, automatic switching
+            Lamps        aim at a street lamp, floodlight or window and make it glow and cast light; free lights
+            Debug        switch single parts of the mod on and off to compare
+            Save         writes your values to rbr-rtx\config\menu.ini
+  Alt+X   Remix's own menu (graphics settings, texture flags, weather presets under Sky > Weather)
 
-HELP WANTED: SKY, SUN AND WEATHER
-  So far I have focused on much needed performance fixes and on cutting the unused vertex calls and draws. Still
-  ahead is an ungodly amount of work that can only be done in a reasonable time with the help of people willing to
-  test it. RBR bakes each stage's light into the scenery, so the path-traced sun has to be made to agree with the
-  bake, stage by stage and time of day by time of day. Nothing in the game files tells us when it does not, so only a
-  player looking at the stage can tell. From easiest to hardest:
+Keys (change them in rbr-rtx\config\keys.ini if they clash with your controls)
+  Only while the game window is active. Letter keys are all Alt+<letter> except L. You need none of them to drive.
+  L        headlights: OFF -> ON (two lamps) -> BRIGHTS -> OFF. They come on by themselves below 12 degrees of sun
+           and in rain, snow or fog, until you press L on that stage. Settings: rbr-rtx\config\headlights.ini.
+  0        ray tracing on/off: the original picture of the same scene
+  /        debug sun on/off; while on, hold [ ] to turn it and ; ' to lower / raise it
+  \        keep the sun now shown for this stage and time of day (rbr-rtx\config\sun-saved.ini)
+  6        sky on/off                        7        dust and tyre smoke on/off
+  Alt+7    rain and snow: Remix particles <-> the game's own
+  Alt+0    ray bounces: default -> large -> 1 secondary bounce (faster; can blacken tree backgrounds)
+  Alt+Y    ground second layer: decal (default) -> bake (experiment) -> off, applied at the next stage load
+  The rest (comparison switches) are listed in the F3 Info page and on the website.
 
-  1. Sky textures that block the sun (easiest). Some stages use a skybox that literally blocks the sun. Pick that
-     texture with the Remix dev tools (Alt+X) and give it the "sky texture" flag. Send me the rtx.skyBoxTextures
-     line from user.conf in the RBR folder once you have saved it (RabocsiRing 2021 was fixed this way).
-
-  2. Sun position. Stages differ in how they bake their light. RBR-RTX reads the sun direction left in the stage
-     files and places the Remix sun to match. Some stages lack it entirely or use a straight-up 90 degree sun. For
-     those the sun position is automated from the chosen weather, an approximate time of day and the stage's
-     location. This is where manual input is needed: every stage and time of day you set right is fixed for all
-     players in the next release. To set the sun position in under 20 seconds:
-       a. Press / (debug sun).
-       b. Hold [ and ] to turn it around and ; and ' to lower / raise it until the light matches the baked shadows.
-       c. Press \ (Windows beep). That sun is kept for this stage and time of day, now and next time you drive it.
-       d. Send rbr-rtx\config\sun-saved.ini to https://github.com/penkaty/RBR-RTX/issues. Delete a line there to go
-          back to the stage's own sun. Uninstall removes it: copy it out first.
-
-  3. Sun intensity and the weather look (hardest). Even when the sun position fits the bake and the theme of the
-     stage, its intensity has to be regulated properly. There are two ways: dim and brighten the sun, which works
-     today with Alt+N / Alt+M (10 % per press; the log shows the value to keep), and enlarge it so shadows get
-     softer, which is not in yet. The goal is a full volumetric atmospheric weather system that matches the
-     original raster look (heavy fog, distant haze, overcast, clear day). In many cases the weather name alone will
-     not give enough information, so manual input will be needed here too.
-
-Keys (in game; change them in rbr-rtx\config\keys.ini if they clash with your controls)
-  Only while the game window is active and Ctrl is not held; Alt+<key> only with Alt. Alt+X = RTX Remix menu.
-  Letter keys are all Alt+<letter> except L, so typing or letter-key driving binds never toggle anything.
-  You need none of them to drive: the defaults are the best-looking, fastest setup. The four marked * are the ones
-  worth remembering.
-
-* Alt+K    stage sweep: press it on the stage where the problem is, keep the car and camera still and wait about
-           25 seconds until the beep (screenshots taken apart layer by layer, Remix debug views, every texture with
-           its Remix hash, a Remix scene capture). Result: rbr-rtx\logs\sweep-<date-time>\; zip that folder and send it.
-           Run the game windowed or borderless, or the screenshots come out black. Alt+K again aborts.
-* 0        ray tracing on/off: the original raster image of the same scene
-  6        sky: Remix sky (default) <-> no sky
-  7        dust and tyre smoke (Remix particles) on/off
-  8        record everything drawn in the next frame into rbr-rtx\logs (test builds with diagnostics.txt)
-* 9        mark a problem while driving: press it the moment something goes wrong (stutter, wrong picture,
-           anything). Beep, screenshot, the frame times around that moment. Every stage is recorded anyway (see
-           "Reporting a problem"); a mark names that stage's zip -marked.
-* L        headlights: OFF -> ON (two lights at the car's own headlights) -> BRIGHTS (two more, tight high beams
-           that reach further; four lights) -> OFF. By default the two lamps run all day as daytime running lights
-           and the brights come on by themselves when the sun is lower than 4 degrees, until you press L on that
-           stage. Brightness, colour, lamp type by the car's age: rbr-rtx\config\headlights.ini.
-           Tail lights (red) are on with the headlights; brake lights light up whenever you brake. A backfire
-           flashes a short orange light at the exhaust. In reverse gear the right rear lamp turns white.
-  /        debug sun: manual sun on/off (starts at the game's sun, off again at the next stage); while on, hold
-           ; / ' to lower / raise it and [ / ] to turn it around. Below the horizon it becomes twilight and night.
-  \        keep the sun now shown for this stage and time of day (see "Help wanted: sky, sun and weather")
-  Alt+0    secondary ray bounces 2 (default) <-> 1: 1 is faster, but on some heavily forested stages the first two
-           rows of trees then get a black background behind them. Press it again if you see it.
-  Alt+7    rain and snow: Remix particles (default) <-> the game's own
-  Alt+9    experimental: foliage cards cut to the leaf outline
-  Alt+Comma  faster scenery: default (static scenery, trees/grass/flags do not sway) -> off (old, slower) ->
-           static only (everything sways)
-  Alt+I    cockpit windscreen glass on (default) / off
-  Alt+J    foliage: fuller cut-outs (default) -> with soft-edge pass -> game original
-  Alt+L    Remix sun on/off
-  Alt+M / Alt+N  sun dimmer / brighter (10 % per press; the log shows the value to keep)
-  Alt+O    RBR-RTX camera/objects/sun layer on/off (path tracing itself stays on)
-  Alt+P    performance test (rbr-rtx\config\experiments.ini): keep the view still ~1 minute; frame times per
-           setting in rbr-rtx\logs\rbrrtx_comp.log
-  Alt+U    distance culling on/off (off by default): far geometry outside the view left out of path tracing
-           (rbr-rtx\config\culling.ini)
-  Alt+Y    ground second layer on/off (off by default): stages that mix two ground textures (sea and coast, cliffs,
-           road markings) get the second one too. Turn it on before loading a stage. Known issue: road markings
-           and damp patches can show as black, mirror-like holes, and it uses a lot of memory on big stages.
-
-Particles, rain, snow, windscreen drops and fog
-  All tunable in rbr-rtx\config\particles.ini (dust, smoke, rain, snow, windscreen) and atmosphere.ini (haze, fog).
-  Open them in Notepad and save while driving: the change applies within a second. Every key is explained in the
-  file itself. Windscreen drops off the glass on a car: set show_plane = 1 in [windscreen], then tune that car's
-  [windscreen.<car>] section (up / back / right / wider / longer, metres) and send us the numbers.
-
-Reporting a problem (please do!)
-  Stage reports: every stage you drive is recorded and zipped into rbr-rtx\logs\reports\report-<date-time>-<stage>.zip
-  (frame rate and stutter per second, stage and car, hotkeys used, warnings, your PC: Windows, CPU, GPU and driver,
-  Remix version, other plugins, your RBR-RTX settings). Nothing is sent anywhere: you choose what to share. The last
-  20 are kept; zips you marked with 9 are never deleted. A stage left by a crash is zipped at the next start
-  (-unfinished). Driving costs nothing measurable. Off: rbr-rtx\config\report.ini, enabled = 0.
-  Performance or a crash: send the zip of that stage (the -marked one if you pressed 9).
-  Something looks wrong:
-  Whatever the problem: run the Alt+K sweep right where it shows (it presses Pause itself at the end for a Remix
-  scene capture; keep Pause free), wait for the beep, quit, then zip rbr-rtx\logs (and the newest capture_*.usd
-  from rbr-rtx\rtx-remix\captures if you can) and send it with stage, car, weather and what looks wrong:
-  https://github.com/penkaty/RBR-RTX/issues (a Discord link is coming).
-  Unusual weather (snow, fog, rain, night) and rarely driven stages can show wrong surfaces because Remix knows
-  textures by hash and not all are sorted yet: a sweep from exactly there gives us the hashes to fix it.
-  Dynamic lights so far: headlights, high beams, tail and brake lights, the backfire flash (all built through
-  the Remix API: RBR draws its own lights as textures). Other cars' lights are not done yet.
+Reporting a problem (please do!) - three keys, nothing is sent anywhere
+  9        mark a problem while driving: beep, screenshot, the frame times around that moment. Every stage is
+           recorded into rbr-rtx\logs\reports\report-<date-time>-<stage>.zip (the last 20 are kept); a mark names
+           that zip -marked and it is never deleted. Works in the main menu too. A stage left by a crash is zipped
+           at the next start (-unfinished). Off: rbr-rtx\config\report.ini, enabled = 0.
+  8        frame dump: aim the camera at what is wrong and press it. Everything drawn in the next frame goes to
+           rbr-rtx\logs\rbrrtx_comp.log.
+  Alt+K    stage sweep: stop the car, leave the camera, wait for the beep (about a minute; strange views are
+           normal, and it presses Pause itself for a Remix scene capture). Result: rbr-rtx\logs\sweep-<date-time>\.
+           Alt+K again aborts.
+  Which one: a stutter, slow stage or crash -> the stage zip (9). One wrong thing on screen -> 9, then 8. The
+  whole picture wrong or slow -> Alt+K. Then zip rbr-rtx\logs and send it with stage, car, weather and what
+  looks wrong: https://github.com/penkaty/RBR-RTX/issues
+  While you just drive, only the small stage report is kept. 8 or Alt+K switch the detailed log on until you quit.
+  For a full log from the start of the game, create an empty file rbr-rtx\diagnostics.txt (delete it afterwards).
+  The logs contain your Windows user name in file paths and your GPU model, nothing else personal.
 
 Black picture with path tracing on, but fine when you press 0? RBR-RTX cannot recognise the game's shaders. Another
   mod changes them (ReShade, a shader pack, a graphics plugin). Remove it and check that VertexShaders\ holds the
-  game's own files. rbr-rtx\logs\rbrrtx_comp.log then says "WARNING: game shaders not recognised".
-
-Test builds: rbr-rtx\diagnostics.txt switches on extra logging (RBR-RTX log, 8 frame dump, crash dumps) into
-  rbr-rtx\logs. To report a problem, zip rbr-rtx\logs and send it. Delete diagnostics.txt to stop it.
+  game's own files.
 
 Uninstall
-  Run rbr-rtx\uninstall.cmd. It removes d3d9.dll (only if it is still the RBR-RTX one), the files Remix
-  created (user.conf with your Alt+X settings, logs) and rbr-rtx\, including rtx-remix\mods and \captures in it
-  (copy out anything you want to keep). Files that were there before stay.
+  Run rbr-rtx\uninstall.cmd. It removes d3d9.dll (only if it is still the RBR-RTX one), the files Remix created
+  (rtx.conf, user.conf, logs) and rbr-rtx\, including rtx-remix\mods and \captures in it (copy out anything you
+  want to keep, e.g. config\menu.ini). Files that were there before stay.
 
-Requires an RTX GPU. RTX Remix is NVIDIA's (licence in rbr-rtx\remix\LICENSE.txt).
+Credits: Remix Plus and the NUMOS sky by Kim2091; RTX Remix by NVIDIA; wetness and card normals by xoxor4d. Full
+list on the website. Runtime licences: rbr-rtx\remix\LICENSE.txt.
 
 RBR-RTX is free. It may be used, changed and shared, but never sold: PolyForm Noncommercial 1.0.0, see rbr-rtx\LICENSE.
 If you paid for this mod, you were scammed. Third-party parts keep their own licences: rbr-rtx\THIRD-PARTY.md.
