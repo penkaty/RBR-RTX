@@ -1,0 +1,158 @@
+; RBR-RTX car lamps as real (path-traced) lights. Read again at every stage start: change a value, restart the stage.
+; Key L (keys.ini): OFF -> ON (two lamps) -> BRIGHTS (four lamps) -> OFF. Once L is used, the lamps stay as set until
+; the next stage. Per car: see the end of the file.
+
+[headlights]
+; ======== 1. SWITCHING ========
+; 0 = no car lamps at all
+enable = 1
+; 1 = daytime running lights: the two lamps are on all day, the brights switch on by themselves with the sun below
+; brights_below_sun (degrees). 0 = lamps off by day, on below auto_below_sun in auto_mode (2 two lamps, 3 brights)
+day_running = 0
+; 1 = lamps switched off stay in Remix at zero strength, so pressing L does not change the light count (scenery flicker); 0 = removed
+keep_lamps_alive = 1
+brights_below_sun = 6
+auto_below_sun = 12
+auto_mode = 2
+; day_running = 0 only: 1 = also on in rain, snow or fog, whatever the sun
+auto_bad_weather = 1
+; 1 = L also switches the car model's own lit lamp parts and glow sprites (the lenses light up); 0 = leave them
+game_lamps = 1
+; Extra lamps from RSF car options (bonnet pods, light bars, bumper and roof lamps): a spot light at each extra lamp the
+; car's options switch on (Cars\<car>\<car>_settings.ini [LightN] Active = true). 0 = off, 1 = with the headlights,
+; 2 = with the brights only. extra_intensity = each lamp as this many high beams, in the lamp's own colour;
+; extra_cone = half angle in degrees; extra_weak = position lamps (posi, gab) as this part of an extra lamp.
+; Extra centre / high brake lamps light with the brake lights.
+extra_lights = 2
+extra_intensity = 1
+extra_cone = 20
+extra_weak = 0.04
+
+; ======== 2. BRIGHTNESS AND COLOUR ========
+; Lamp type: auto = by the car's year (RSF car data): LED from led_from_year, xenon from xenon_from_year, halogen
+; before. Or led / xenon / halogen for every car, or custom (section 6). Colours and candela per type: section 8.
+lamp_type = auto
+led_from_year = 2010
+xenon_from_year = 1998
+; Remix Plus: no lamp gives more light 1 m away than the sun (127,000 cd). 1 = that cap, 0.5 = half, 0 = none
+sun_cap = 1
+; Rear lamps in candela (Remix Plus; real lamps: tail 4-12, brake 60-185, reversing 80-600), colour 0-255
+tail_intensity = 5
+brake_intensity = 150
+reverse_intensity = 150
+rear_color = 255, 0, 0
+reverse_colour_temperature = 6500
+; By day every lamp (not the backfire) x day_intensity with the sun at the second day_fade angle and higher, full
+; strength at the first angle and lower, blended between. 1 = no dimming
+day_intensity = 1
+day_fade = 0, 0
+; 0 = no tail lights / brake lights / two white reversing lamps (at the model's reversing lenses, in reverse gear)
+tail_lights = 1
+brake_lights = 1
+reverse_light = 1
+; brake pedal (0..1) that lights the brake lamps (off again below half of it)
+brake_on = 0.05
+
+; ======== 3. HEAD LAMP BEAM ========
+; half angle (degrees), edge softness (0..1), brighter middle (focus, 0 = even), aim below straight ahead (degrees)
+cone = 38
+softness = 0.15
+focus = 1.0
+pitch = 0.25
+; lamp size in metres (bigger = softer shadows, a little more noise)
+radius = 0.04
+; metres ahead of the lamp node (in front of the lens). Raise it if a car's lamps go dark in chase views
+forward = 0.05
+; beams in fog, dust and rain; 0 = none
+volumetric = 1.0
+
+; ======== 4. HIGH BEAMS (brights) ========
+; each next to a head lamp, toward the car's middle. Half angle, softness (cosine scale: keep it small for a narrow
+; cone), aim (+ down), metres inward, extra metres ahead (so big lamps do not hide them)
+brights_cone = 15
+brights_softness = 0.01
+brights_pitch = -0.25
+; 0 = the brights shine from the head lamps themselves (user 2026-11-08); only four-lamp cars set an inset, in their section
+brights_inset = 0
+brights_forward = 0.05
+; 1 = four round lamps (BMW M3 E30): the inner pair at brights_inset is lit as low beams too and becomes the brights
+; with the next L press. Set it in a car section (below); 0 = only the outer pair until brights
+quad_lamps = 0
+
+; ======== 5. REAR LAMPS AND BACKFIRE ========
+; half angle, softness, aim below straight back (degrees), metres behind the lens
+rear_cone = 36.6
+rear_softness = 0.18
+rear_pitch = -5
+rear_back = 0.15
+; backfire: an orange flash at the exhaust when RBR draws its flame sprite (0 = none); radiance, size (m),
+; seconds it stays, metres beyond the pipe
+backfire_light = 1
+backfire_radiance = 53460, 24057, 6415
+backfire_radius = 0.15
+backfire_hold = 0.12
+backfire_out = 0.12
+; Remix hash of the flame sprite (this one: ParticleMod by Kahoo v5). Another particle mod: Alt+X > Game Setup >
+; Step 1 > hover the flame > copy its hash here
+backfire_texture = 93E4994710A5380B
+; The glow sprite RBR draws around every lit lamp (Cars\*\textures\light.dds, hash 660BCAB491C6BCCA): a white disc that
+; fades out towards its edge. 1 = drawn with a generated copy that has the same middle but a smaller, steeper edge (the lamp
+; mesh then clips through less of it); 0 = as the game has it. Do not tag that hash in the Remix menu (the lamp lens loses
+; its glow). halo_core: the part of the radius (0..0.95) kept exactly as the game has it; halo_scale: how much of the rest
+; is left (1 = all of it, 0.5 = half the distance); halo_falloff: how steeply that part fades (1 = linear, 2-3 = soft
+; edge close to the core, higher = the glow is almost only the core)
+halo = 1
+halo_core = 0.25
+halo_scale = 0.6
+halo_falloff = 2
+halo_texture = 660BCAB491C6BCCA
+
+; ======== 6. ADVANCED ========
+; lamp_type = custom, and Remix 1.5.2 (no candela scale there; only the colour comes from the type): radiance per lamp
+radiance = 11016, 10465, 9364
+brights_radiance = 45441, 43169, 38625
+brake_radiance = 8262, 165, 83
+tail_radiance = 2809, 56, 28
+reverse_radiance = 6000, 6000, 6000
+; Remix Plus: the radiance keys above x this (not the candela values, not the backfire)
+remixplus_intensity = 0
+; 1 = cars with their own lit lamp texture (*_lit*.dds, e.g. BMW M3 E30) use it when the lamps are on; 0 = no. Their glow is lamp_glow_own in materials.ini
+lit_glow = 1
+; 1 = keep Remix's faint fallback light on while the lamps are on at night (it goes out when another light shines)
+keep_fallback_light = 1
+; NUMOS fog averages over frames and trails a moving lamp; while a lamp is lit it averages only this many (0 = leave)
+numos_history_frames = 32
+; cockpit/bonnet views place the lamps from RBR's car physics this many seconds back (auto = measured while driving)
+pose_lag = auto
+; 1 = per-frame lamp position log rbrrtx_lamp_pose.csv (tests only)
+pose_log = 0
+
+; ======== 7. PER CAR ========
+; A section named after the car's model file (Cars\<folder>\<name>.sgc -> [<name>]) overrides any key above, and the
+; type keys of section 8, for that car only. The log says "car section [..] found" when it is used. Example:
+; [BMW_M3_E30]
+; lamp_type = halogen
+
+; ======== 8. LAMP TYPES ========
+; colour_temperature in kelvin (2700 old bulb, 3200 halogen, 5000 xenon, 6500 daylight white), or color = red, green,
+; blue (0-255), e.g. yellow rally pods: color = 255, 200, 0. intensity = each head lamp, brights_intensity = each high
+; beam, in candela (road low beams 10,000-40,000 cd, rally pods 100,000 and more).
+[lamp.halogen]
+colour_temperature = 3200
+intensity = 40000
+brights_intensity = 165000
+
+[lamp.xenon]
+colour_temperature = 5000
+intensity = 60000
+brights_intensity = 180000
+
+[lamp.led]
+colour_temperature = 6500
+intensity = 80000
+brights_intensity = 205000
+
+; ---- per car: a section named after the car model file (Cars\<folder>\<name>.sgc) overrides any key above
+[BMW_M3_E30]
+quad_lamps = 0
+brights_inset = 0
