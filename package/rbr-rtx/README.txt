@@ -2,7 +2,9 @@ RBR-RTX 0.4.0 - path tracing for Richard Burns Rally (RSF) through Remix Plus, a
 Full documentation, changelog and updates: https://github.com/penkaty/RBR-RTX
 
 REQUIREMENTS (read this first)
-  - Windows 10 or 11, NVIDIA RTX GPU with driver 572.18 OR NEWER. Older drivers are not supported.
+  - Windows 10 or 11, NVIDIA RTX GPU with driver 610.47 OR NEWER. Older drivers are not supported.
+    AMD / Intel GPUs with ray tracing (RX 6000, Arc and newer): experimental, not tested by us. DLSS is NVIDIA
+    only, so choose FSR or XeSS in the Alt+X menu.
     About 60 fps on a clear day, 35 to 50 fps at night in rain (RTX 2080 Ti, 1080p, default settings).
   - RSF launcher: Graphics mode = Normal (Vulkan/dgVoodoo/VR modes use their own d3d9.dll).
   - ReShade and the RBR Lights Plugin must NOT be installed. With either one in the game, Remix does not run

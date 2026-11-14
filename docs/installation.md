@@ -1,7 +1,9 @@
 # Installation
 
 ## Before you start
-- NVIDIA RTX GPU with driver 572.18 or newer.
+- NVIDIA RTX GPU with driver 610.47 or newer (the minimum of the RTX Remix runtime that Remix Plus is built on).
+  AMD and Intel GPUs with Vulkan ray tracing (Radeon RX 6000, Intel Arc and newer) are experimental and not tested by us;
+  DLSS and Ray Reconstruction are NVIDIA only, so choose FSR or XeSS in the Alt+X menu.
 - **ReShade and the RBR Lights Plugin must not be installed.** Remix does not run properly with either one. Remove
   them first: for ReShade also delete its Vulkan layer and shader folders, for the plugin remove it from the game's `Plugins\` folder.
 - RSF launcher: **Graphics mode = Normal**. The Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`, which

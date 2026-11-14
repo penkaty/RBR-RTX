@@ -29,7 +29,8 @@ If we ask you for a full log from the start of the game: create an empty file `r
 
 ## The game will not start, crashes at start, or looks broken everywhere
 - **ReShade or the RBR Lights Plugin installed?** Neither works together with Remix. Remove them (see [Installation](installation.md)).
-- **Driver older than 572.18?** Remix refuses to start and shows a driver error. Update it.
+- **NVIDIA driver older than 610.47?** Remix refuses to start and shows a driver error. Update it.
+- **AMD or Intel GPU?** Support is experimental. Choose FSR or XeSS in the Alt+X menu (DLSS is NVIDIA only) and send us a report.
 - **RSF Graphics mode is not Normal?** Other modes bring their own `d3d9.dll`.
 - **Updated from an older version?** Delete `rtx.conf` and `user.conf` in the RBR folder.
 

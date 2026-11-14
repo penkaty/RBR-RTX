@@ -5,6 +5,8 @@
 [![Release](https://img.shields.io/github/v/release/penkaty/RBR-RTX?include_prereleases&label=release&color=76b900)](https://github.com/penkaty/RBR-RTX/releases)
 [![Downloads](https://img.shields.io/github/downloads/penkaty/RBR-RTX/total?label=downloads&color=76b900)](https://github.com/penkaty/RBR-RTX/releases)
 [![Remix Plus](https://img.shields.io/badge/Remix%20Plus-2.0-76b900)](https://github.com/penkaty/dxvk-remix)
+[![NVIDIA driver](https://img.shields.io/badge/NVIDIA%20driver-610.47%2B-76b900?logo=nvidia&logoColor=white)](https://www.nvidia.com/en-us/drivers/)
+[![AMD / Intel](https://img.shields.io/badge/AMD%20%7C%20Intel-experimental-orange)](#requirements)
 [![Issues](https://img.shields.io/github/issues/penkaty/RBR-RTX?label=open%20issues)](https://github.com/penkaty/RBR-RTX/issues)
 
 Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sky, weather, wet roads and lamps, through
@@ -39,7 +41,8 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sk
 | | |
 |---|---|
 | **System** | Windows 10 or 11 |
-| **GPU** | NVIDIA RTX card (20-series or newer) with a current driver |
+| **GPU** | NVIDIA RTX card (20-series or newer) with driver **610.47 or newer**, the minimum of the RTX Remix runtime that Remix Plus is built on. With an older driver Remix shows a driver error and the game does not start. |
+| **AMD / Intel** | **Experimental**, not tested by us: a GPU with Vulkan ray tracing (Radeon RX 6000 or Intel Arc and newer). DLSS and Ray Reconstruction are NVIDIA only, so choose FSR or XeSS in the Alt+X menu. Expect a lower frame rate and some differences in the picture. |
 | **Game** | Richard Burns Rally with a current RallySimFans install, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
 | **Must NOT be installed** | **ReShade** and the **RBR Lights Plugin**. With either one in the game, Remix will not run properly. |
 

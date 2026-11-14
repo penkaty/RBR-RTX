@@ -19,6 +19,7 @@ The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. T
 - Trees and distant ground no longer blink out, and road textures are sharper.
 
 ### Before you update
+- **NVIDIA driver 610.47 or newer** is needed now (0.3.0: 572.18). The RTX Remix runtime that Remix Plus is built on raised its minimum. AMD and Intel GPUs with ray tracing are experimental: choose FSR or XeSS in the Alt+X menu.
 - Delete `rtx.conf` and `user.conf` in the RBR folder, or the new defaults do not apply. See [Installation](docs/installation.md).
 - Installing is now: unpack into the RBR folder, then double-click `rbr-rtx\install.bat`. `uninstall.cmd` also removes the `rbr-rtx` folder itself (it used to stay behind, empty).
 - The RSF launcher settings changed: particles, cube maps and car shadows no longer have to be off. Keep **Particles on** for raindrops on the windscreen.
