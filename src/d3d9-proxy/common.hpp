@@ -387,6 +387,7 @@ void rbrrtx_custom_frame(int stageKey, float sunElevation, bool on);            
 bool rbrrtx_emit_on_stage(unsigned long long tex);             // F3 lists: this texture belongs to the loaded stage
 bool rbrrtx_texture_on_stage(unsigned long long hash);         // uploaded for the stage being driven (cached for a second)
 bool rbrrtx_emit_wanted();                                                         // any emissive texture set (else no per-draw work)
+bool rbrrtx_emit_has(unsigned long long tex);                                      // the texture carries emissives of its own
 void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture, float night);   // twin texture to draw instead, or null
 void rbrrtx_custom_ini_set(const char* section, const char* key, const char* value);
 int rbrrtx_custom_ini_dump(void (*emit)(const char* line, void* user), void* user);

@@ -23,6 +23,7 @@ void rbrrtx_carpaint_frame(const wchar_t* carModel);
 #include <d3d9.h>
 #include "third_party/remix_c.h"
 #include "menu/menu.hpp"
+#include "texvariants.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -1113,20 +1114,83 @@ void conf_refresh(ConfFile& c, const wchar_t* path) {
   }
 }
 
-const std::string* conf_lookup(const char* name) {
+const ConfFile& rtx_conf() {
   static ConfFile rtx;
   wchar_t path[MAX_PATH];
   rbrrtx_config_path(L"DXVK_RTX_CONFIG_FILE", L"rtx.conf", path, MAX_PATH);
   conf_refresh(rtx, path);
+  return rtx;
+}
+
+const ConfFile& user_conf() {
+  static ConfFile user;
+  conf_refresh(user, L"user.conf");
+  return user;
+}
+
+const std::string* conf_lookup(const char* name) {
+  const ConfFile& rtx = rtx_conf();
   const auto it = rtx.v.find(name);
   return it == rtx.v.end() ? nullptr : &it->second;
 }
 
 const std::string* user_conf_lookup(const char* name) {
-  static ConfFile user;
-  conf_refresh(user, L"user.conf");
+  const ConfFile& user = user_conf();
   const auto it = user.v.find(name);
   return it == user.v.end() ? nullptr : &it->second;
+}
+
+// ---- texture variants in the Remix hash lists (texvariants.cpp)
+// A hash list value: "0x..., -0x..." (Remix merges the layers: an entry added here adds to rtx.conf's, "-0x" takes out).
+bool is_hash_list(const char* v) {
+  if (!v) return false;
+  while (*v == ' ' || *v == '\t') ++v;
+  return !std::strncmp(v, "0x", 2) || !std::strncmp(v, "-0x", 3);
+}
+
+void parse_signed(const std::string& s, std::unordered_set<unsigned long long>& pos, std::unordered_set<unsigned long long>& neg) {
+  for (size_t p = 0; (p = s.find("0x", p)) != std::string::npos;) {
+    char* e = nullptr;
+    const unsigned long long h = std::strtoull(s.c_str() + p, &e, 16);
+    const size_t n = static_cast<size_t>(e - (s.c_str() + p));
+    if (n > 2) {
+      const bool minus = p > 0 && s[p - 1] == '-';
+      if (minus) { neg.insert(h); pos.erase(h); } else { pos.insert(h); neg.erase(h); }
+    }
+    p += n > 2 ? n : 2;
+  }
+}
+
+std::unordered_map<uint64_t, uint64_t> g_geoSigCache;        // vertex range -> geometry signature (geo_sig)
+std::unordered_set<unsigned long long> g_tvListed;           // hashes in the Alt+X lists and the F3 tags (rebuilt every 300 frames)
+unsigned g_tvListedFrame = 0;
+std::unordered_map<std::string, std::string> g_tvSent;        // hash-list option -> what the proxy itself last sent
+std::unordered_map<std::string, std::string> g_tvOnly;        // options the proxy never sends: the variants last sent alone
+unsigned g_tvGenSent = 0;
+
+// The variants to add to an option's list: a variant of a texture in it (rtx.conf, user.conf, or what the proxy sends)
+// joins it; a variant of a texture taken out ("-0x") is taken out too.
+std::string texvar_additions(const std::string& key, const std::string& base) {
+  std::vector<std::pair<uint64_t, uint64_t>> al;
+  rbrrtx_texvar_aliases(&al);
+  if (al.empty()) return std::string();
+  std::unordered_set<unsigned long long> pos, neg;
+  for (const ConfFile* c : { &rtx_conf(), &user_conf() }) {
+    const auto it = c->v.find(key);
+    if (it != c->v.end()) parse_signed(it->second, pos, neg);
+  }
+  parse_signed(base, pos, neg);
+  std::string out;
+  char b[24];
+  for (const auto& a : al) {
+    if (pos.count(a.first) || neg.count(a.first)) continue;    // the variant has an entry of its own here
+    const bool in = pos.count(a.second) != 0, out_ = neg.count(a.second) != 0;
+    if (!in && !out_) continue;
+    sprintf_s(b, in ? "0x%016llX" : "-0x%016llX", static_cast<unsigned long long>(a.first));
+    if (!out.empty()) out += ", ";
+    out += b;
+  }
+  return out;
 }
 
 bool user_conf_names(const char* key) { return conf_lookup(key) || user_conf_lookup(key); }
@@ -1170,7 +1234,41 @@ void remix_set(const char* key, const char* value) {
       rbrrtx_log_to(L"rbrrtx_api_options.log", L"set %S = %S dropped: the option is pinned in the F3 menu (and every later proxy set of it)", key, value ? value : "");
     return;
   }
+  if (key && is_hash_list(value)) {                    // texture variants join the lists their textures are in
+    g_tvSent[key] = value;
+    const std::string add = texvar_additions(key, value);
+    if (!add.empty()) { remix_set_raw(key, (std::string(value) + ", " + add).c_str()); return; }
+  }
   remix_set_raw(key, value);
+}
+
+// A variant came or went (rbrrtx_texvar_generation): every hash list again. Lists the proxy sends go out as it last sent
+// them plus the variants; the others (the user's Alt+X lists) get the variants alone, as Remix adds a layer's entries.
+void texvar_send_lists() {
+  if (!g_apiOk || g_tvGenSent == rbrrtx_texvar_generation()) return;
+  g_tvGenSent = rbrrtx_texvar_generation();
+  std::set<std::string> keys;
+  for (const ConfFile* c : { &rtx_conf(), &user_conf() })
+    for (const auto& kv : c->v) if (is_hash_list(kv.second.c_str())) keys.insert(kv.first);
+  for (const auto& kv : g_tvSent) keys.insert(kv.first);
+  unsigned sent = 0;
+  for (const std::string& k : keys) {
+    const auto own = g_tvSent.find(k);
+    if (own != g_tvSent.end()) {
+      const std::string base = own->second;              // remix_set may rewrite the map entry
+      remix_set(k.c_str(), base.c_str());
+      ++sent;
+      continue;
+    }
+    const std::string add = texvar_additions(k, std::string());
+    std::string& last = g_tvOnly[k];
+    if (add == last) continue;
+    if (config_option_owned_by_user(k.c_str()) || rbrrtx_menu_pinned(k.c_str(), nullptr, 0)) continue;
+    remix_set_raw(k.c_str(), add.c_str());
+    last = add;
+    ++sent;
+  }
+  rbrrtx_log_to(L"rbrrtx_api_options.log", L"texture variants: %u hash lists sent again (%s)", sent, rbrrtx_texvar_status().c_str());
 }
 
 // Night with the debug sun: Remix lights the scene from the sky too, so the sky light dims with the sun (1 at the
@@ -3507,6 +3605,15 @@ void end_frame(IDirect3DDevice9* dev) {
     }
   }
   { RBR_ZONE(PZ_EF_CUSTOM); rbrrtx_custom_frame(g_inMenu ? -1 : g_atmoStage.trackId, rbrrtx_sun_shown_elevation(), g_enabled && g_apiOk); }   // F3 custom lights
+  {                                                    // texture variants: a new scene, the lists when a variant came or went
+    RBR_ZONE(PZ_EF_CUSTOM);
+    static int scene = -1000;
+    const int now = g_inMenu ? -1 : g_atmoStage.trackId;
+    if (now != scene) { scene = now; g_geoSigCache.clear(); }
+    rbrrtx_texvar_frame(now);
+    static unsigned lastSend = 0;
+    if (g_frame - lastSend >= 60) { lastSend = g_frame; texvar_send_lists(); }
+  }
   { RBR_ZONE(PZ_EF_GROUND); numos_ground(); }           // NUMOS: ground level from the car (no-op without NUMOS)
   if (g_numos && g_apiOk) {
     // NUMOS's lamp glow in fog lives in a froxel grid whose history is reprojected with the camera only (aerial-
@@ -5244,6 +5351,67 @@ void lamp_mark_frame() {
   }
 }
 
+// ---------------------------------------------------------------- texture variants (texvariants.cpp)
+// A draw's geometry, the same in every texture set of a stage (dry / damp / wet): world-space scenery (RL*) by its vertex
+// positions; local-space objects (IO*) by their positions and the object's place in the world (10 cm steps). Cached per
+// vertex range; 0 = not readable.
+uint64_t geo_sig(void* p) {
+  IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(p);
+  if (!g_curInfo || g_drawNumVert < 3) return 0;
+  IDirect3DVertexBuffer9* vb = nullptr;
+  UINT offset = 0, stride = 0;
+  if (FAILED(dev->lpVtbl->GetStreamSource(dev, 0, &vb, &offset, &stride)) || !vb) return 0;
+  uint64_t place = 0;
+  if (!(g_curInfo->flags & SH_WORLDSPACE)) {
+    const D3DMATRIX w = to_f(mul_d(to_d(from_rows(&g_c[0])), g_VPinv));
+    const long long t[3] = { std::llround(w.m[3][0] * 10.0f), std::llround(w.m[3][1] * 10.0f), std::llround(w.m[3][2] * 10.0f) };
+    place = rbrrtx_xxh3(t, sizeof(t)) | 1;
+  }
+  const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(vb)) * 0x9E3779B97F4A7C15ull) ^
+                       (static_cast<uint64_t>(g_vbGen[vb]) << 56) ^ (static_cast<uint64_t>(offset) << 40) ^
+                       (static_cast<uint64_t>(g_drawFirstVert) << 12) ^ g_drawNumVert ^ (static_cast<uint64_t>(stride) << 32);
+  auto it = g_geoSigCache.find(key);
+  if (it == g_geoSigCache.end()) {
+    uint64_t s = 0;
+    int posOff = -1, uvOff = -1, uvType = -1;
+    stream0_layout(dev, &posOff, &uvOff, &uvType);
+    D3DVERTEXBUFFER_DESC desc = {};
+    void* data = nullptr;
+    const UINT start = offset + g_drawFirstVert * stride, bytes = g_drawNumVert * stride;
+    if (posOff >= 0 && stride >= 12 && SUCCEEDED(vb->lpVtbl->GetDesc(vb, &desc)) && start + bytes <= desc.Size &&
+        SUCCEEDED(vb->lpVtbl->Lock(vb, start, bytes, &data, D3DLOCK_READONLY)) && data) {
+      std::vector<float> pos(static_cast<size_t>(g_drawNumVert) * 3);
+      const uint8_t* q = static_cast<const uint8_t*>(data) + posOff;
+      for (UINT i = 0; i < g_drawNumVert; ++i, q += stride) std::memcpy(&pos[i * 3], q, 12);
+      vb->lpVtbl->Unlock(vb);
+      s = rbrrtx_xxh3(pos.data(), pos.size() * sizeof(float)) ^ (static_cast<uint64_t>(g_drawNumVert) * 0xC2B2AE3D27D4EB4Full);
+      if (!s) s = 1;
+    }
+    it = g_geoSigCache.emplace(key, s).first;
+  }
+  vb->lpVtbl->Release(vb);
+  return it->second && place ? it->second ^ place : it->second;
+}
+
+// Every hash of the Alt+X lists in rtx.conf / user.conf (added or taken out) and of the F3 tags, but not the 6000-texture
+// smooth-normals list (bulk tags): their textures carry an entry, so their draws leave geometry signatures.
+void texvar_listed_rebuild();
+
+bool texvar_watched(unsigned long long h) {
+  return g_tvListed.count(h) || rbrrtx_emit_has(h) || rbrrtx_world_lights_texture(h);
+}
+
+// Per scenery draw (comp_draw): the texture-variant bookkeeping for its first texture.
+void texvar_draw(IDirect3DDevice9* dev) {
+  if (!g_primaryRT || !g_enabled || !g_curInfo || !(g_curInfo->flags & SH_SCENERY) || g_drawNumVert < 3) return;
+  if (g_frame - g_tvListedFrame >= 300 || !g_tvListedFrame) { g_tvListedFrame = g_frame ? g_frame : 1; texvar_listed_rebuild(); }
+  IDirect3DBaseTexture9* bt = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return;
+  const unsigned long long h = rbrrtx_texture_hash(bt);
+  bt->lpVtbl->Release(bt);
+  if (h) rbrrtx_texvar_draw(h, texvar_watched(h), geo_sig, dev);
+}
+
 // Lamp textures (worldlights.cpp): the lamp sits on this draw's bounding sphere.
 void world_light_place(IDirect3DDevice9* dev, unsigned long long hx) {
   if (!g_curVS) {                                          // fixed-function (e.g. screen-space sprites): no world place
@@ -5283,9 +5451,11 @@ void* world_light_draw(IDirect3DDevice9* dev) {
   if (!g_primaryRT || !g_frameCam || !rbrrtx_world_lights_wanted()) return nullptr;
   IDirect3DBaseTexture9* bt = nullptr;
   if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &bt)) || !bt) return nullptr;
-  const unsigned long long hx = rbrrtx_texture_hash(bt);
+  const unsigned long long raw = rbrrtx_texture_hash(bt);
+  const unsigned long long hx = rbrrtx_texvar_canonical(raw);   // a texture variant takes its texture's lamps
   const bool lamp = rbrrtx_world_lights_texture(hx);
-  void* glow = lamp && g_curVS ? rbrrtx_world_lights_glow(dev, hx, bt, g_inMenu) : nullptr;
+  // The glass glow twin is made from the marked texture's own pixels: not for a variant (its emissives do glow, custom.cpp).
+  void* glow = lamp && g_curVS && hx == raw ? rbrrtx_world_lights_glow(dev, hx, bt, g_inMenu) : nullptr;
   bt->lpVtbl->Release(bt);
   if (lamp) world_light_place(dev, hx);
   return glow;
@@ -6241,6 +6411,19 @@ void f3_ini_dump(void (*emit)(const char*, void*), void* user) {
     }
 }
 
+void texvar_listed_rebuild() {
+  g_tvListed.clear();
+  std::unordered_set<unsigned long long> neg;
+  for (const ConfFile* c : { &rtx_conf(), &user_conf() })
+    for (const auto& kv : c->v)
+      if (kv.first != "rtx.smoothNormalsTextures" && is_hash_list(kv.second.c_str())) parse_signed(kv.second, g_tvListed, neg);
+  g_tvListed.insert(neg.begin(), neg.end());
+  for (int c = 0; c < 4; ++c) {
+    g_tvListed.insert(g_f3Tag[c].begin(), g_f3Tag[c].end());
+    g_tvListed.insert(g_f3Off[c].begin(), g_f3Off[c].end());
+  }
+}
+
 // "terrain (rtx.conf, menu), decal (removed in menu)" for the Textures page.
 void f3_classes_text(unsigned long long h, char* buf, size_t n) {
   f3_conf_load();
@@ -7110,6 +7293,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
   const bool glassSplit = glass_split_plan(dev, glassPlan);  // car glass: stickers solid, glass blended (before any twin swaps the texture)
   lamp_pick_draw(dev);                                       // lamp marker armed: the screen-centre ray against this draw
   texture_probe_draw(dev);                                   // F3 texture picker: the same ray, every frame while the page asks
+  { RBR_ZONE(PZ_DRAW_WORLDLIGHT); texvar_draw(dev); }        // texture variants: geometry signatures, variants learnt
   void* lampGlow = nullptr;
   { RBR_ZONE(PZ_DRAW_WORLDLIGHT); lampGlow = world_light_draw(dev); }                    // lamp textures (lights.ini): a light at the object
   if (!lampGlow && g_primaryRT && g_enabled && g_apiOk && rbrrtx_emit_wanted()) {   // F3 emissives / windows: the twin texture of the saved material

@@ -15,10 +15,13 @@
 // A texture can carry several emissives, each with its own colour, strength, mode and light (user 2026-11-09). Remix gives a
 // texture one material, so they share its twin and mask: the mask holds each one's colour and relative strength, and when some
 // are "at night" and others "always" each on-level has a mask of its own.
+// Texture variants (texvariants.cpp): the same object in another texture set (dry / damp / wet) takes the emissives of the
+// texture they were made on, with its own saved texture, masks and twin, so it glows in its own colours.
 #define CINTERFACE
 #define REMIX_ALLOW_X86
 #include "common.hpp"
 #include "custom.hpp"
+#include "texvariants.hpp"
 #include <d3d9.h>
 #include "third_party/remix_c.h"
 #include <algorithm>
@@ -87,6 +90,16 @@ std::map<uint64_t, std::vector<RbrEmit>> g_emit;     // texture -> its emissives
 int g_nextEmit = 1;
 std::map<uint64_t, EmitState> g_state;
 std::set<uint64_t> g_drawnThisStage;                   // F3 lists: emissive textures drawn since the stage loaded
+
+// The emissives a texture shows: its own, or those of the texture it is a variant of. nullptr = none.
+const std::vector<RbrEmit>* emits_for(uint64_t tex) {
+  auto it = g_emit.find(tex);
+  if (it == g_emit.end()) {
+    const uint64_t c = rbrrtx_texvar_canonical(tex);
+    if (c != tex) it = g_emit.find(c);
+  }
+  return it == g_emit.end() || it->second.empty() ? nullptr : &it->second;
+}
 
 std::wstring emit_dir() {
   const wchar_t* d = rbrrtx_genmod_dir();
@@ -326,8 +339,9 @@ std::wstring write_mask(uint64_t hash, const std::vector<RbrEmit>& list, unsigne
 
 // The masks of a texture from its emissives as they are now. False when one could not be written (the old ones stay).
 bool rebuild_masks(uint64_t tex, EmitState& st) {
-  const std::vector<RbrEmit>& list = g_emit[tex];
-  if (list.empty()) return false;
+  const std::vector<RbrEmit>* own = emits_for(tex);
+  if (!own) return false;
+  const std::vector<RbrEmit>& list = *own;
   if (emits_mixed(list)) {
     std::wstring m[kLevels + 1];
     for (int lv = 0; lv <= kLevels; ++lv) {
@@ -346,9 +360,11 @@ bool rebuild_masks(uint64_t tex, EmitState& st) {
 // Section "emissive" of the generated mod: one material per on-level for every emissive texture.
 void publish() {
   std::string body;
-  for (const auto& kv : g_emit) {
-    const auto s = g_state.find(kv.first);
-    if (s == g_state.end() || !s->second.ok || kv.second.empty()) continue;
+  for (const auto& sv : g_state) {                     // own textures and variants: each one saved its own texture
+    const std::vector<RbrEmit>* listp = emits_for(sv.first);
+    if (!sv.second.ok || !listp) continue;
+    const std::pair<const uint64_t, const std::vector<RbrEmit>&> kv(sv.first, *listp);
+    const auto s = &sv;
     const bool mixed = emits_mixed(kv.second);
     const float peak = emits_peak(kv.second);
     const RbrEmit& e = kv.second.front();
@@ -558,8 +574,9 @@ void rbrrtx_emit_set(const RbrEmit& in) {
     *d = in;
   }
   const RbrEmit e = *d;
-  EmitState& st = g_state[e.tex];
-  if (st.ok && rebuild_masks(e.tex, st)) st.readyAt = GetTickCount64() + kSettle;   // the masks follow the edit; the twin comes back after the mod reloads
+  for (auto& sv : g_state)                             // the texture and its variants: the masks follow the edit; the twin
+    if (sv.first == e.tex || rbrrtx_texvar_canonical(sv.first) == e.tex)   // comes back after the mod reloads
+      if (sv.second.ok && rebuild_masks(sv.first, sv.second)) sv.second.readyAt = GetTickCount64() + kSettle;
   publish();
   push_light(e);
   clog2(L"emissive %d on %016llX set: %s, %s, intensity %.2f, colour %.2f %.2f %.2f, %d rectangle(s)%s", e.id, e.tex, e.windows ? L"windows" : L"prop",
@@ -595,23 +612,24 @@ void rbrrtx_emit_remove(int id) {
   if (list.empty()) {
     g_emit.erase(e.tex);
   } else {
-    EmitState& st = g_state[e.tex];
-    if (st.ok && rebuild_masks(e.tex, st)) st.readyAt = GetTickCount64() + kSettle;
+    for (auto& sv : g_state)                           // the texture and its variants
+      if (sv.first == e.tex || rbrrtx_texvar_canonical(sv.first) == e.tex)
+        if (sv.second.ok && rebuild_masks(sv.first, sv.second)) sv.second.readyAt = GetTickCount64() + kSettle;
   }
   publish();
   clog2(L"emissive %d on %016llX removed", id, e.tex);
 }
 
 bool rbrrtx_emit_wanted() { return !g_emit.empty(); }
+bool rbrrtx_emit_has(unsigned long long tex) { return g_emit.count(tex) != 0; }   // its own emissives (texture variants: an entry)
 bool rbrrtx_emit_on_stage(unsigned long long tex) { return g_drawnThisStage.count(tex) != 0 || rbrrtx_texture_on_stage(tex); }
 
 // A draw with an emissive texture: its twin for the lit level (nullptr = draw the game's texture).
 void* rbrrtx_emit_twin(void* device, unsigned long long hash, void* baseTexture, float night) {
-  const auto it = g_emit.find(hash);
-  if (it == g_emit.end()) return nullptr;
+  const std::vector<RbrEmit>* listp = emits_for(hash);     // a variant: the emissives of its texture, its own state below
+  if (!listp) return nullptr;
   g_drawnThisStage.insert(hash);
-  const std::vector<RbrEmit>& list = it->second;
-  if (list.empty()) return nullptr;
+  const std::vector<RbrEmit>& list = *listp;
   const bool mixed = emits_mixed(list), always = list.front().mode == 1;   // not mixed: all as the first
   if (!mixed && !always && night <= 0.02f) return nullptr;
   EmitState& st = g_state[hash];

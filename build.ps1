@@ -61,6 +61,10 @@ if ($conf -match '[A-Za-z]:[\\/](RichardRust|rbr-dev|Users)') { throw 'rtx.conf 
 $devCfg = Join-Path $here '..\remix\config'
 Copy-Item (Join-Path $devCfg 'menu.ini') (Join-Path $cfg 'menu.ini') -Force
 Copy-Item (Join-Path $devCfg 'sun-saved-remixplus.ini') (Join-Path $cfg 'sun-saved.ini') -Force
+# Texture variants (texvariants.cpp): the geometry signatures of the textures with entries and the variants learnt in dev runs
+# (the same object in the dry / damp / wet texture set takes the entries made on one of them).
+$tv = Join-Path $devCfg 'texture-variants.txt'
+if (Test-Path $tv) { Copy-Item $tv (Join-Path $cfg 'texture-variants.txt') -Force } else { Write-Warning 'no remix\config\texture-variants.txt: entries hold only for the texture set they were made on' }
 if (-not (Test-Path (Join-Path $dist 'rbr-rtx\rtx-remix\mods\rbr_car_glass\mod.usda'))) { throw 'package has no rbr_car_glass mod: car glass would render without its materials' }
 # Release = dev (user 2026-11-08; dev runs load both since then, remix\logs\<run>\LOADED.txt): the class materials
 # (a_rbrrtx_classmat: one roughness / normal set per surface class, not generated PBR) and the user's own lamps and mesh

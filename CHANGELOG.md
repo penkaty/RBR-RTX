@@ -46,6 +46,7 @@ From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to 
 - **Windscreen drops are the game's own now,** drawn as particles. They need **Particles on** in the launcher. The mod's own drops are off: they cost too much.
 - **Tyre smoke only on dry tarmac,** while moving and not in rain. **Snow surfaces** throw their own, smaller snow dust.
 - **Cheaper:** fewer and smaller rain and snow particles, no screen collision for rain, and particles fade before they fill the screen.
+- **Each flake and drop drawn once.** Snow and rain showed every particle three times, a frame's fall apart: the runtime kept the last frames' particles in the scene. It keeps particles for one frame now.
 
 ### Lights
 - **Car lamp parts, car glass and brake discs go through the Remix API** as real meshes with their own materials. Why: the earlier way waited for a generated material, so lamps lagged and switched unnaturally.
@@ -54,6 +55,7 @@ From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to 
 - **Headlights come on by themselves** below 12 degrees of sun and in rain, snow or fog. Daytime running lamps are off by default. Beams start in front of each car's own lamp glass.
 - **Brights reach further:** 1.5 times the candela, about 1.2 times the distance. Extra lamps light with the brights when the car has them fitted.
 - **Street lamps and windows** are made in the F3 **Lamps** page; the ones made during development ship with the mod.
+- **Lamps, glow and texture tags hold on dry, damp and wet tracks.** A stage loads a different set of textures for each track condition, so anything made on one set used to hold only there (Sardian Night's street lamps stayed dark on a dry track). The mod knows the other sets' textures of the same objects now, from the stage files and from the shapes it sees in game (`rbr-rtx\config\texture-variants.txt`).
 - **The crew** is drawn through the Remix API too, placed with the exact matrix.
 
 ### F3 in-game menu
