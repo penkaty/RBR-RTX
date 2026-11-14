@@ -48,11 +48,12 @@ Expect about 60 fps on a clear day and 35 to 50 fps at night in rain, measured o
 ## Installation
 
 1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) (`.7z` opens with [7-Zip](https://www.7-zip.org/)) and unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`.
-2. RSF launcher: **Graphics mode = Normal**. Keep **Particles on** if you want raindrops on the windscreen.
-3. Start the game. The first start compiles shaders and takes longer.
+2. Open the new `rbr-rtx` folder there and double-click **`install.bat`** (or run `install.ps1`).
+3. RSF launcher: **Graphics mode = Normal**. Keep **Particles on** if you want raindrops on the windscreen.
+4. Start the game. The first start compiles shaders and takes longer.
 
 **Updating from an older version:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
-**Uninstall:** run `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
+**Uninstall:** double-click `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
 
 <div align="center">
 <img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">

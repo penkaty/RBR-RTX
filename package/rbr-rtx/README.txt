@@ -19,8 +19,9 @@ What it adds to the game folder (no game file is changed):
 Install
   1. Remove ReShade and the RBR Lights Plugin if you have them. RSF launcher: Graphics mode = Normal.
   2. Unpack into the game folder, next to RichardBurnsRally_SSE.exe (d3d9.dll and rbr-rtx\ land there).
-     Or, from the unpacked folder in PowerShell:  .\rbr-rtx\install.ps1 -Game "<your RBR folder>"
-  3. Start the game as usual. The first start compiles shaders and takes longer.
+  3. Open the rbr-rtx folder in the game folder and double-click install.bat (or run install.ps1 in PowerShell).
+     Unpacked somewhere else? From there in PowerShell:  .\rbr-rtx\install.ps1 -Game "<your RBR folder>"
+  4. Start the game as usual. The first start compiles shaders and takes longer.
   Updating from an older version: unpack over the old files, then delete rtx.conf and user.conf in the RBR folder
   (and an edited rbr-rtx\config\keys.ini): old saved settings override the new defaults. Copy your own
   rbr-rtx\config\menu.ini and sun-saved.ini out first if you want to keep them.
@@ -78,7 +79,7 @@ Black picture with path tracing on, but fine when you press 0? RBR-RTX cannot re
   game's own files.
 
 Uninstall
-  Run rbr-rtx\uninstall.cmd. It removes d3d9.dll (only if it is still the RBR-RTX one), the files Remix created
+  Double-click rbr-rtx\uninstall.cmd. It removes d3d9.dll (only if it is still the RBR-RTX one), the files Remix created
   (rtx.conf, user.conf, logs) and rbr-rtx\, including rtx-remix\mods and \captures in it (copy out anything you
   want to keep, e.g. config\menu.ini). Files that were there before stay.
 

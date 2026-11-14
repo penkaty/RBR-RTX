@@ -38,6 +38,12 @@ if ((Test-Path $mods) -and ($keep -notcontains 'rtx-remix')) {
   if (Get-ChildItem $mods -Recurse -File -Force) { Write-Warning "$mods has files (Remix mods?); left alone." }
   else { Remove-Item $mods -Recurse -Force }
 }
+# Windows keeps a folder that is some process's current directory (this PowerShell, the cmd window of uninstall.cmd when
+# it was started from inside rbr-rtx\): leave it first, and if the folder itself still stays, delete it just after we exit.
 Set-Location $Game
-Remove-Item $addon -Recurse -Force
+[Environment]::CurrentDirectory = $Game
+try { Remove-Item $addon -Recurse -Force -ErrorAction Stop } catch { }
+if (Test-Path $addon) {
+  Start-Process cmd -WorkingDirectory $Game -WindowStyle Hidden -ArgumentList "/c ping -n 4 127.0.0.1 >nul & rd /s /q `"$addon`""
+}
 "RBR-RTX removed from $Game ($removed file(s) in the game folder plus rbr-rtx\). The game is back to its original setup."

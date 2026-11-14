@@ -7,7 +7,7 @@
     d3d9.dll                 our proxy (src\d3d9-proxy)
     rbr-rtx\remix\           RTX Remix runtime (bridge d3d9.dll + .trex\), with our .trex\bridge.conf
     rbr-rtx\config\          dxvk.conf + rtx.conf (from package\)
-    rbr-rtx\install.ps1, uninstall.ps1, uninstall.cmd, README.txt, files.txt (what uninstall removes)
+    rbr-rtx\install.bat, install.ps1, uninstall.ps1, uninstall.cmd, README.txt, files.txt (what uninstall removes)
   Remix is not stored in git; it is copied from the extracted NVIDIA release (-Remix), by default the newest
   folder in ..\remix\runtime\ of the dev checkout. NvRemixLauncher32.exe and d3d8to9.dll are left out (unused).
 

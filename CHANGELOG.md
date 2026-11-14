@@ -20,6 +20,7 @@ The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. T
 
 ### Before you update
 - Delete `rtx.conf` and `user.conf` in the RBR folder, or the new defaults do not apply. See [Installation](docs/installation.md).
+- Installing is now: unpack into the RBR folder, then double-click `rbr-rtx\install.bat`. `uninstall.cmd` also removes the `rbr-rtx` folder itself (it used to stay behind, empty).
 - The RSF launcher settings changed: particles, cube maps and car shadows no longer have to be off. Keep **Particles on** for raindrops on the windscreen.
 
 ### Licence

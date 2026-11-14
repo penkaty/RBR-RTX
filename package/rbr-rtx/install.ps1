@@ -3,7 +3,8 @@
   Installs RBR-RTX on top of a Richard Burns Rally folder: adds d3d9.dll and the rbr-rtx\ folder, nothing else.
 
 .DESCRIPTION
-  Run it from the unpacked RBR-RTX folder with -Game, or from <game>\rbr-rtx\ after copying the files by hand
+  Usual way: unpack into the game folder, then double-click <game>\rbr-rtx\install.bat (it runs this script).
+  Or run it from the unpacked RBR-RTX folder with -Game, or from <game>\rbr-rtx\ after copying the files by hand
   (then it only checks the folder and records what was there before). Game files are never changed or replaced:
   if the game folder already has another d3d9.dll (RSF's Vulkan/DXVK, dgVoodoo or VR mode), it stops.
   Remove everything again with <game>\rbr-rtx\uninstall.cmd (or uninstall.ps1).
@@ -51,5 +52,5 @@ if (-not (Test-Path $pre)) {   # keep the record from the first install when upd
     Set-Content -Encoding UTF8 $pre
 }
 "RBR-RTX installed in $Game ($(Get-Content (Join-Path $PSScriptRoot 'version.txt') -TotalCount 1))."
-'Start the game as usual (RSF launcher, Graphics mode Normal). Alt+X opens the RTX Remix menu.'
+'Start the game as usual (RSF launcher, Graphics mode Normal). F3 opens the RBR-RTX menu, Alt+X the Remix menu.'
 "Remove it with $Game\rbr-rtx\uninstall.cmd"

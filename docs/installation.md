@@ -10,13 +10,15 @@
 ## Install
 1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases). `.7z` opens with [7-Zip](https://www.7-zip.org/); the `.zip` is the same content for Windows' own unpacker.
 2. Unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`. This adds `d3d9.dll` and an `rbr-rtx\` folder.
-   Alternatively run `rbr-rtx\install.ps1 -Game "<your RBR folder>"` from the unpacked folder in PowerShell.
-3. RSF launcher / in-game options:
+3. Open the `rbr-rtx` folder in your RBR folder and double-click **`install.bat`** (or run `install.ps1` in PowerShell).
+   It checks that no other `d3d9.dll` is in the way and notes which settings files were there before, so the uninstaller keeps them.
+   Unpacked somewhere else instead? Run `rbr-rtx\install.ps1 -Game "<your RBR folder>"` from there: it copies the files over.
+4. RSF launcher / in-game options:
    - **Particles: on** (any quality) if you want raindrops on the windscreen. Dust, smoke, rain and snow work either way.
    - **Cubic env maps** and **Render car shadows:** either setting. RBR-RTX skips both passes and path traces the real thing.
    - Windowed or borderless "Fullscreen mode" is recommended: the stage sweep screenshots come out black in exclusive fullscreen.
    - **Windscreen: Default/Enabled.**
-4. Start the game as usual. The first start compiles shaders and takes longer. **F3** opens the RBR-RTX menu, **Alt+X** the Remix menu.
+5. Start the game as usual. The first start compiles shaders and takes longer. **F3** opens the RBR-RTX menu, **Alt+X** the Remix menu.
 
 On the first start the mod puts two settings files into the RBR folder: `rtx.conf` and `user.conf`. They are yours from then on: what you save in Alt+X goes there, and no update overwrites them.
 
@@ -30,6 +32,6 @@ Your own F3 work is in `rbr-rtx\config\menu.ini` and your saved suns in `rbr-rtx
 The first start afterwards recompiles shaders.
 
 ## Uninstall
-Run `rbr-rtx\uninstall.cmd`. It removes `d3d9.dll` (only if it is still ours), the files Remix created (`rtx.conf`, `user.conf`,
+Double-click `rbr-rtx\uninstall.cmd`. It removes `d3d9.dll` (only if it is still ours), the files Remix created (`rtx.conf`, `user.conf`,
 logs) and the `rbr-rtx\` folder, including `rtx-remix\mods` and `rtx-remix\captures` in it. Copy out anything you want to
 keep first, for example `config\menu.ini` and `config\sun-saved.ini`. Files that were there before stay. No game file was ever changed.
