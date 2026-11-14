@@ -3149,6 +3149,7 @@ void exp_frame() {
   if (g_captureKeyUp && g_frame >= g_captureKeyUp) { post_key(WM_KEYUP, VK_PAUSE); g_captureKeyUp = 0; }
   const bool kExp = rbrrtx_key_pressed(RBRKEY_EXPERIMENT), kSweep = rbrrtx_key_pressed(RBRKEY_SWEEP);
   if (kExp || kSweep) {
+    rbrrtx_log_on_demand();                            // release installs log nothing until asked
     if (g_expStep >= 0) { exp_finish(L"aborted (key)"); return; }
     g_sweep = kSweep;
     exp_load(g_sweep);
@@ -3354,6 +3355,7 @@ void end_frame(IDirect3DDevice9* dev) {
     }
   }
   if (kDump) {                                         // dump every draw of the next frame (dump_draw)
+    rbrrtx_log_on_demand();                            // release installs log nothing until asked
     g_dumpFrames = 1;                                  // the whole next frame, ended at its end_frame
     g_dumpDraws = 0;
     g_dumpTexSaved.clear();

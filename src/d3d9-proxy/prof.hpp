@@ -2,6 +2,8 @@
 // Each zone adds its wall time (QueryPerformanceCounter, ~25 ns) to a counter; every 300 Presents prof.cpp writes
 // rbrrtx_prof.log: ms per frame per zone, the game thread's real CPU time and what is left for the game and its plugins.
 // Inclusive: a zone contains the zones and backend calls inside it. RBRRTX_PROF=0 switches the log off.
+// Without a log folder (a release install without diagnostics.txt) the zones do not time anything: about 8000 zones a
+// frame on a stage were two QueryPerformanceCounter calls each for a log nobody could read.
 #pragma once
 
 enum RbrProfZone {
@@ -45,12 +47,13 @@ enum RbrProfZone {
 void rbrrtx_prof_add(RbrProfZone z, long long ticks);
 long long rbrrtx_prof_now();
 void rbrrtx_prof_frame();                               // once per Present
+extern bool rbrrtx_prof_on;                             // set at the first Present: RBRRTX_PROF is not 0 and RBRRTX_LOG_DIR is set
 
 struct RbrZone {
   RbrProfZone z;
   long long t0;
-  explicit RbrZone(RbrProfZone zone) : z(zone), t0(rbrrtx_prof_now()) {}
-  ~RbrZone() { rbrrtx_prof_add(z, rbrrtx_prof_now() - t0); }
+  explicit RbrZone(RbrProfZone zone) : z(zone), t0(rbrrtx_prof_on ? rbrrtx_prof_now() : 0) {}
+  ~RbrZone() { if (t0) rbrrtx_prof_add(z, rbrrtx_prof_now() - t0); }
   RbrZone(const RbrZone&) = delete;
   RbrZone& operator=(const RbrZone&) = delete;
 };

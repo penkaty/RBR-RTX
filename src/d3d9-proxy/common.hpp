@@ -8,6 +8,9 @@
 
 // Appends one timestamped line to <RBRRTX_LOG_DIR>\<file>; does nothing when RBRRTX_LOG_DIR is unset.
 void rbrrtx_log_to(const wchar_t* file, const wchar_t* fmt, ...);
+// Installed add-on without diagnostics.txt: no log is written until the player asks for one (frame dump key, stage sweep).
+// Points RBRRTX_LOG_DIR at <game>\rbr-rtx\logs for the rest of the session; false when a log folder was already set.
+bool rbrrtx_log_on_demand();
 
 // d3d9_proxy.cpp: full path of the loaded D3D9 backend (Remix bridge or system d3d9).
 const wchar_t* rbrrtx_backend_path();

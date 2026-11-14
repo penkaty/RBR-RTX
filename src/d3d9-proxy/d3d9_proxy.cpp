@@ -252,6 +252,21 @@ FARPROC backend_proc(const char* name) {
 
 const wchar_t* rbrrtx_backend_path() { return g_backend_path; }
 
+bool rbrrtx_log_on_demand() {
+  if (GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", nullptr, 0) != 0) return false;
+  wchar_t dir[MAX_PATH];
+  const DWORD len = GetModuleFileNameW(g_self, dir, MAX_PATH);
+  wchar_t* slash = (len > 0 && len < MAX_PATH) ? wcsrchr(dir, L'\\') : nullptr;
+  if (!slash) return false;
+  *slash = 0;
+  wchar_t logs[MAX_PATH * 2];
+  swprintf_s(logs, L"%s\\rbr-rtx\\logs", dir);
+  CreateDirectoryW(logs, nullptr);
+  if (!SetEnvironmentVariableW(L"RBRRTX_LOG_DIR", logs)) return false;
+  log(L"log switched on by a key press (no diagnostics.txt): %s", logs);
+  return true;
+}
+
 extern "C" {
 
 void* WINAPI Proxy_Direct3DCreate9(UINT sdk) {

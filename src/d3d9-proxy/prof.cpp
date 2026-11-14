@@ -28,6 +28,8 @@ unsigned long long thread_cpu_100ns() {
 }
 }  // namespace
 
+bool rbrrtx_prof_on = false;
+
 long long rbrrtx_prof_now() {
   LARGE_INTEGER t;
   QueryPerformanceCounter(&t);
@@ -42,7 +44,8 @@ void rbrrtx_prof_add(RbrProfZone z, long long ticks) {
 void rbrrtx_prof_frame() {
   if (g_on < 0) {
     wchar_t v[8] = {};
-    g_on = !(GetEnvironmentVariableW(L"RBRRTX_PROF", v, 8) && v[0] == L'0');
+    g_on = !(GetEnvironmentVariableW(L"RBRRTX_PROF", v, 8) && v[0] == L'0') && GetEnvironmentVariableW(L"RBRRTX_LOG_DIR", nullptr, 0) != 0;
+    rbrrtx_prof_on = g_on != 0;
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     g_freq = f.QuadPart;
