@@ -421,6 +421,8 @@ unsigned g_sunCreates = 0;
 bool g_sunManual = false, g_sunMoving = false;
 float g_sunAz = 0.0f, g_sunEl = 30.0f;                 // degrees; elevation above the horizon (proxy convention)
 float g_dbgHour = 12.0f, g_dbgNorth = 0.0f;           // debug sun clock and north heading
+constexpr float kNoTimeReq = -1000.0f;
+float g_timeReq = kNoTimeReq;                          // F3 time of day for the next frame: an hour, -1 = the game's sun
 float g_sunShownEl = 90.0f;                            // elevation of the sun shown (game sun after the rules, or debug sun)
 float g_sunFade = 1.0f;                                // sun radiance factor of the light currently created
 float g_sunScale = 1.0f;                               // live brightness (sun_brighter / sun_dimmer keys), times g_sunRadiance
@@ -3543,7 +3545,11 @@ void end_frame(IDirect3DDevice9* dev) {
   }
   static SolarPath dbgPath = { 0.785f, 0.0f };
   static ULONGLONG dbgLast = 0;
-  if (kDebugSun) {                                     // manual debug sun on/off (g_sunManual)
+  // F3 Info page time of day (f3_time_set): an hour switches the debug sun on and sets its clock; -1 = the game's sun again.
+  const float timeReq = g_timeReq;
+  g_timeReq = kNoTimeReq;
+  const bool timeOn = timeReq >= 0.0f && !g_sunManual, timeOff = timeReq < 0.0f && timeReq != kNoTimeReq && g_sunManual;
+  if (kDebugSun || timeOn || timeOff) {                // manual debug sun on/off (g_sunManual)
     g_sunManual = !g_sunManual;
     if (g_sunManual) {                                 // start from the sun on screen
       float el = g_sunShownEl, naz = 0.0f;             // naz: NUMOS rotation (compass-like, 0 = north)
@@ -3562,7 +3568,8 @@ void end_frame(IDirect3DDevice9* dev) {
       dbgLast = GetTickCount64();
       g_sunMoving = true;                              // sets g_sunAz / g_sunEl below and logs the start
     }
-    swprintf_s(why, L"%s: %s sun", rbrrtx_key_name(RBRKEY_DEBUG_SUN), g_sunManual ? L"debug (time of day / north heading)" : L"game");
+    swprintf_s(why, L"%s: %s sun", timeOn || timeOff ? L"F3 time of day" : rbrrtx_key_name(RBRKEY_DEBUG_SUN),
+               g_sunManual ? L"debug (time of day / north heading)" : L"game");
     log_frame(why);
   }
   if (g_sunManual) {
@@ -3571,7 +3578,8 @@ void end_frame(IDirect3DDevice9* dev) {
     dbgLast = now;
     const float dH = ((rbrrtx_key_held(RBRKEY_SUN_UP) ? 1.0f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_DOWN) ? 1.0f : 0.0f)) * dt;
     const float dN = ((rbrrtx_key_held(RBRKEY_SUN_RIGHT) ? 30.0f : 0.0f) - (rbrrtx_key_held(RBRKEY_SUN_LEFT) ? 30.0f : 0.0f)) * dt;
-    const bool moving = dH != 0.0f || dN != 0.0f;
+    if (timeReq >= 0.0f) g_dbgHour = std::fmod(timeReq, 24.0f);
+    const bool moving = dH != 0.0f || dN != 0.0f || timeReq >= 0.0f;
     if (moving || g_sunMoving) {
       g_dbgHour = std::fmod(g_dbgHour + dH + 24.0f, 24.0f);
       g_dbgNorth = std::remainder(g_dbgNorth + dN, 360.0f);
@@ -6715,6 +6723,22 @@ void f3_switch_set(int i, int v) {
 }
 
 // ---- Info page
+// Time of day slider (user 2026-11-14: "what our ; ' does"): the debug sun's clock on NUMOS's solar path. NUMOS ignores
+// rtx.atmosphere.timeOfDayHours while its time cycle is off (the proxy sends sunElevation / sunRotation every frame), so
+// the slider drives the same clock the keys move. Shown: the hand-set hour, else the clock of the sun NUMOS shows.
+int f3_time_get(float* hour, int* manual) {
+  if (rbrrtx_numos_lux_per_unit() <= 0.0f) return 0;
+  if (g_timeReq >= 0.0f) { *hour = g_timeReq; *manual = 1; return 1; }   // a move not applied yet (next frame)
+  *manual = g_sunManual ? 1 : 0;
+  if (g_sunManual) { *hour = g_dbgHour; return 1; }
+  SolarPath sp = solar_path();
+  const float el = rbrrtx_sun_shown_elevation();
+  if (el > 90.0f - std::fabs(sp.lat - sp.dec) * 57.2958f) sp.lat = sp.dec + (90.0f - (std::min)(el, 89.9f)) * 0.0174533f;
+  *hour = std::fmod(solar_hour(sp, el, g_inMenu || g_stageSentTime != 0) + 24.0f, 24.0f);
+  return 1;
+}
+void f3_time_set(float hour) { g_timeReq = hour < 0.0f ? -1.0f : (std::min)(hour, 23.99f); }
+
 void f3_info_text(char* buf, size_t n) {
   RbrStageInfo si = {};
   wchar_t w[1024];
@@ -6839,6 +6863,8 @@ void f3_install(IDirect3DDevice9* dev) {
   cb.switch_get = f3_switch_get;
   cb.switch_set = f3_switch_set;
   cb.config_dir = f3_config_dir;
+  cb.time_get = f3_time_get;
+  cb.time_set = f3_time_set;
   rbrrtx_menu_set_callbacks(&cb);
   rbrrtx_menu_set_toggle_vk(rbrrtx_key_vk(RBRKEY_MENU, false));
   if (!rbrrtx_menu_init(g_wnd, dev)) { clog(L"menu: init failed, no F3 menu"); return; }

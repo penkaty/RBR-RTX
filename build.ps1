@@ -24,7 +24,7 @@ param([string]$Remix = '', [switch]$SkipProxy, [switch]$Diagnostics, [string]$Ve
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $dist = Join-Path $here 'dist\RBR-RTX'
-if (-not $Remix) { $Remix = Join-Path $here '..\remix\runtime\RemixPlus-mat\game folder' }   # 0.4.0: Remix Plus, the runtime the dev runs use (rbr-remix.ps1 -Version mat)
+if (-not $Remix) { $Remix = Join-Path $here '..\remix\runtime\RemixPlus-main\game folder' }   # Remix Plus rbr-main, the runtime the dev runs use (rbr-remix.ps1 default)
 if (-not $Remix -or -not (Test-Path (Join-Path $Remix '.trex\NvRemixBridge.exe'))) {
   throw 'Runtime not found. Pass -Remix <runtime folder with d3d9.dll and .trex\>.'
 }

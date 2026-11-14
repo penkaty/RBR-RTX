@@ -14,7 +14,7 @@
 
 | Page | What it is for | Saved |
 |---|---|---|
-| **Info** | Stage, weather, time of day, ground mode and the full key list | - |
+| **Info** | Time of day slider (the NUMOS sun, as the `;` and `'` keys; **Game's time** gives it back), stage, weather, ground mode and the full key list | - |
 | **Wetness** | Every wet-road slider | With **Save** |
 | **Textures** | Tag the surface under the crosshair | At once |
 | **Car paint** | Shine and metal of car paint | At once |

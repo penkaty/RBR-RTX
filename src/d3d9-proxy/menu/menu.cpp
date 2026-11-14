@@ -332,6 +332,24 @@ void cursor_for_menu(bool open) {
 // ---- built-in pages -------------------------------------------------------------------------------------------
 
 void page_info(void*) {
+  float hour = 0.0f;
+  int manual = 0;
+  if (g_cb.time_get && g_cb.time_set && g_cb.time_get(&hour, &manual)) {
+    char shown[16];
+    const int minutes = static_cast<int>(hour * 60.0f + 0.5f) % 1440;
+    snprintf(shown, sizeof(shown), "%02d:%02d", minutes / 60, minutes % 60);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.6f);
+    if (ImGui::SliderFloat("Time of day", &hour, 0.0f, 23.99f, shown, ImGuiSliderFlags_AlwaysClamp)) g_cb.time_set(hour);
+    ImGui::SameLine();
+    if (manual) {
+      if (ImGui::Button("Game's time")) g_cb.time_set(-1.0f);
+    } else {
+      ImGui::TextDisabled("(the game's)");
+    }
+    ImGui::TextDisabled(manual ? "Set here (as the ; and ' keys do). A new stage or the button gives the sun back to the game."
+                               : "NUMOS sun now. Move the slider to set your own time.");
+    ImGui::Separator();
+  }
   char buf[1024] = "";
   if (g_cb.info_text) g_cb.info_text(buf, sizeof(buf));
   if (buf[0]) ImGui::TextUnformatted(buf);

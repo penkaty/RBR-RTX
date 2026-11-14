@@ -97,6 +97,12 @@ typedef struct rbrrtx_menu_callbacks {
   // Directory for the menu's own ini (for example <game>\rbr-rtx\config). Fills buf with a wide path.
   // If null, the menu uses the folder of the loaded d3d9.dll.
   void (*config_dir)(wchar_t* buf, size_t buf_len);
+
+  // Info page time of day (the clock the debug sun keys move, on NUMOS's solar path): time_get fills the hour shown now
+  // and whether it is set by hand (1) or the game's (0); returns 0 without NUMOS. time_set: an hour 0..24 sets it,
+  // -1 gives the sun back to the game.
+  int (*time_get)(float* hour, int* manual);
+  void (*time_set)(float hour);
 } rbrrtx_menu_callbacks;
 
 // A page draw callback. Called once per frame while the menu is open and the page is selected.

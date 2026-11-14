@@ -23,7 +23,7 @@ The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. T
 - The RSF launcher settings changed: particles, cube maps and car shadows no longer have to be off. Keep **Particles on** for raindrops on the windscreen.
 
 ### Licence
-From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT.
+From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT. The Remix welcome window has buttons for this licence and for donations ([Patreon](https://www.patreon.com/cw/penkaty), also [Ko-fi](https://ko-fi.com/penkaty)).
 
 ### Weather and sky (NUMOS)
 - **NUMOS owns the weather.** RBR-RTX names the stage's weather and sends the game's sun and time; a NUMOS preset per RBR sky type (`rbr-rtx\config\weather\rbr-*.conf`) carries the clouds, fog and haze. Why: two systems setting fog fought each other, and the presets can be tuned and saved in **Alt+X** by anyone.
@@ -60,6 +60,7 @@ From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to 
 
 ### F3 in-game menu
 - **A menu inside the game window** (key `F3`, `menu` in `keys.ini`; Alt+X stays Remix's own). Pages: Info, Wetness, Textures, Car paint, Atmosphere, Per stage, Headlights, Lamps, Debug, Save. See [The F3 menu](docs/f3-menu.md).
+- **Time of day slider** at the top of the Info page: sets the NUMOS sun's clock (as the `;` and `'` keys do) and shows the current time. **Game's time** gives the sun back to the game; a new stage does too.
 - It takes the keyboard and mouse while open, also from other plugins, and saves to `rbr-rtx\config\menu.ini`, never to Remix's `user.conf`. Saves swap in whole, so a crash cannot empty the file.
 
 ### Reporting tools

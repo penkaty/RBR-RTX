@@ -169,6 +169,11 @@ Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock run
 
 </details>
 
+## Support the project
+
+RBR-RTX is free and stays free. If you want to help it keep going: [Patreon](https://www.patreon.com/cw/penkaty) or [Ko-fi](https://ko-fi.com/penkaty).
+The welcome window that Remix shows at the first start has a DONATE button that opens the Patreon page.
+
 ## Licence
 
 RBR-RTX is free and source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE), for everything after version 0.3.0.

@@ -85,5 +85,7 @@ Uninstall
 Credits: Remix Plus and the NUMOS sky by Kim2091; RTX Remix by NVIDIA; wetness and card normals by xoxor4d. Full
 list on the website. Runtime licences: rbr-rtx\remix\LICENSE.txt.
 
+Support the project (it stays free): https://www.patreon.com/cw/penkaty or https://ko-fi.com/penkaty
+
 RBR-RTX is free. It may be used, changed and shared, but never sold: PolyForm Noncommercial 1.0.0, see rbr-rtx\LICENSE.
 If you paid for this mod, you were scammed. Third-party parts keep their own licences: rbr-rtx\THIRD-PARTY.md.
