@@ -9,28 +9,29 @@
 [![AMD / Intel](https://img.shields.io/badge/AMD%20%7C%20Intel-experimental-orange)](#requirements)
 [![Issues](https://img.shields.io/github/issues/penkaty/RBR-RTX?label=open%20issues)](https://github.com/penkaty/RBR-RTX/issues)
 
-Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sky, weather, wet roads and lamps, through
-[Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
+Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork by [Kim2091](https://www.patreon.com/cw/sparkles1), of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 
 <img src=".github/img/aston_030.webp" alt="Aston Martin, path traced, 0.3.0" width="90%">
 
-**This is not a remaster.** The stages, cars and physics are the game's own. The mod only adds files, and it uninstalls cleanly.
+**This is not a remaster.** The mod only enables RTX Remix functionality within the game.
 
 **Work in progress: expect issues, and please [report them](docs/troubleshooting.md).**
 
 </div>
 
-## What it does
+## What RBR-RTX brings to Richard Burns Rally
 
 - **Path tracing on the original game.** RBR draws everything with vertex shaders, which Remix cannot place in 3D. The mod rebuilds camera and object positions from the game's shader data and hands them to Remix.
-- **Sun, sky and weather.** The NUMOS sky follows each stage's sun, weather and time of day: real clouds, fog, haze, a moon at night and lightning in heavy rain.
-- **Wet roads.** Damp and wet tracks darken, the road fills its hollows with puddles, and rain leaves ripples and raindrop rings. Off the road the ground gets wet without standing water.
-- **Surfaces that differ.** Gravel, tarmac, snow, grass, rock, wood and metal each get their own roughness, taken from what the game's physics says the surface is.
+- **RTX Toolkit Blender workflow.** Allows stage creators to implement materials, high quality models and other modern rendering improvements into their stage creation workflow.
+- **An in-game F3 menu.** Gives the user access to wetness sliders, a texture tagger, a lamp/emissive tool, headlight and per-stage atmosphere settings. Allowing simple work without the need to launch RTX Toolkit.
+- **Sun, atmosphere and weather.** The NUMOS sky follows each stage's sun, weather and time of day: real clouds, fog, haze, a moon at night and lightning in heavy rain.
+- **Dynamic puddles.** Damp and wet tracks darken, the road fills its indentations with puddles, with raindrops leaving ripples on their surface.
+- **Simple experimental material system.** Gravel, tarmac, snow, grass, rock, wood and metal each get their own roughness, taken from what the game's physics says the surface is without the need of heavy PBR textures.
 - **Particles.** Every effect the game has (dust, tyre smoke, water splashes, engine steam, rain, snow) is a real particle, lit by the sun, the sky and your headlights.
 - **Dynamic lights.** Headlights by car year in real candela, tail, brake and reversing lights on the car's own lamp parts, glowing brake discs, backfire flashes, street lamps and lit windows at night.
-- **An in-game menu.** **F3** has wetness sliders, a texture tagger, a lamp tool, car paint, headlight and per-stage atmosphere settings.
 - **Reporting tools.** Three keys (**8**, **9**, **Alt+K**) collect everything needed for a bug report. Nothing is sent anywhere.
 - **A pure add-on.** It adds `d3d9.dll` and an `rbr-rtx\` folder. No game file is changed.
+
 
 <div align="center">
 <img src=".github/img/bmw_030.webp" alt="BMW, path traced, 0.3.0" width="90%">
@@ -41,18 +42,16 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, with real sun, sk
 | | |
 |---|---|
 | **System** | Windows 10 or 11 |
-| **GPU** | NVIDIA RTX card (20-series or newer) with driver **610.47 or newer**, the minimum of the RTX Remix runtime that Remix Plus is built on. With an older driver Remix shows a driver error and the game does not start. |
+| **GPU** | NVIDIA RTX card (20-series or newer) with driver **610.47 or newer**. For playable framerate at 1080p the minimum is RTX 2070/3060/4050 and RX 6700XT/7600XT and Arc A750/B570 |
 | **AMD / Intel** | **Experimental**, not tested by us: a GPU with Vulkan ray tracing (Radeon RX 6000 or Intel Arc and newer). DLSS and Ray Reconstruction are NVIDIA only, so choose FSR or XeSS in the Alt+X menu. Expect a lower frame rate and some differences in the picture. |
 | **Game** | Richard Burns Rally with a current RallySimFans install, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
 | **Must NOT be installed** | **ReShade** and the **RBR Lights Plugin**. With either one in the game, Remix will not run properly. |
-
-Expect about 60 fps on a clear day and 35 to 50 fps at night in rain, measured on an RTX 2080 Ti at 1080p with the default settings.
 
 ## Installation
 
 1. Download the latest [release](https://github.com/penkaty/RBR-RTX/releases) (`.7z` opens with [7-Zip](https://www.7-zip.org/)) and unpack it **into your RBR folder**, next to `RichardBurnsRally_SSE.exe`.
 2. Open the new `rbr-rtx` folder there and double-click **`install.bat`** (or run `install.ps1`).
-3. RSF launcher: **Graphics mode = Normal**. Keep **Particles on** if you want raindrops on the windscreen.
+3. RSF launcher: **Graphics mode = Normal, NOT Vulkan, NOT DgV DX11/DX12**. Keep **Particles on** if you want raindrops on the windscreen.
 4. Start the game. The first start compiles shaders and takes longer.
 
 **Updating from an older version:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
@@ -62,9 +61,9 @@ Expect about 60 fps on a clear day and 35 to 50 fps at night in rain, measured o
 <img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
 </div>
 
-## The keys worth knowing
+## The hotkeys worth knowing
 
-You need none of these to drive. [All keys](docs/keybinds.md) can be changed in `rbr-rtx\config\keys.ini`.
+[All keys](docs/keybinds.md) can be changed in `rbr-rtx\config\keys.ini`.
 
 | Key | What it does |
 |---|---|
@@ -74,7 +73,7 @@ You need none of these to drive. [All keys](docs/keybinds.md) can be changed in 
 | **0** | Ray tracing on/off, to compare with the original picture |
 | **9** | Mark a problem while driving |
 | **8** | Record everything drawn in one frame |
-| **Alt+K** | Stage sweep for bug reports: hold still until the beep |
+| **Alt+K** | Stage sweep for bug reports: hold still until the windows beep (2 minutes) |
 
 ## The F3 menu
 
@@ -139,7 +138,7 @@ Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock run
 | **Terrain baker, card normals** | Remix's ground blending for hand-tagged terrain, and xoxor4d's foliage shading for flat leaf cards. |
 | **Radiance cache and Ray Reconstruction** | SHaRC for bounce light, RTXDI for direct light, DLSS Ray Reconstruction as the denoiser. |
 
-**Still in progress:** unusual weather, rare stages and Bob's Track Builder stages can look wrong, see [Known issues](docs/known-issues.md).
+**Still in progress:** unusual weather, some modern stages can look wrong, see [Known issues](docs/known-issues.md). Bob's Track Builder (BTB) stages are currently not supported.
 
 <details>
 <summary><b>Credits</b></summary>
