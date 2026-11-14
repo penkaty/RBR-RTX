@@ -182,6 +182,7 @@ void write_lit_mod() {
   rbrrtx_headlights_write_lit_mod();
   rbrrtx_litparts_startup();
   rbrrtx_world_lights_startup();
+  rbrrtx_emit_startup();
   rbrrtx_foliage_startup();
   rbrrtx_surfmap_startup(mods);
   rbrrtx_genmod_flush(L"game start");

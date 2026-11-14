@@ -1169,7 +1169,8 @@ std::unordered_map<std::string, std::string> g_tvOnly;        // options the pro
 unsigned g_tvGenSent = 0;
 
 // The variants to add to an option's list: a variant of a texture in it (rtx.conf, user.conf, or what the proxy sends)
-// joins it; a variant of a texture taken out ("-0x") is taken out too.
+// joins it. Never a removal: Remix writes a "-0x" sent through the API into the rtx.conf layer, so Alt+X listed every one
+// as an unsaved change (user 2026-11-14), and a variant that is in no list needs no removal.
 std::string texvar_additions(const std::string& key, const std::string& base) {
   std::vector<std::pair<uint64_t, uint64_t>> al;
   rbrrtx_texvar_aliases(&al);
@@ -1183,10 +1184,8 @@ std::string texvar_additions(const std::string& key, const std::string& base) {
   std::string out;
   char b[24];
   for (const auto& a : al) {
-    if (pos.count(a.first) || neg.count(a.first)) continue;    // the variant has an entry of its own here
-    const bool in = pos.count(a.second) != 0, out_ = neg.count(a.second) != 0;
-    if (!in && !out_) continue;
-    sprintf_s(b, in ? "0x%016llX" : "-0x%016llX", static_cast<unsigned long long>(a.first));
+    if (pos.count(a.first) || neg.count(a.first) || !pos.count(a.second)) continue;   // own entry here, or the texture is not in
+    sprintf_s(b, "0x%016llX", static_cast<unsigned long long>(a.first));
     if (!out.empty()) out += ", ";
     out += b;
   }

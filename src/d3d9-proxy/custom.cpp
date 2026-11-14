@@ -91,14 +91,43 @@ int g_nextEmit = 1;
 std::map<uint64_t, EmitState> g_state;
 std::set<uint64_t> g_drawnThisStage;                   // F3 lists: emissive textures drawn since the stage loaded
 
+// menu.ini's emissives as read before the backend loads (rbrrtx_emit_startup), until the menu's own load replaces them.
+std::map<uint64_t, std::vector<RbrEmit>> g_pre;
+
 // The emissives a texture shows: its own, or those of the texture it is a variant of. nullptr = none.
 const std::vector<RbrEmit>* emits_for(uint64_t tex) {
-  auto it = g_emit.find(tex);
-  if (it == g_emit.end()) {
-    const uint64_t c = rbrrtx_texvar_canonical(tex);
-    if (c != tex) it = g_emit.find(c);
+  const uint64_t c = rbrrtx_texvar_canonical(tex);
+  for (const auto* m : { &g_emit, &g_pre }) {
+    auto it = m->find(tex);
+    if (it == m->end() && c != tex) it = m->find(c);
+    if (it != m->end() && !it->second.empty()) return &it->second;
   }
-  return it == g_emit.end() || it->second.empty() ? nullptr : &it->second;
+  return nullptr;
+}
+
+// One menu.ini [emissive] / [windows] line: <hex16>[_<n>] = mode, intensity, r, g, b, litPercent, seed, rects[| light=...].
+bool parse_emit(const char* section, const char* key, const char* value, RbrEmit& e) {
+  e = {};
+  e.tex = std::strtoull(key, nullptr, 16);
+  e.windows = !std::strcmp(section, "windows");
+  const char* p = value;
+  int n = 0;
+  if (!e.tex || sscanf_s(p, " %d , %f , %f , %f , %f , %d , %u , %n", &e.mode, &e.intensity, &e.rgb[0], &e.rgb[1], &e.rgb[2], &e.litPercent, &e.seed, &n) < 7) return false;
+  p += n;
+  while (*p && e.nrects < kEmitMaxRects) {
+    float* r = e.rects[e.nrects];
+    int used = 0;
+    if (sscanf_s(p, " %f %f %f %f ;%n", &r[0], &r[1], &r[2], &r[3], &used) < 4) break;
+    ++e.nrects;
+    p += used;
+  }
+  e.softness = 0.2f;
+  e.dir[1] = -1.0f;
+  if (const char* lp = std::strstr(value, "| light=")) {
+    sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f , %f , %d", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
+             &e.aimAt[0], &e.aimAt[1], &e.aimAt[2], &e.offset[0], &e.offset[1], &e.offset[2], &e.anchor);   // offset, anchor: since 2026-11-07, older lines lack them
+  }
+  return true;
 }
 
 std::wstring emit_dir() {
@@ -620,6 +649,60 @@ void rbrrtx_emit_remove(int id) {
   clog2(L"emissive %d on %016llX removed", id, e.tex);
 }
 
+// Before the backend loads (after rbrrtx_genmod_init): the emissive textures saved by earlier runs, and their variants,
+// get their masks and materials now, so Remix loads them with the mods and a twin is drawn from the first frame its texture
+// shows (user 2026-11-14: ~10 s until the emissives came up at every stage start: the twin waited for a mod reload).
+// menu.ini is read here directly: the menu loads it only when the device is made.
+void rbrrtx_emit_startup() {
+  const std::wstring dir = emit_dir();
+  if (dir.empty()) return;
+  wchar_t path[MAX_PATH * 2];
+  rbrrtx_config_path(L"RBRRTX_MENU_INI", L"menu.ini", path, MAX_PATH * 2);
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, path, L"rb") || !f) return;
+  char line[8192];
+  std::string section;
+  while (fgets(line, sizeof(line), f)) {
+    std::string l = line;
+    while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+    if (l.empty() || l[0] == ';') continue;
+    if (l[0] == '[') { section = l.substr(1, l.find(']') - 1); continue; }
+    const size_t eq = l.find('=');
+    if (eq == std::string::npos || (section != "emissive" && section != "windows")) continue;
+    RbrEmit e = {};
+    if (parse_emit(section.c_str(), l.substr(0, eq).c_str(), l.c_str() + eq + 1, e)) g_pre[e.tex].push_back(e);
+  }
+  fclose(f);
+  if (g_pre.empty()) return;
+  rbrrtx_texvar_load();
+  std::vector<uint64_t> texs;
+  for (const auto& kv : g_pre) texs.push_back(kv.first);
+  std::vector<std::pair<uint64_t, uint64_t>> al;
+  rbrrtx_texvar_aliases(&al);
+  for (const auto& a : al) if (g_pre.count(a.second)) texs.push_back(a.first);
+  unsigned ready = 0;
+  for (uint64_t tex : texs) {
+    EmitState st;
+    st.dds = dir + L"\\" + hex16(tex) + L".dds";
+    uint8_t head[128] = {};
+    FILE* d = nullptr;
+    if (_wfopen_s(&d, st.dds.c_str(), L"rb") || !d) continue;
+    const size_t got = fread(head, 1, sizeof(head), d);
+    fclose(d);
+    if (got < sizeof(head) || std::memcmp(head, "DDS ", 4) || !rbrrtx_dds_is_texture(st.dds.c_str(), tex)) continue;
+    std::memcpy(&st.h, head + 12, 4);
+    std::memcpy(&st.w, head + 16, 4);
+    st.tried = true;
+    if (!rebuild_masks(tex, st)) continue;
+    st.ok = true;
+    st.readyAt = 0;
+    g_state[tex] = st;
+    ++ready;
+  }
+  if (ready) publish();
+  clog2(L"emissives: %u of %zu textures (%zu own, the rest variants) ready from the first frame (saved by earlier runs)", ready, texs.size(), g_pre.size());
+}
+
 bool rbrrtx_emit_wanted() { return !g_emit.empty(); }
 bool rbrrtx_emit_has(unsigned long long tex) { return g_emit.count(tex) != 0; }   // its own emissives (texture variants: an entry)
 bool rbrrtx_emit_on_stage(unsigned long long tex) { return g_drawnThisStage.count(tex) != 0 || rbrrtx_texture_on_stage(tex); }
@@ -699,25 +782,8 @@ void rbrrtx_custom_ini_set(const char* section, const char* key, const char* val
     g_lights[stage].push_back(l);
   } else if (!std::strcmp(section, "emissive") || !std::strcmp(section, "windows")) {
     RbrEmit e = {};
-    e.tex = std::strtoull(key, nullptr, 16);
-    e.windows = !std::strcmp(section, "windows");
-    const char* p = value;
-    int n = 0;
-    if (!e.tex || sscanf_s(p, " %d , %f , %f , %f , %f , %d , %u , %n", &e.mode, &e.intensity, &e.rgb[0], &e.rgb[1], &e.rgb[2], &e.litPercent, &e.seed, &n) < 7) return;
-    p += n;
-    while (*p && e.nrects < kEmitMaxRects) {
-      float* r = e.rects[e.nrects];
-      int used = 0;
-      if (sscanf_s(p, " %f %f %f %f ;%n", &r[0], &r[1], &r[2], &r[3], &used) < 4) break;
-      ++e.nrects;
-      p += used;
-    }
-    e.softness = 0.2f;
-    e.dir[1] = -1.0f;
-    if (const char* lp = std::strstr(value, "| light=")) {
-      sscanf_s(lp + 8, " %f , %f , %f , %f , %f , %f , %d , %f , %f , %f , %f , %f , %f , %d", &e.lumens, &e.cone, &e.softness, &e.dir[0], &e.dir[1], &e.dir[2], &e.aim,
-               &e.aimAt[0], &e.aimAt[1], &e.aimAt[2], &e.offset[0], &e.offset[1], &e.offset[2], &e.anchor);   // offset, anchor: since 2026-11-07, older lines lack them
-    }
+    if (!parse_emit(section, key, value, e)) return;
+    g_pre.clear();                                     // the menu's own load: the startup copy is done (its states stay)
     e.id = g_nextEmit++;
     g_emit[e.tex].push_back(e);                        // one line per emissive: <hex16>, then <hex16>_2, _3 for the same texture
     g_state[e.tex];
