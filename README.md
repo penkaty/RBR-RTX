@@ -9,7 +9,7 @@
 [![AMD / Intel](https://img.shields.io/badge/AMD%20%7C%20Intel-experimental-orange)](#requirements)
 [![Issues](https://img.shields.io/github/issues/penkaty/RBR-RTX?label=open%20issues)](https://github.com/penkaty/RBR-RTX/issues)
 
-Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork by [Kim2091](https://www.patreon.com/cw/sparkles1), of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
+Path tracing for **Richard Burns Rally**, through [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork by [Kim2091](https://www.patreon.com/cw/sparkles1), of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 
 <img src=".github/img/release44.webp" alt="Main Menu" width="90%">
 
