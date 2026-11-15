@@ -1,0 +1,2435 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "RootNode"
+{
+    def Scope "Looks"
+    {
+        def Material "mat_BF3B0263A0E40F17"  # 124_Abarth_RGT/124_Abarth_RGT_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_79BA7F705E5448BF"  # 124_Abarth_RGT/124_Abarth_RGT_internal_kwindscreen.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_4C9476DD56902151"  # 126P/126p_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_201B2D0A4A1A412A"  # 131_Abarth_Gr4/131_abarth_gr4_external_transparent.dds 2048x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_0C608BBFEB826E22"  # 131_Abarth_Gr4/131_abarth_gr4_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_490D21C82BFD65DD"  # 131_Abarth_Gr4/131_abarth_gr4_light_transparent.dds 1024x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_912BA665125EB22B"  # 207_s2000_2012/207_2012_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_8560C60B9D068C83"  # 207_s2000_2012/e_p206_internal_kwindscreen.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B24493C13F508465"  # 208_T16_R5_evo/208_t16_external_dynamic_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_78228AD7B3139916"  # 208_T16_R5_evo/208_t16_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FC8C21E7C1A9EB12"  # 208_T16_R5_evo/208_t16_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_BC008E6267316C87"  # 208_T16_R5_evo/e_p206_internal_kwindscreen.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E1D43B45D1F21550"  # 500_Abarth_R3T/500_Abarth_R3T_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_2B47E792AEB7B713"  # 500_Abarth_R3T/500_Abarth_R3T_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_9FF56451D95FECFE"  # 5GTT/5gtt_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_AC19FB321FDC6198"  # 5GTT/5gtt_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_BC23BB9322BACB96"  # ACCENT/accent_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FF09F4035DB6FCB3"  # ACCENT/accent_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_938A371946647283"  # Alpine_A110_2020/alpine_a110_2020_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D0A0FAB47A057AA7"  # AstonMartin_Vantage_RGT/astonmartin_vantage_rgt_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_930A590687DF6584"  # AstonMartin_Vantage_RGT/astonmartin_vantage_rgt_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FE082489E80DB17F"  # Audi_200_quattro/Audi_200_quattro_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_53197D1FDDC5DFCC"  # Audi_200_quattro/Audi_200_quattro_internal_kwindscreen.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_ADE53E6EB11376AC"  # AUDI_QUATTRO_A1_GrpB/AUDI_QUATTRO_A1_GrpB_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_2668601EDAEDCFB9"  # AUDI_QUATTRO_A1_GrpB/AUDI_QUATTRO_A1_GrpB_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_72A6517F40DFF967"  # AUDI_QUATTRO_A1_GrpB/AUDI_QUATTRO_A1_GrpB_transparent_dynamic.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_406D5D546A83A377"  # AUDI_QUATTRO_A2_GrpB/AUDI_QUATTRO_A2_GrpB_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_735FC8439BF07059"  # AUDI_QUATTRO_A2_GrpB/AUDI_QUATTRO_A2_GrpB_external_transparent2.dds 1024x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D20391E14DB48ECF"  # AUDI_QUATTRO_A2_GrpB/AUDI_QUATTRO_A2_GrpB_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_32E5F820F7649161"  # AUDI_QUATTRO_Grp4/audi_quattro_grp4_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_418FEEE3E471CB83"  # AUDI_QUATTRO_Grp4/audi_quattro_grp4_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_384F1587EEAE99E4"  # Audi_Sport_Quattro/audi_sport_quattro_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C39265264F34BD6D"  # BMW_M1/bmw_m1_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_2AF5486CCDF9EF06"  # BMW_M1/bmw_m1_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B5F674D15C1CD0F7"  # bmw_m3_e30/BMW_M3_E30_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_868ECCA74E50ADBD"  # bmw_m3_e30/BMW_M3_E30_internal_transparent.dds 1024x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_1D9E707DCC7D1A58"  # bmw_m3_e30/glass0.dds 256x128
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_84AF524577D4D2C7"  # bmw_m3_e36/bmw_m3_e36_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_F58F2C02FE181F24"  # bmw_m3_e36/bmw_m3_e36_internal_kwindscreen.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D295F1EB5AE1DD5E"  # C2_R2_Max/c2_r2_max_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_CD758CD30013B7D8"  # C2_R2_Max/c2_r2_max_transparent_dynamic.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_50A4480B97B520ED"  # C2_R2_Max/impreza03_internal_kwindscreen_snow.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D10A7EF9C51D8FB7"  # C3_r5/C3_r5_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_DFCAE529873134B3"  # c4_08/c4_08_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D31837F7FDE8616A"  # c4_08/c4_08_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_637AB0F645FB7E43"  # Celica_st185/CELICA_st185_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_9F76589B037845E7"  # Celica_st185/CELICA_st185_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_EB9E4EA787DE66AF"  # CITROEN_C2_s1600/C2s1600_external_transparent.dds 1024x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_CF8F0AE0F7CC150A"  # Citroen_C3_WRC17/citroen_c3_wrc17_external_light_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_4C6569C6A9E670B5"  # Citroen_C3_WRC17/citroen_c3_wrc17_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_3EA3C51D92C6DE7E"  # Citroen_C3_WRC17/citroen_c3_wrc17_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_44C1657EC964B848"  # Citroen_DS3_R1/citroen_ds3_r1_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_EFCD4E6DFD8D91DC"  # Citroen_DS3_R1/citroen_ds3_r1_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_7B592FBE810AC3E5"  # Citroen_DS3_R3/citroen_ds3_r3_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_6B5B8B6582778A99"  # Citroen_Xsara_KitCar/Citroen_Xsara_KitCar_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_98BDBD4C478202B2"  # Citroen_Xsara_KitCar/Citroen_Xsara_KitCar_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FDA7147734663E9D"  # Clio4_R3T/Clio4_R3T_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_50EA5F42B41B0041"  # Clio4_R3T/Clio4_R3T_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D57C3392CC1614F1"  # Clio_R3/Clio_R3_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_64359335EE290D53"  # Clio_R3/Clio_R3_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_BA652D495C475EBE"  # COROLLA/corolla_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_6AEEEBCBEB7424BE"  # COROLLA/corolla_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_5465E18C4774EC79"  # delta_4wd/delta_4wd_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_CC5E128656CF6CEE"  # delta_4wd/delta_4wd_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_8AADFC589E0D244E"  # ds3_R5/ds3_r5_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_1A2637B71355D48E"  # ds3_R5/ds3_r5_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B5F60FE68D0C46E5"  # ds3_WRC/ds3_wrc_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A2F1BD6B243BDEC6"  # ESCORT_COSWORTH_GRA/Cosworth_GrA_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_BA92EAE57668570B"  # ESCORT_COSWORTH_GRA/Cosworth_GrA_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_26BD485D2E7B8DC5"  # Escort_mk_2/Escort_mk_2_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E1A8F27E0FE24E95"  # Escort_mk_2/Escort_mk_2_internal_kwindscreen.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_78BE50A4B38E794D"  # Escort_mk_2/Escort_mk_2_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C9B98681528ED722"  # evo_IX/evo_ix_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D009C2822A6D01BD"  # evo_IX/evo_ix_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_20A520AAB3FAF0BA"  # F_Fiesta_R5/ford_r5_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D2730596098214D6"  # F_Fiesta_R5/ford_r5_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D2D966AD666A5A05"  # FABIA06/fabia05_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_9B2638BEF696E09F"  # FABIA06/fabia05_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_15ACC4F760E7B579"  # Fabia_r5_2018/Fabia_r5_2018_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_1023FDE86FDD6EF6"  # Fabia_R5_evo/Fabia_R5_evo_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_7F2019735C19AE38"  # fabia_rs_rally2/fabia_rs_rally2_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_34BAC90F8D517EAF"  # Fabia_S2000_2012/fabia_s2000_2012_external transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A8DB8E1F7A87E178"  # Fabia_S2000_2012/fabia_s2000_2012_internal_ transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_76FB5AC9B0BAABFD"  # Favorit/Favorit_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D8181F55A4BA790F"  # fiesta_r2/fiesta_r2_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D01954C7624FC09C"  # fiesta_r2/fiesta_r2_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_F6CCFADDBCC9EF9B"  # Fiesta_R2_2019/Fiesta_R2_2019_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E917FFBE3FB96CC6"  # Fiesta_R2_2019/Fiesta_R2_2019_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_59F712B5A7788265"  # fiesta_rally2/fiesta_rally2_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_EFF021E50BBA827B"  # fiesta_rally2_23/fiesta_rally2_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_CD5F9727BEE0A66C"  # Fiesta_rally3/Fiesta_rally3_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_00B66C2E65DF9F8B"  # Fiesta_rally3/Fiesta_rally3_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_5ABB9436BAC1727B"  # fiesta_rally3_evo/fiesta_rally3_evo_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_AEF7BF8910400878"  # Fiesta_rally4/Fiesta_rally4_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E93DEB4243D57812"  # Fiesta_S2000/fiesta_s2000_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_89516A8A8319A785"  # Fiesta_S2000/fiesta_s2000_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_98346AC016638C4A"  # fiesta_wrc_14/fiesta_wrc_14_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_061295AAA2284F72"  # fiesta_wrc_14/fiesta_wrc_14_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D81F44E5BA7245CC"  # fiesta_wrc_19/fiesta_wrc_19_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_1466B29BE6A8F01B"  # FORD_FOCUS_2006/focus_wrc06_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_44FD0C4051ED9EDE"  # FORD_FOCUS_2006/focus_wrc06_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C562EA4FBCDA5CD3"  # g.punto_s2000/g.punto_s2000_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E752DBDF091B91C7"  # g.punto_s2000/g.punto_s2000_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_06BF2CF5E7D52AB5"  # HONDA_Civic_R3/honda_civic_r3_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_44F649AEDCDEB004"  # HONDA_Civic_R3/honda_civic_r3_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_BF8000B73D410540"  # HONDA_Civic_R3/impreza03_internal_kwindscreen_snow.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_6C087E9199000524"  # i20_R5/i20_R5_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E2DA8A64A63D2AC4"  # i20_R5/i20_R5_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D84E6BE19EC81A2F"  # i20_rally2/i20_rally2_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_CF532CF8611E8AA8"  # i20_WRC_17/i20_wrc_17_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_7900996BA34FB6E9"  # i20_WRC_17/i20_wrc_17_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_83F5F17AF3C1273B"  # i20_WRC_20/i20_wrc_20_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C55EC29C475128FF"  # i20_WRC_20/i20_wrc_20_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_DCD9B89A228B6205"  # i20_WRC_21/i20_wrc_21_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B45ADBB4F00156ED"  # i20_WRC_21/i20_wrc_21_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B8BF55A5EC2B9E69"  # IMPREZA00/impreza00_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A0305B8D5E61E66B"  # IMPREZA00/impreza00_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_29ADE6620437C81C"  # IMPREZA03/impreza03_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_3871BC2F988E2B42"  # IMPREZA03/impreza03_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C5ADEBC8FF99C82B"  # impreza95/impreza95_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_0A0944913B054AB5"  # impreza95/impreza95_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_0EB9300408F5A0EE"  # impreza_2003_kazhol/impreza03_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_2831523DCD2DB44A"  # impreza_2003_kazhol/impreza03_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_14730CD9DD7AD494"  # impreza_n14_pro/impreza_N14_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A01EF6FD57B83ACF"  # impreza_n14_pro/impreza_N14_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_4F6D107BC052735B"  # kalina_rc2/kalina_rc2_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_AA28118747051467"  # kalina_rc2/kalina_rc2_internal_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E965155F0877CA1E"  # Lada_VFTS_NGP/Lada_VFTS_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_956B8AF6BA412CED"  # Lada_VFTS_NGP/Lada_VFTS_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A88245ED8216A46B"  # LANCER_EVO_II/LANCER_EVO_II_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C7D035AC077CE783"  # LANCER_EVO_II/LANCER_EVO_II_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_87F1CF1066055681"  # LANCER_EVO_VII/Lancer_wrc_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_F648AE64D140D7FE"  # LANCER_EVO_VII/Lancer_wrc_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_094378602E9B887A"  # LANCER_EVO_X/lancer_evo_x_external_int_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_75BFEDC8A7BB9F99"  # LANCER_EVO_X/lancer_evo_x_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_086D5D9D2A1B9EB4"  # LANCER_EVO_X/lancer_evo_x_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_5B827B68C0051CC5"  # LANCER_EVO_X_v1_21/lancer_evo_x_external_int_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_773E11E5A48D16BA"  # LANCER_EVO_X_v1_21/lancer_evo_x_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D72DECE502C3CBD2"  # LANCER_EVO_X_v1_21/lancer_evo_x_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_3D19DFDC0DCA4ADD"  # Lancia_Stratos/Lancia_Stratos_external_transparent.dds 1024x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_1CC99F1C6E985577"  # Lancia_Stratos/Lancia_Stratos_internal_transparent.dds 1024x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_72501B00C5E0D1D8"  # leon_cupra_grn/Leon_Cupra_grn_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_933A8F6F2A398A8D"  # Lotus_Exige/Lotus_Exige_external_transparent.dds 2048x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_962C5654F0A89902"  # Lotus_Exige/Lotus_Exige_internal_transparent.dds 2048x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D3C83D6FB3B759DB"  # Lotus_Exige/lotus_exige_transparent.dds 512x256
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_039B9C13FA0232E6"  # MAZDA_323_BFMR/mazda_323_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_953EAC250946774F"  # MAZDA_323_BFMR/mazda_323_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_EC9A4C2918432758"  # mini_wrc01b/mini_wrc01b_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_090DB848B6498D70"  # mini_wrc01b/mini_wrc01b_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C1354DC7253FDDCF"  # Opel_Adam_R2/opel_adam_r2_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_DB9650C599F97D1F"  # Opel_Ascona_400/ascona_400_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FF14FC86B891E40B"  # Opel_Ascona_400/ascona_400_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_113DE84C6C6CEDD7"  # OPEL_MANTA_400/opel_manta_400_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_81DF2BE42723B8D6"  # p306maxi/p306maxi_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_DCA9DF6FFDAAAF45"  # p306maxi/p306maxi_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_2FF77582E31B71D5"  # Peugeot106_rally/peugeot106_rally_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_AB011F759DFC49BD"  # PEUGEOT_205_T16_e1/205-t16_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A103AA751DFA3DF4"  # PEUGEOT_205_T16_e1/205-t16_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_6EBAA0FB8CEEB176"  # PEUGEOT_206/e_p206_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_6B1A8F107DEFF259"  # PEUGEOT_206/e_p206_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A80292079F16FFBA"  # PEUGEOT_208_R_2/peugeot_208_r_2_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A2A19F619536711E"  # PEUGEOT_208_Rally4/peugeot_208_rally4_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_96F497C0B34F188F"  # Polo_gti_r5/Polo_gti_r5_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E02F9A3C0C603CE6"  # POLO_R_WRC_2016/polo_r_2016_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_F58E83584FF21FB9"  # POLO_R_WRC_2016/polo_r_2016_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_F9FE51D2E80EC11B"  # PORSCHE911_SCRS_GrpB/porsche911_scrs_grpb_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_AD05698A19696A58"  # PORSCHE911_SCRS_GrpB/porsche911_scrs_grpb_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_51FCEF27568D1E87"  # PORSCHE911GT3RS/PORSCHE911GT3RS_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C55468CD70091734"  # PORSCHE911GT3RS/e_p206_internal_kwindscreen.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_3E0C89E149AD72B3"  # porsche_911sc/911_sc_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A838351EA981F41B"  # porsche_911sc/911_sc_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_9E0C82B9BD551BA3"  # PORSCHE_GT3_RGT/PORSCHE_GT3_RGT_external_transparent.dds 4096x4096
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_7723E71657504844"  # RENAULT_CLIO/renault_clio_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_0FEF475886733E28"  # RENAULT_CLIO/renault_clio_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A0938C7936196788"  # Renault_ClioV_Rally3/renault_cliov_rally3_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FCE8D6F54CEBF54E"  # Renault_ClioV_Rally3/renault_cliov_rally3_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_498819203C541B85"  # Renault_ClioV_Rally4/renault_cliov_rally4_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_DC77110FB2290502"  # skoda_130lr/skoda_130lr_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B9654328F68C9167"  # skoda_130lr/skoda_130lr_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_8C0E3E3B6BBDAC6A"  # Skoda_130RS/skoda_130rs_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_7DA12E7B9524C9D4"  # Skoda_130RS/skoda_130rs_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_3FF954C133AAB53F"  # TOYOTA_CELICA_TA64_GrpB/TOYOTA_CELICA_TA64_GrpB_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_4B721B550A0243BD"  # TOYOTA_CELICA_TA64_GrpB/TOYOTA_CELICA_TA64_GrpB_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C8698E5063E243E6"  # Trabant_P800RS/trabant p800rs_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_85EFDDAA6014E068"  # Trabant_P800RS/trabant p800rs_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_F95FD52B64469368"  # Twingo_R1/twingo_R1_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_C99250C1A17577DF"  # Volvo242LE/volvo242_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_EE565E9614590B50"  # Volvo242LE/volvo242_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_CAD36EF7C5A09260"  # vw_golf_86/vw_golf_86_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_5C7C90A8DD09C2E0"  # vw_golf_86/vw_golf_86_internal_kwindscreen.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_D6A946E6BEDC6770"  # vw_golf_86/vw_golf_86_internal_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_B923C366C6F52F32"  # Wartburg_353/wartburg_353_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_52E4D307378963D3"  # Wartburg_353/wartburg_353_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_3F80D60EB3F95A92"  # XSARA/xsara_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_49E673FB8801C590"  # XSARA/xsara_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_90B0B9FB8B45BC51"  # Xsara_2006/xsara_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_E9CAD8F5A5994CCD"  # Xsara_2006/xsara_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_6E8D0C443FA8DF96"  # yaris_rally2/yaris_rally2_external_transparent.dds 2048x2048
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_142BF39EFF5DA8AC"  # YARIS_WRC18/yaris_wrc_external_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_FB4CE64E67C7778C"  # YARIS_WRC18/yaris_wrc_internal_transparent.dds 1024x1024
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_A3B9A215EC8B4A6E"  # ZR/zr_external_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+        def Material "mat_28909C61C0465764"  # ZR/zr_internal_transparent.dds 512x512
+        {
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @AperturePBR_Opacity.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "AperturePBR_Opacity"
+                float inputs:reflection_roughness_constant = 0.01
+                float inputs:metallic_constant = 0
+                token outputs:out
+            }
+        }
+    }
+}

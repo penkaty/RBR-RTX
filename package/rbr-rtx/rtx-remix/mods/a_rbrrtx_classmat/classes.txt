@@ -1,0 +1,20 @@
+# class roughness metallic detail-normal roughness-map (- = none); written by make_class_materials.py
+road_tarmac 0.75 0 asphalt_035_n.dds road_tarmac_r.dds
+road_generic 0.82 0 gravel_030_n.dds road_generic_r.dds
+road_gravel 0.85 0 gravel_045_n.dds road_gravel_r.dds
+road_snow 0.55 0 snow_020_n.dds road_snow_r.dds
+road_line 0.6 0 asphalt_020_n.dds road_line_r.dds
+ground_generic 0.9 0 dirt_030_n.dds ground_generic_r.dds
+ground_dirt 0.78 0 dirt_035_n.dds ground_dirt_r.dds
+ground_grass 0.95 0 - ground_grass_r.dds
+ground_far 0.95 0 - ground_far_r.dds
+rock 0.8 0 rock_050_n.dds rock_r.dds
+building 0.85 0 concrete_025_n.dds building_r.dds
+wood 0.75 0 wood_030_n.dds wood_r.dds
+metal 0.5 0.6 - metal_r.dds
+vehicle_prop 0.5 0.3 - vehicle_prop_r.dds
+sign_banner 0.6 0 - sign_banner_r.dds
+fence_cutout 0.65 0.4 - fence_cutout_r.dds
+cutout_generic 0.85 0 - cutout_generic_r.dds
+people 0.8 0 - people_r.dds
+prop 0.75 0 - prop_r.dds

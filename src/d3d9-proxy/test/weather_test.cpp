@@ -31,6 +31,12 @@ int main(int argc, char** argv) {
     { L"Wieczór, mgła", 0, 8, -1, 2 },
     { L"Starry Night", 0, -1, -1, 3 },
     { L"Sunset", 0, -1, -1, 5 },
+    { L"late afternoon", 1, -1, -1, 2 },
+    { L"Late Afternoon", 1, -1, -1, 2 },
+    { L"afternoon", 1, -1, -1, 1 },
+    { L"Nublado", 9, 2, 3, -1 },
+    { L"Nublado", 4, 4, 3, -1 },
+    { L"Heavy fog nublado", 9, 9, 3, -1 },
   };
   int fails = 0;
   for (const Case& c : cases) {

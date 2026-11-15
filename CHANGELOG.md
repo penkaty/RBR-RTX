@@ -1,12 +1,98 @@
 # Changelog
 
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
-RTX 2080 Ti at 1080p with RTX Remix 1.5.2, same view, repeated runs agreeing within 0.1 ms.
+RTX 2080 Ti at 1080p (RTX Remix 1.5.2 up to 0.3.0, Remix Plus from 0.4.0), same view, repeated runs agreeing within 0.1 ms.
 
-## Next
+## 0.4.0 (release candidate, 2026-11-14)
+
+The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. That brought a new sky and weather system, wet roads, a material per kind of surface, every game effect as real particles, and car lamps that sit on the car's own lamp parts. What each system is: [How it works](docs/how-it-works.md). What we found on the way: [technical notes](docs/release-0.4.0.md).
+
+### What you will see
+- A new sky: real clouds, fog and haze that follow each stage's weather and time of day, a moon at night, lightning in heavy rain.
+- Wet roads with puddles, ripples and raindrop rings. Puddles stay on the road; grass and verges get wet without standing water.
+- Gravel, tarmac, snow, grass, rock, wood and metal no longer share one shine: each kind of surface has its own material.
+- Rain and snow as real particles with streaks, lit by the sun, the sky and your headlights.
+- Dust that takes the colour of the ground, tyre smoke on dry tarmac, and every other game effect (splashes, engine steam) as particles.
+- Car lamps on the car's own lamp parts: lenses that glow, tail and brake lamps, reversing lamp, brake discs that glow when hot.
+- Street lamps, floodlights and lit windows at night, which you can make yourself in the **F3** menu.
+- An in-game menu on **F3**: [The F3 menu](docs/f3-menu.md).
+- Trees and distant ground no longer blink out, and road textures are sharper.
+
+### Before you update
+- **NVIDIA driver 610.47 or newer** is needed now (0.3.0: 572.18). The RTX Remix runtime that Remix Plus is built on raised its minimum. AMD and Intel GPUs with ray tracing are experimental: choose FSR or XeSS in the Alt+X menu.
+- Delete `rtx.conf` and `user.conf` in the RBR folder, or the new defaults do not apply. See [Installation](docs/installation.md).
+- Installing is now: unpack into the RBR folder, then double-click `rbr-rtx\install.bat`. `uninstall.cmd` also removes the `rbr-rtx` folder itself (it used to stay behind, empty).
+- The RSF launcher settings changed: particles, cube maps and car shadows no longer have to be off. Keep **Particles on** for raindrops on the windscreen.
 
 ### Licence
-From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT.
+From here on RBR-RTX is under the PolyForm Noncommercial License 1.0.0: free to use, change and share, never to be sold. Versions up to 0.3.0 stay under MIT. The Remix welcome window has buttons for this licence and for donations ([Patreon](https://www.patreon.com/cw/penkaty), also [Ko-fi](https://ko-fi.com/penkaty)).
+
+### Weather and sky (NUMOS)
+- **NUMOS owns the weather.** RBR-RTX names the stage's weather and sends the game's sun and time; a NUMOS preset per RBR sky type (`rbr-rtx\config\weather\rbr-*.conf`) carries the clouds, fog and haze. Why: two systems setting fog fought each other, and the presets can be tuned and saved in **Alt+X** by anyone.
+- **Fog is NUMOS fog only.** Remix's own volumetric fog is off: it cost frame time and doubled the haze.
+- **The main menu** drifts slowly between random skies.
+- **Heavy rain** has lightning, low cloud banks and thicker fog. Heavy fog, light fog and heavy rain were retuned in game.
+
+### Roads and surfaces
+- **Wet roads and puddles** follow the track condition and the rain. Saved F3 wetness values apply from the start.
+- **Puddles only on the road.** The game's physics knows where the road is; RBR-RTX turns that into a mask, 5 m wider than the road with a soft edge. Everything else can be wet but holds no water.
+- **Surface classes from the game's physics.** The physics says gravel, tarmac, snow or grass under each wheel; RBR-RTX reads the same data for each ground texture and gives it that class's material. Other textures are classed by what they are: rock, wood, metal, building, fence, sign.
+- **Foliage is matte.** Leaves no longer shine like plastic in the sun or the headlights.
+- **Automatic Terrain tags are off.** This removed grey ground and sliding textures. Textures tagged by hand keep the flag.
+- **Car paint** takes its shine from the game's own reflectivity mask, set in the F3 **Car paint** page.
+
+### Particles
+- **One effects module.** Every particle emitter of the game goes through the Remix API at the place the game fired it, so effects the mod never covered before (splashes, engine steam and fire from the bonnet, debris) now show.
+- **Rain and snow** fall in a disk around the camera that is denser near you and turns with the view, with streaks that follow your speed. They stop where the stage's fog ends.
+- **Headlights and lamps light the rain.** Particles used to take light only from a coarse cache, so a beam never showed in the drops at night.
+- **Windscreen drops are the game's own now,** drawn as particles. They need **Particles on** in the launcher. The mod's own drops are off: they cost too much.
+- **Tyre smoke only on dry tarmac,** while moving and not in rain. **Snow surfaces** throw their own, smaller snow dust.
+- **Cheaper:** fewer and smaller rain and snow particles, no screen collision for rain, and particles fade before they fill the screen.
+- **Each flake and drop drawn once.** Snow and rain showed every particle three times, a frame's fall apart: the runtime kept the last frames' particles in the scene. It keeps particles for one frame now.
+
+### Lights
+- **Car lamp parts, car glass and brake discs go through the Remix API** as real meshes with their own materials. Why: the earlier way waited for a generated material, so lamps lagged and switched unnaturally.
+- **Lamps are learnt per car.** When a stage starts, the mod pulses the game's lamp signal once and watches which parts of the model answer. This is why lamps now work on cars nobody tuned by hand.
+- **Fixed on specific cars, each fix general:** Celica TA64 (extras, rear lamps dimming under braking), Porsche 911 SC RS (brights), Lada Kalina (beams off-centre), Skoda Fabia RS Rally2 (head lamps), Toyota Yaris Rally2 (rear lamps), Hyundai i20 WRC (tail lamps), BMW M3 E30 (lamps in the main menu).
+- **Headlights come on by themselves** below 12 degrees of sun and in rain, snow or fog. Daytime running lamps are off by default. Beams start in front of each car's own lamp glass.
+- **Brights reach further:** 1.5 times the candela, about 1.2 times the distance. Extra lamps light with the brights when the car has them fitted.
+- **Street lamps and windows** are made in the F3 **Lamps** page; the ones made during development ship with the mod.
+- **Lamps, glow and texture tags hold on dry, damp and wet tracks.** A stage loads a different set of textures for each track condition, so anything made on one set used to hold only there (Sardian Night's street lamps stayed dark on a dry track). The mod knows the other sets' textures of the same objects now, from the stage files and from the shapes it sees in game (`rbr-rtx\config\texture-variants.txt`).
+- **The crew** is drawn through the Remix API too, placed with the exact matrix.
+
+### F3 in-game menu
+- **A menu inside the game window** (key `F3`, `menu` in `keys.ini`; Alt+X stays Remix's own). Pages: Info, Wetness, Textures, Car paint, Atmosphere, Per stage, Headlights, Lamps, Debug, Save. See [The F3 menu](docs/f3-menu.md).
+- **Time of day slider** at the top of the Info page: sets the NUMOS sun's clock (as the `;` and `'` keys do) and shows the current time. **Game's time** gives the sun back to the game; a new stage does too.
+- It takes the keyboard and mouse while open, also from other plugins, and saves to `rbr-rtx\config\menu.ini`, never to Remix's `user.conf`. Saves swap in whole, so a crash cannot empty the file.
+
+### Reporting tools
+- **The three tools are 9, 8 and Alt+K.** Key 9 marks a problem (now in the main menu too), key 8 records one frame, Alt+K runs the stage sweep.
+- **The detailed log starts when you ask.** A release install keeps only the small per-stage report while you just drive; key 8 or Alt+K switches the log on for that session. Why: the timers behind the developer log ran about 8000 times a frame for a file nobody read.
+- **Key 8 works in every build** and also lists what the lamp code did with each car lamp part.
+- **The sweep** reads frame times from RTSS when it runs (median, so one hitch does not spoil a step), and has steps for rain, lamps, glass and lamp glow in the air.
+
+### RBRHUD
+- **F4 windscreen opacity and banner threshold work under Remix.** RBRHUD does this in a pixel shader Remix never runs; RBR-RTX applies the same rule to the windscreen texture.
+- **Gauge displays glow** with the lamps, and the needle layers of analogue gauges are left out (they turned black).
+
+### Faster
+- `rtx.conf` is read once, not twice per frame (9 of 10.6 ms in the menu).
+- Car draws and the cockpit interior skip vertex capture (menu 16.57 to 13.83 ms).
+- A state block a plugin created every frame is reused: 1.3 to 12 ms a frame down to 0.06 ms.
+- The game's car shadow and cube map passes are skipped whatever the launcher says.
+- No developer timers or periodic bridge statistics in a release install.
+
+### Fixed
+- Car body and tyres vanishing (the dirt layer; it is off by default now), the car drawn black over the scene (the game's shadow pass).
+- Outside windows and lamp covers missing in ray tracing.
+- The ray traced world disappearing while the game window is in the background.
+- A crash at stage load from the road mask.
+- No headlight beam at the start line after a stage load.
+- The Alt+K sweep crashing the GPU (the opacity micromap steps are gone).
+
+### Settings
+- `rtx.conf` and `user.conf` live in the RBR folder, as in any Remix game. The mod creates them once and never rewrites them: what you save in Alt+X stays.
+- A few options Remix resets at every start are sent by the mod instead (`rbr-rtx\config\start-options.ini`).
 
 ## 0.3.0 (2026-10-25)
 
@@ -137,11 +223,10 @@ First version for outside testers.
   Everything can be raised in the Remix menu, see [settings for strong PCs](docs/remix-settings.md).
 - **Faster scenery.** Static terrain, rocks and buildings are drawn fixed-function, because Remix re-runs shader
   draws every frame and so never keeps them in its cached acceleration structure. Same textures and pixel shaders, so
-  texture hashes and the PBR mod still match.
+  texture hashes still match.
 - **Stage atmosphere.** RBR's sky type, clouds, time of day and the stage's country set haze, sky light and sun strength
   (`rbr-rtx\config\atmosphere.ini`).
 - **Car shadow blob hidden.** RBR's baked car shadow acted like a dark mirror under the car; Remix traces the real shadow.
 - **Debug sun and Alt+K stage sweep** for judging light and for bug reports.
 - **Hotkeys on plain keys** in `keys.ini`, because compact keyboards lack Scroll Lock and Pause.
 - **Default settings seeded** into `user.conf` on first start, so the Remix menu does not show settings as unsaved.
-- **Optional PBR materials** for the original Warthog stages live in the separate RBR-RTX-base-mod.

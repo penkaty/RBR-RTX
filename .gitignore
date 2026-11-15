@@ -2,6 +2,7 @@
 
 # Build output
 src/**/bin/
+src/**/bin-*/
 src/**/obj/
 
 # Assembled install (proxy build + NVIDIA's Remix runtime): .\build.ps1 recreates it

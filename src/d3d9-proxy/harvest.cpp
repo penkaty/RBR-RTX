@@ -16,6 +16,7 @@
 #include "common.hpp"
 #include "alpha_min.hpp"
 #include <d3d9.h>
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <mutex>
@@ -103,18 +104,23 @@ void held_release(Held& h) {
   h = {};
 }
 
-template <class F>
-void patch(F* slot, F hook, F& orig) {
-  DWORD old = 0;
-  if (!VirtualProtect(slot, sizeof(F), PAGE_EXECUTE_READWRITE, &old)) return;
-  if (*slot != hook) { orig = *slot; *slot = hook; }
-  VirtualProtect(slot, sizeof(F), old, &old);
+// Pixel copies of small block-compressed textures, for the F3 emissive save. A DEFAULT-pool texture cannot be read back:
+// LockRect "succeeds" under the bridge with memory that never held the texture, so the emissive textures came out as
+// noise (user 2026-11-08, marks 12:46 and 13:00). The game's SYSTEMMEM source can be reused for a later upload, so the
+// bytes are copied at UpdateTexture. Bounded for the 32-bit process.
+struct PixelCopy { D3DFORMAT fmt = D3DFMT_UNKNOWN; UINT w = 0, h = 0, levels = 0; std::string data; int track = 0; DWORD tick = 0; };
+std::unordered_map<void*, PixelCopy> g_copies;           // DEFAULT texture -> all its mips, tight
+size_t g_copyBytes = 0;
+constexpr size_t kCopyMax = 64u << 20;
+
+void copy_erase(void* t) {
+  auto it = g_copies.find(t);
+  if (it == g_copies.end()) return;
+  g_copyBytes -= it->second.data.size();
+  g_copies.erase(it);
 }
 
 // Game state, read defensively (fixed addresses in RichardBurnsRally_SSE.exe).
-int read_int(uintptr_t addr) {
-  __try { return *reinterpret_cast<volatile int*>(addr); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-}
 int game_mode() {
   __try {
     const uintptr_t cfg = *reinterpret_cast<volatile uintptr_t*>(0x007EAC48);
@@ -133,6 +139,8 @@ bool layout(D3DFORMAT f, UINT w, UINT h, UINT& rowBytes, UINT& rows, const char*
     case D3DFMT_DXT5: block = 16; name = "DXT5"; break;
     case D3DFMT_A8R8G8B8: bpp = 4; name = "A8R8G8B8"; break;
     case D3DFMT_X8R8G8B8: bpp = 4; name = "X8R8G8B8"; break;
+    case D3DFMT_A8B8G8R8: bpp = 4; name = "A8B8G8R8"; break;   // E30 tyres and rims: no proxy hash without it
+    case D3DFMT_X8B8G8R8: bpp = 4; name = "X8B8G8R8"; break;
     case D3DFMT_R5G6B5: bpp = 2; name = "R5G6B5"; break;
     case D3DFMT_A1R5G5B5: bpp = 2; name = "A1R5G5B5"; break;
     case D3DFMT_A4R4G4B4: bpp = 2; name = "A4R4G4B4"; break;
@@ -146,15 +154,16 @@ bool layout(D3DFORMAT f, UINT w, UINT h, UINT& rowBytes, UINT& rows, const char*
   return true;
 }
 
-void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::string& data) {
+void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::string& data, UINT levels = 1) {
   DWORD hdr[32] = {};
   hdr[0] = 0x20534444;                               // "DDS "
   hdr[1] = 124;
   hdr[2] = 0x1 | 0x2 | 0x4 | 0x1000;                 // caps | height | width | pixelformat
-  hdr[3] = h; hdr[4] = w; hdr[7] = 1;                // one mip level
+  hdr[3] = h; hdr[4] = w; hdr[7] = levels;                // mip levels (all in data, largest first)
+  if (levels > 1) hdr[2] |= 0x20000;                 // mipmap count
   hdr[19] = 32;                                      // pixel format size
   if (f == D3DFMT_DXT1 || f == D3DFMT_DXT2 || f == D3DFMT_DXT3 || f == D3DFMT_DXT4 || f == D3DFMT_DXT5) {
-    hdr[2] |= 0x80000; hdr[5] = static_cast<DWORD>(data.size());
+    hdr[2] |= 0x80000; hdr[5] = static_cast<DWORD>(levels > 1 ? ((w + 3) / 4) * ((h + 3) / 4) * (f == D3DFMT_DXT1 ? 8 : 16) : data.size());
     hdr[20] = 0x4; hdr[21] = static_cast<DWORD>(f);  // FOURCC (D3DFMT_DXTn values are the FOURCC codes)
   } else {
     hdr[2] |= 0x8;
@@ -168,7 +177,7 @@ void write_dds(const wchar_t* path, D3DFORMAT f, UINT w, UINT h, const std::stri
       if (m.f == f) { hdr[20] = m.flags; hdr[22] = m.bits; hdr[23] = m.r; hdr[24] = m.g; hdr[25] = m.b; hdr[26] = m.a; }
     hdr[5] = w * (hdr[22] / 8);
   }
-  hdr[27] = 0x1000;                                  // DDSCAPS_TEXTURE
+  hdr[27] = levels > 1 ? (0x1000 | 0x8 | 0x400000) : 0x1000;   // DDSCAPS_TEXTURE (+ COMPLEX | MIPMAP)
   FILE* fp = nullptr;
   if (_wfopen_s(&fp, path, L"wb") || !fp) return;
   fwrite(hdr, sizeof(hdr), 1, fp);
@@ -202,7 +211,8 @@ void record(IDirect3DTexture9* tex, const D3DSURFACE_DESC& d, const Lock& lk) {
   ++g_new;
   wchar_t path[MAX_PATH * 2];
   swprintf_s(path, L"%s\\%016llX.dds", g_dir.c_str(), hx);
-  write_dds(path, d.Format, d.Width, d.Height, data);
+  // > 32 MB = our own 4096^2 X8R8G8B8 terrain bake (64 MB per stage, no game texture is that big): tsv line only.
+  if (data.size() <= (32u << 20)) write_dds(path, d.Format, d.Width, d.Height, data);
   if (g_tsv) {
     SYSTEMTIME t;
     GetLocalTime(&t);
@@ -279,6 +289,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
   ++g_rbrrtxCreates;                                          // report.cpp: hitch causes
   if (SUCCEEDED(hr) && out && *out) {
     IDirect3DTexture9* t = *out;
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_texture(t, w, hgt, levels, usage, static_cast<int>(fmt), static_cast<int>(pool));
     {
       // A new object may sit at the address of a released one: forget that one's hash and min alpha until this
       // texture's own mip 0 is recorded (otherwise a see-through texture could inherit "opaque" and lose its test).
@@ -288,6 +299,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
       g_texAvg.erase(t);
       auto h = g_held.find(t);
       if (h != g_held.end()) { held_release(h->second); g_held.erase(h); }
+      copy_erase(t);
     }
     patch(&t->lpVtbl->LockRect, &hk_TexLock, ho.TexLock);
     patch(&t->lpVtbl->UnlockRect, &hk_TexUnlock, ho.TexUnlock);
@@ -301,12 +313,51 @@ HRESULT STDMETHODCALLTYPE hk_CreateTexture(IDirect3DDevice9* dev, UINT w, UINT h
   return hr;
 }
 
+// All mips of a lockable texture, tight rows, largest first. Not under g_mx: UnlockRect goes through hk_TexUnlock.
+bool read_levels(IDirect3DTexture9* t, std::string& data, UINT& levels) {
+  levels = (std::max)(1u, static_cast<UINT>(t->lpVtbl->GetLevelCount(t)));
+  data.clear();
+  for (UINT l = 0; l < levels; ++l) {
+    D3DSURFACE_DESC ld = {};
+    UINT rowBytes = 0, rows = 0;
+    const char* fmt = "?";
+    if (FAILED(t->lpVtbl->GetLevelDesc(t, l, &ld)) || !layout(ld.Format, ld.Width, ld.Height, rowBytes, rows, fmt)) return false;
+    D3DLOCKED_RECT lr = {};
+    if (FAILED(t->lpVtbl->LockRect(t, l, &lr, nullptr, D3DLOCK_READONLY)) || !lr.pBits) return false;
+    const size_t at = data.size();
+    data.resize(at + static_cast<size_t>(rowBytes) * rows);
+    for (UINT r = 0; r < rows; ++r)
+      memcpy(&data[at + static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
+    t->lpVtbl->UnlockRect(t, l);
+  }
+  return true;
+}
+
 // SYSTEMMEM -> DEFAULT copy: the destination is what draws bind. Only whole-texture copies count (a dirty-rect update
 // of part of mip 0 would make the destination a mix; RBR copies whole textures).
 HRESULT STDMETHODCALLTYPE hk_UpdateTexture(IDirect3DDevice9* dev, IDirect3DBaseTexture9* src, IDirect3DBaseTexture9* dst) {
   const HRESULT hr = ho.UpdateTexture(dev, src, dst);
   if (SUCCEEDED(hr) && src && dst && src != dst) {
+    if (rbrrtx_gauge_probe_on) rbrrtx_gauge_probe_update(src, dst);
+    PixelCopy copy;
+    bool copied = false;
+    if (src->lpVtbl->GetType(src) == D3DRTYPE_TEXTURE && dst->lpVtbl->GetType(dst) == D3DRTYPE_TEXTURE && g_copyBytes < kCopyMax) {
+      IDirect3DTexture9* s = reinterpret_cast<IDirect3DTexture9*>(src);
+      D3DSURFACE_DESC cd = {};
+      if (SUCCEEDED(s->lpVtbl->GetLevelDesc(s, 0, &cd)) && cd.Pool == D3DPOOL_SYSTEMMEM && cd.Width < 512 &&
+          (cd.Format == D3DFMT_DXT1 || cd.Format == D3DFMT_DXT3 || cd.Format == D3DFMT_DXT5)) {
+        copied = read_levels(s, copy.data, copy.levels);
+        copy.fmt = cd.Format; copy.w = cd.Width; copy.h = cd.Height;
+      }
+    }
     std::lock_guard<std::mutex> g(g_mx);
+    if (copied) {
+      copy.track = read_int(0x01660804);
+      copy.tick = GetTickCount();
+      copy_erase(dst);
+      g_copyBytes += copy.data.size();
+      g_copies[dst] = std::move(copy);
+    }
     ++g_updates;
     auto h = g_texHash.find(src);
     auto a = g_texMinAlpha.find(src);
@@ -394,6 +445,85 @@ bool rbrrtx_save_texture_dds(void* base_texture, const wchar_t* path) {
     memcpy(&data[static_cast<size_t>(r) * rowBytes], static_cast<const char*>(lr.pBits) + static_cast<size_t>(r) * lr.Pitch, rowBytes);
   t->lpVtbl->UnlockRect(t, 0);
   write_dds(path, d.Format, d.Width, d.Height, data);
+  return true;
+}
+
+bool rbrrtx_texture_on_stage(unsigned long long hash) {
+  static std::unordered_set<unsigned long long> s_hashes;
+  static DWORD s_built = 0;
+  const DWORD now = GetTickCount();
+  if (!s_built || now - s_built > 1000) {
+    s_built = now;
+    s_hashes.clear();
+    const int track = read_int(0x01660804);
+    std::lock_guard<std::mutex> g(g_mx);
+    auto add = [&](void* t, int from) {
+      if (from != track) return;
+      auto h = g_texHash.find(t);
+      if (h != g_texHash.end()) s_hashes.insert(h->second);
+    };
+    for (const auto& kv : g_copies) add(kv.first, kv.second.track);
+    for (const auto& kv : g_held) add(kv.first, kv.second.track);
+  }
+  return s_hashes.count(hash) != 0;
+}
+
+// A saved DDS whose mip 0 is the texture with this hash (files saved before 2026-11-08 can be noise, see PixelCopy).
+bool rbrrtx_dds_is_texture(const wchar_t* path, unsigned long long hash) {
+  FILE* fp = nullptr;
+  if (_wfopen_s(&fp, path, L"rb") || !fp) return false;
+  DWORD hdr[32] = {};
+  bool ok = fread(hdr, sizeof(hdr), 1, fp) == 1 && hdr[0] == 0x20534444;
+  UINT rowBytes = 0, rows = 0;
+  const char* fmt = "?";
+  ok = ok && (hdr[20] & 0x4) && layout(static_cast<D3DFORMAT>(hdr[21]), hdr[4], hdr[3], rowBytes, rows, fmt);
+  std::string data;
+  if (ok) {
+    data.resize(static_cast<size_t>(rowBytes) * rows);
+    ok = fread(&data[0], 1, data.size(), fp) == data.size();
+  }
+  fclose(fp);
+  return ok && XXH3_64bits(data.data(), data.size()) == hash;
+}
+
+bool rbrrtx_save_texture_dds_mips(void* base_texture, const wchar_t* path) {
+  IDirect3DBaseTexture9* bt = static_cast<IDirect3DBaseTexture9*>(base_texture);
+  if (!bt || bt->lpVtbl->GetType(bt) != D3DRTYPE_TEXTURE) return false;
+  IDirect3DTexture9* t = reinterpret_cast<IDirect3DTexture9*>(bt);
+  D3DSURFACE_DESC d = {};
+  if (FAILED(t->lpVtbl->GetLevelDesc(t, 0, &d))) return false;
+  std::string data;
+  UINT levels = 0;
+  if (d.Pool == D3DPOOL_DEFAULT) {                     // not readable: the bytes kept at upload, else the held source
+    IDirect3DTexture9* src = nullptr;
+    {
+      std::lock_guard<std::mutex> g(g_mx);
+      auto c = g_copies.find(base_texture);
+      if (c != g_copies.end()) { data = c->second.data; levels = c->second.levels; }
+      else {
+        auto h = g_held.find(base_texture);
+        if (h != g_held.end() && h->second.src) { src = h->second.src; src->lpVtbl->AddRef(src); }
+      }
+    }
+    if (src) {
+      const bool ok = read_levels(src, data, levels);
+      src->lpVtbl->Release(src);
+      if (!ok) return false;
+    }
+    if (data.empty()) return false;
+  } else if (!read_levels(t, data, levels)) {
+    return false;
+  }
+  // Mip 0 must be what the game uploaded (the hash Remix sees); anything else would be saved as a broken texture for good.
+  UINT rowBytes = 0, rows = 0;
+  const char* fmt = "?";
+  if (!layout(d.Format, d.Width, d.Height, rowBytes, rows, fmt) || data.size() < static_cast<size_t>(rowBytes) * rows) return false;
+  const unsigned long long expected = rbrrtx_texture_hash(base_texture);
+  if (expected && XXH3_64bits(data.data(), static_cast<size_t>(rowBytes) * rows) != expected) {
+    hlog(L"texture save: %016llX read back as other pixels, not saved", expected);
+    return false;
+  }
+  write_dds(path, d.Format, d.Width, d.Height, data, levels);
   return true;
 }
 
@@ -494,6 +624,10 @@ void rbrrtx_layer_release_other(int track) {
   std::lock_guard<std::mutex> g(g_mx);
   const DWORD now = GetTickCount();
   unsigned n = 0;
+  for (auto it = g_copies.begin(); it != g_copies.end();) {
+    if (it->second.track != track && now - it->second.tick > 60000) { g_copyBytes -= it->second.data.size(); it = g_copies.erase(it); }
+    else ++it;
+  }
   for (auto it = g_held.begin(); it != g_held.end();) {
     if (it->second.track != track && now - it->second.tick > 60000) { held_release(it->second); it = g_held.erase(it); ++n; }
     else ++it;

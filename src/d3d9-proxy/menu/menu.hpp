@@ -1,0 +1,175 @@
+// menu.hpp - F3 in-game menu for the RBR-RTX d3d9 proxy (Dear ImGui, DX9 + Win32 backends).
+//
+// Self-contained: the proxy calls the C functions below at its hook points (see docs/research/f3-menu-plan.md)
+// and supplies behaviour through rbrrtx_menu_callbacks. Pages are added with rbrrtx_menu_add_page().
+// Nothing here writes user.conf or touches the game files.
+#pragma once
+
+#include <windows.h>
+#include <d3d9.h>
+#include <cstddef>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// What the texture picker found under the screen centre (filled by the proxy's probe callback).
+typedef struct rbrrtx_menu_pick {
+  int found;                       // 1 = a world draw lies under the centre
+  unsigned long long hash[2];      // Remix texture hash of stage 0 and stage 1 of that draw (0 = none / unknown)
+  void* texture[2];                // IDirect3DTexture9* for thumbnails; owned by the proxy, valid only during this frame
+  char shader[64];                 // vertex shader name of the draw (or "(fixed-function)")
+  char kind[48];                   // what the draw is: world / fixed-function scenery / swaying foliage / car / ...
+  float distance;                  // metres from the camera
+  int skip_foliage;                // INPUT: set by the menu before probe_centre: swaying / alpha-tested cards are not hit
+  int foliage;                     // the hit draw is a foliage card
+  int has_island;                  // the hit has a UV island (the part of the texture around the hit point)
+  unsigned island_verts;
+  float uv_rect[4];
+  float point[3];                  // the hit point in world space
+  float up_share;                  // share (0..1) of the hit draw's triangle area that faces up; -1 = unknown                // that island's rectangle in the base texture (u0, v0, u1, v1, 0..1)
+} rbrrtx_menu_pick;
+
+// One A/B switch of the Debug page (the proxy lists them, the menu draws them). options "" = checkbox (value 0 / 1);
+// "a|b|c" = a choice (value = index of the chosen option).
+typedef struct rbrrtx_menu_switch {
+  char group[32];
+  char label[96];
+  char options[96];
+  char note[256];
+  int value;
+} rbrrtx_menu_switch;
+
+// Behaviour the proxy supplies. Every member may be null; the menu then shows the page as unavailable.
+typedef struct rbrrtx_menu_callbacks {
+  // Sends an option to Remix (the proxy's remix_set / rbrrtx_remix_set). Returns true on success.
+  // Used by the Wetness page (rtx.wet.*) and anything else that is a plain Remix option.
+  int (*remix_set)(const char* key, const char* value);
+
+  // Texture picker: the draw under the screen centre. want_new = 0 returns the last result unchanged (frozen);
+  // otherwise the proxy keeps probing the next frames. Returns pick->found.
+  int (*probe_centre)(rbrrtx_menu_pick* pick, int want_new);
+
+  // Texture picker action: class 0 = Terrain, 1 = Decal, 2 = Water (animated), 3 = Ignore, 4 = clear all four.
+  // The proxy toggles the hash in its own list for that class and applies it live (batched remix_set).
+  // Returns 0 = failed, 1 = tagged, 2 = tag removed.
+  int (*mark_texture)(unsigned long long hash, int cls);
+
+  // Current categories of a texture as text ("terrain (conf), decal (menu)" or "none"), from the proxy's lists.
+  void (*texture_classes)(unsigned long long hash, char* buf, size_t buf_len);
+
+  // menu.ini [textures]: one key=value line per call at load (the proxy stores it) ...
+  void (*texture_ini)(const char* key, const char* value);
+  // ... and at save the proxy writes its lines through `emit` (one "key=value" per call, no newline).
+  void (*texture_ini_dump)(void (*emit)(const char* line, void* user), void* user);
+
+  // Other menu.ini sections (the proxy's lights per stage "lights.<stage id>", "windows"): every key=value line of such a section
+  // is handed over at load (ini_extra_set), and at save the proxy writes its sections through `emit` (full lines, including the
+  // "[section]" headers). Returns the number of items written (for the "saved N items" line).
+  void (*ini_extra_set)(const char* section, const char* key, const char* value);
+  int (*ini_extra_dump)(void (*emit)(const char* line, void* user), void* user);
+
+  // Info page: several lines of text (stage, weather, time, ground mode, baker...). Fills buf (NUL-terminated).
+  void (*info_text)(char* buf, size_t buf_len);
+  // Info page key list: line i ("Alt+K  stage sweep"), returns 0 when i is past the end.
+  int (*key_line)(int i, char* buf, size_t buf_len);
+
+  // Remix settings page: option i of the options rtx.conf / user.conf set (key, rtx.conf value, user.conf value; "" = absent),
+  // returns 0 past the end; lookup of one typed-in key (1 = found). pin_send sends a pinned value to Remix, bypassing the
+  // pin filter (returns 1 on success, 0 = Remix not reachable yet: tried again later). log writes one line to the proxy log.
+  int (*remix_opt)(int i, char* key, size_t key_len, char* ours, char* user, size_t val_len);
+  int (*remix_opt_lookup)(const char* key, char* ours, char* user, size_t val_len);
+  int (*remix_pin_send)(const char* key, const char* value);
+  void (*log)(const char* line);
+  // Camera of the last stage frame: position and forward vector (world space). 0 = none yet.
+  int (*camera)(float pos[3], float fwd[3]);
+
+  // Lamps (Textures page): mark the current hit as a lamp (writes lights-marked.ini; msg = one line of result, returns 1 = ok),
+  // list the marked lamps (label of marked lamp i; 0 past the end) and remove one.
+  int (*lamp_mark)(char* msg, size_t n);
+  int (*lamp_list)(int i, char* label, size_t n);
+  int (*lamp_remove)(int i);
+
+  // Debug page: switch i (0-based) fills *sw and returns 1, 0 past the end; switch_set applies a new value at once.
+  int (*switch_get)(int i, rbrrtx_menu_switch* sw);
+  void (*switch_set)(int i, int value);
+
+  // Directory for the menu's own ini (for example <game>\rbr-rtx\config). Fills buf with a wide path.
+  // If null, the menu uses the folder of the loaded d3d9.dll.
+  void (*config_dir)(wchar_t* buf, size_t buf_len);
+
+  // Info page time of day (the clock the debug sun keys move, on NUMOS's solar path): time_get fills the hour shown now
+  // and whether it is set by hand (1) or the game's (0); returns 0 without NUMOS. time_set: an hour 0..24 sets it,
+  // -1 gives the sun back to the game.
+  int (*time_get)(float* hour, int* manual);
+  void (*time_set)(float hour);
+} rbrrtx_menu_callbacks;
+
+// A page draw callback. Called once per frame while the menu is open and the page is selected.
+// It may call ImGui directly (ImGui is the one copy vendored in third_party/imgui).
+typedef void (*rbrrtx_menu_page_fn)(void* user);
+
+// Lifecycle. Call from the proxy in this order:
+//   set_callbacks, set_toggle_vk, init : at CreateDevice (HWND and device known). Idempotent.
+//   wndproc     : from the subclassed game window procedure (see plan). Returns non-zero when the
+//                 message was consumed by the open menu and must NOT reach the game.
+//   tick        : once per frame (Present), also while closed: sends menu.ini values to Remix once reachable.
+//   frame       : once per frame inside BeginScene/EndScene, before Present. Does nothing when closed.
+//   lost/reset  : around IDirect3DDevice9::Reset (lost before, reset after).
+//   shutdown    : from DLL_PROCESS_DETACH or device release.
+int  rbrrtx_menu_init(HWND game_window, IDirect3DDevice9* dev);
+int  rbrrtx_menu_wndproc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp);
+void rbrrtx_menu_tick(void);
+void rbrrtx_menu_release_stage_locks(void);
+void rbrrtx_menu_frame(IDirect3DDevice9* dev);
+void rbrrtx_menu_device_lost(void);
+void rbrrtx_menu_device_reset(IDirect3DDevice9* dev);
+void rbrrtx_menu_shutdown(void);
+
+// Toggle key (a Windows virtual-key code, default F3; keys.ini "menu"). 0 = no key (the menu cannot be opened).
+void rbrrtx_menu_set_toggle_vk(int vk);
+
+// The DX9 backend holds one reference on the device while it is initialised. IDirect3DDevice9::Release hooks that
+// count references must add this, and call release_device when the game's last reference is the only one left.
+int  rbrrtx_menu_device_refs(void);
+void rbrrtx_menu_release_device(void);
+
+// The ImGui font atlas texture (IDirect3DTexture9*), null until the first frame was drawn. For logging its hash.
+void* rbrrtx_menu_font_texture(void);
+
+// Open state. F3 toggles it. The proxy can also force it.
+int  rbrrtx_menu_is_open(void);
+void rbrrtx_menu_set_open(int open);
+void rbrrtx_menu_block_plugin_mouse(void);              // plugins' mouse imports go through the menu (first opening)
+void rbrrtx_menu_add_wheel(int delta);                  // DirectInput wheel travel while the menu is open (RBR's exclusive mouse sends no WM_MOUSEWHEEL)
+
+// 1 while the menu is drawing. The proxy's draw/state hooks must pass calls through untouched when this is 1
+// (same job as shared::globals::imgui_is_rendering in remix-comp-base), otherwise the menu's own draws get
+// tagged, transformed or counted.
+int  rbrrtx_menu_is_drawing(void);
+
+// Menu-owned option override. Returns 1 and the menu's value when the user moved (or loaded from menu.ini)
+// the option, e.g. "rtx.wet.globalWetness". wetness.cpp must check this before sending its computed value,
+// otherwise its per-frame rain driver overwrites the slider. Returns 0 when the proxy should keep control.
+int  rbrrtx_menu_option_locked(const char* key, float* value);
+
+// Pinned Remix option (menu.ini [remix], F3 "Remix settings"): 1 and the pinned value when the user pinned the key. The
+// proxy's own remix_set drops its sets of a pinned key. value may be null.
+// For modules that add pages (menu_custom.cpp): the picker's hit (as the Textures page asks for it) and the proxy's camera / log.
+int  rbrrtx_menu_probe(rbrrtx_menu_pick* pick, int want_new);
+int  rbrrtx_menu_camera(float pos[3], float fwd[3]);
+void rbrrtx_menu_log(const char* line);
+void rbrrtx_menu_set_status(const char* text);
+void rbrrtx_menu_register_custom_pages(void);   // menu_custom.cpp: the Lights and Windows pages
+int  rbrrtx_menu_pinned(const char* key, char* value, size_t value_len);
+
+// Wires the proxy's behaviour in. Call before init (the pointer is copied).
+void rbrrtx_menu_set_callbacks(const rbrrtx_menu_callbacks* cb);
+
+// Adds a page to the menu bar. Pages show in registration order; `name` must stay valid (string literal).
+// Built-in pages: Info, Wetness, Textures, Save. Modules add their own with this call.
+void rbrrtx_menu_add_page(const char* name, rbrrtx_menu_page_fn draw, void* user);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
