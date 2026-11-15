@@ -118,9 +118,9 @@ How to send them: [Troubleshooting](docs/troubleshooting.md).
 | [Changelog](CHANGELOG.md) | What changed in each version, and why |
 | [Contributing](CONTRIBUTING.md) | Reports, sun fixes, code, building from source |
 
-<div align="center">
-<img src=".github/img/release22.webp" alt="Zlin SS1, Skoda Fabia R5 Evo" width="90%">
-</div>
+| Before (DirectX9) | After (RTX Remix) |
+| :---: | :---: |
+| ![Before](.github/img/SardianDX9.png) | ![After](.github/img/SardianRTX.png) |
 
 ### What runs under the hood
 
@@ -140,7 +140,10 @@ Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock run
 
 **Still in progress:** unusual weather, some modern stages can look wrong, see [Known issues](docs/known-issues.md). Bob's Track Builder (BTB) stages are currently not supported.
 
-<details>
+<div align="center">
+<img src=".github/img/release22.webp" alt="Zlin SS1, Skoda Fabia R5 Evo" width="90%">
+</div>
+
 <summary><b>Credits</b></summary>
 
 - [Kim2091](https://github.com/Kim2091) (sparkles): **Remix Plus** ([RemixProjGroup/dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix)),
@@ -169,8 +172,6 @@ Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock run
   [RemixProjGroup dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix), [Hooking-DX9-Present](https://github.com/bo3b/Hooking-DX9-Present) (bo3b)
 - [RallySimFans](https://www.rallysimfans.hu/) for keeping RBR alive. Richard Burns Rally belongs to its owners;
   this mod contains none of its files.
-
-</details>
 
 ## Support the project
 
