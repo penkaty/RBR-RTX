@@ -10,7 +10,7 @@ points at the source in `src/d3d9-proxy/`. Runtime patches live on the `rbr-main
 
 The work stands on Kim2091's [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix) runtime and bridge (the
 32-bit API forwarding made all of this possible) and [NUMOS](https://github.com/Kim2091/numos-sky) sky. The retained
-API-instance approach follows his New Vegas RTX work, and the wetness and card normals are ports of xoxor4d's work.
+API-instance approach follows her New Vegas RTX work, and the wetness and card normals are ports of xoxor4d's work.
 
 ## Contents
 1. [The stack](#1-the-stack)
