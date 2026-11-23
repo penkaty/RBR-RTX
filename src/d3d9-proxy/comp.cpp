@@ -2650,7 +2650,16 @@ bool world_from_c0(const D3DMATRIX& wvp, D3DMATRIX& out) {
   return true;
 }
 
+struct CarDrawDiag {
+  bool valid = false, hadFrameCam = false, hasC8 = false, hasC0Solve = false;
+  const wchar_t* path = L"none";
+  float world[3] = {}, c8[3] = {}, c0Solve[3] = {}, c0Inv[3] = {};
+  float c8Err = -1.0f, unkBad = -1.0f;
+};
+CarDrawDiag g_carDiag;
+
 bool before_draw(IDirect3DDevice9* dev) {
+  g_carDiag = {};
   ++g_st.draws;
   g_clockNow = false;
   {
@@ -2768,9 +2777,19 @@ bool before_draw(IDirect3DDevice9* dev) {
     return btb_draw(dev);
   }
   const bool worldSpace = g_curInfo && (g_curInfo->flags & SH_WORLDSPACE);
+  if (g_dumpFrames) g_carDiag.hadFrameCam = g_frameCam;
   if (worldSpace) frame_camera(wvp);
   if (!g_haveCam) { ++g_st.noCamera; return false; }
   D3DMATRIX world = to_f(mul_d(to_d(wvp), g_VPinv));
+  if (g_dumpFrames) {
+    g_carDiag.c0Inv[0] = world._41; g_carDiag.c0Inv[1] = world._42; g_carDiag.c0Inv[2] = world._43;
+    g_carDiag.path = L"c0inv";
+    if (all_set(8, 4)) {
+      const D3DMATRIX c8m = from_rows(&g_c[8]);
+      g_carDiag.hasC8 = true;
+      g_carDiag.c8[0] = c8m._41; g_carDiag.c8[1] = c8m._42; g_carDiag.c8[2] = c8m._43;
+    }
+  }
   if (worldSpace) {                                    // should be identity; how far off is it?
     const float off = max_diff(world, identity());
     g_st.rlDev = (std::max)(g_st.rlDev, off);
@@ -2780,7 +2799,14 @@ bool before_draw(IDirect3DDevice9* dev) {
   // Every object shader, not only the car's (2026-11-12): drivers (ObjPosNormalTexture, c0 only) took c0 x VP^-1, whose
   // depth error grows with the distance from the map origin: 0.3-8 m on Noiker ~2.7 km out (run 20261112-023920, "derived
   // W err"), the user's "driver position lost accuracy". c8 below still wins when it agrees.
-  if (g_curInfo && !worldSpace && !btbFrame) world_from_c0(wvp, world);
+  if (g_curInfo && !worldSpace && !btbFrame) {
+    const bool ok = world_from_c0(wvp, world);
+    if (g_dumpFrames && ok) {
+      g_carDiag.hasC0Solve = true;
+      g_carDiag.c0Solve[0] = world._41; g_carDiag.c0Solve[1] = world._42; g_carDiag.c0Solve[2] = world._43;
+      g_carDiag.path = L"c0solve";
+    }
+  }
   // Vertex shaders that are no RBR .vso (a plugin's, created at stage load): the cockpit interior is drawn with them
   // (run 20261112-224515, Santa Lucia II ~4.3 km out: 12 such draws in cockpit views). With c0 x VP^-1 the interior
   // slid metres along the view ray and stepped from frame to frame: seen from "behind", body gone, no drivers. Take
@@ -2794,6 +2820,12 @@ bool before_draw(IDirect3DDevice9* dev) {
       for (int r = 0; r < 4; ++r) {
         const double z = wvp.m[r][2], w = wvp.m[r][3];
         bad = (std::max)(bad, std::fabs(fwd.m[r * 4 + 2] - z) / (std::max)({ 1.0, std::fabs(z), std::fabs(w) }));
+      }
+      if (g_dumpFrames) {
+        g_carDiag.hasC0Solve = true;
+        g_carDiag.c0Solve[0] = w2._41; g_carDiag.c0Solve[1] = w2._42; g_carDiag.c0Solve[2] = w2._43;
+        g_carDiag.unkBad = static_cast<float>(bad);
+        g_carDiag.path = (bad < 1e-3) ? L"unk-c0solve" : L"unk-c0inv";
       }
       if (bad < 1e-3) {
         world = w2;
@@ -2838,6 +2870,10 @@ bool before_draw(IDirect3DDevice9* dev) {
         g_st.carSolveErr = (std::max)(g_st.carSolveErr, std::sqrt(dx * dx + dy * dy + dz * dz));
       }
     }
+    if (g_dumpFrames) {
+      g_carDiag.c8Err = err;
+      g_carDiag.path = (err < 2e-3f || btbFrame) ? L"c8" : L"c8-refused";
+    }
     if (err < 2e-3f || btbFrame) { world = exact; ++g_st.c8Used; }   // 2e-3 NDC: about a pixel at 1080p
     else ++g_st.c8Refused;
     DMat winv;
@@ -2848,6 +2884,10 @@ bool before_draw(IDirect3DDevice9* dev) {
   const bool oursVP = g_testMode == 0 || g_testMode == 1, oursW = g_testMode == 0 || g_testMode == 2;
   if (oursVP) { set_xf(dev, 1, g_V); set_xf(dev, 2, g_P); } else { set_game_xf(dev, 1); set_game_xf(dev, 2); }
   if (oursW) set_xf(dev, 0, world); else set_game_xf(dev, 0);
+  if (g_dumpFrames) {
+    g_carDiag.valid = true;
+    g_carDiag.world[0] = world._41; g_carDiag.world[1] = world._42; g_carDiag.world[2] = world._43;
+  }
   if (g_curInfo && (g_curInfo->flags & SH_CAR)) {      // the car's position: centre of the culling keep radius
     g_carPos[0] = world._41; g_carPos[1] = world._42; g_carPos[2] = world._43;
     std::memcpy(g_carWorld, &world._11, sizeof(g_carWorld));
@@ -4584,7 +4624,11 @@ bool glass_api_pass(IDirect3DDevice9* dev, unsigned alphaAdd) {
   look.roughness = 0.05f;
   look.alphaAdd = alphaAdd;
   const RbrWorldDraw wd = { g_dip.base, g_dip.minIdx, g_dip.numV, g_dip.startIdx, g_dip.count, false };
-  if (!rbrrtx_apiworld_lamp(dev, wd, g_carWorld, look)) return false;
+  const bool took = rbrrtx_apiworld_lamp(dev, wd, g_carWorld, look);
+  if (g_dumpFrames)
+    clog(L"  api glass: %s; %u vertices %u triangles, alpha +%u, world origin (%.3f %.3f %.3f)",
+         took ? L"API" : L"refused, D3D9", g_dip.numV, g_dip.count, alphaAdd, g_carWorld[12], g_carWorld[13], g_carWorld[14]);
+  if (!took) return false;
   ++g_glassApiDraws;
   return true;
 }
@@ -7266,6 +7310,25 @@ bool is_subtractive_sprite(IDirect3DDevice9* dev) {
   return op ==D3DBLENDOP_REVSUBTRACT || op == D3DBLENDOP_SUBTRACT;
 }
 
+void dump_car_diag(int ffClass, const wchar_t* route) {
+  if (!g_dumpFrames || !g_carDiag.valid || !g_primaryRT || g_dumpDraws > 1500) return;
+  const bool isCarOrUnk = !g_curInfo || (g_curInfo->flags & SH_CAR) != 0;
+  if (!isCarOrUnk) return;
+  float car[20] = {};
+  const bool hasRaw = rbrrtx_player_car_raw(car);
+  const float rx = car[16], ry = car[18], rz = car[17];   // physics x,y,z -> render x,z,y
+  const float dCar = hasRaw ? std::sqrt((g_carDiag.world[0] - rx) * (g_carDiag.world[0] - rx) +
+                                        (g_carDiag.world[1] - ry) * (g_carDiag.world[1] - ry) +
+                                        (g_carDiag.world[2] - rz) * (g_carDiag.world[2] - rz)) : -1.0f;
+  clog(L"    car-diag: %s ff %d prims %u verts %u frameCam %d path %s world (%.3f %.3f %.3f) dCar %.3f | c8 %s(%.3f %.3f %.3f) err %.5f | c0s %s(%.3f %.3f %.3f) bad %.5f | c0inv (%.3f %.3f %.3f) | carRaw %s(%.3f %.3f %.3f)",
+       route, ffClass, g_dip.valid ? g_dip.count : 0u, g_dip.valid ? g_dip.numV : 0u, g_carDiag.hadFrameCam ? 1 : 0,
+       g_carDiag.path, g_carDiag.world[0], g_carDiag.world[1], g_carDiag.world[2], dCar,
+       g_carDiag.hasC8 ? L"" : L"none ", g_carDiag.c8[0], g_carDiag.c8[1], g_carDiag.c8[2], g_carDiag.c8Err,
+       g_carDiag.hasC0Solve ? L"" : L"none ", g_carDiag.c0Solve[0], g_carDiag.c0Solve[1], g_carDiag.c0Solve[2], g_carDiag.unkBad,
+       g_carDiag.c0Inv[0], g_carDiag.c0Inv[1], g_carDiag.c0Inv[2],
+       hasRaw ? L"" : L"none ", rx, ry, rz);
+}
+
 // All draws: glass skip (g_glassOn), sky handling (see g_skyMode), then transforms for Remix (before_draw/after_draw).
 template <class Draw>
 HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
@@ -7435,11 +7498,12 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
       // In a frame dump (key 8): what the lamp path did with each car lamp draw (user 2026-11-13: Lancia tail lamps kept
       // disappearing; the dump lines are written before this decision).
       if (g_dumpFrames)
-        clog(L"  api lamp: %s; %u vertices %u triangles, kind %d glow %.2f%s%s%s, blended %d, alpha +%u, world origin (%.2f %.2f %.2f)",
+        clog(L"  api lamp: %s; %u vertices %u triangles, kind %d glow %.2f%s%s%s, blended %d, alpha +%u, world origin (%.3f %.3f %.3f)",
              took ? L"API" : L"refused, D3D9", g_dip.numV, g_dip.count, ld.kind, look.glow, ld.lampPart ? L", lamp part" : L"",
              ld.brakeDisc ? L", brake disc" : L"", ld.texture ? L", atlas swapped" : L"", static_cast<int>(lb), look.alphaAdd,
              g_carWorld[12], g_carWorld[13], g_carWorld[14]);
       if (took) {
+        dump_car_diag(-1, L"API-LAMP");
         ++g_apiLampDraws;
         if (litTwin) rbrrtx_litparts_drop_twin();
         if (hinted) after_draw(dev);
@@ -7483,6 +7547,7 @@ HRESULT comp_draw(IDirect3DDevice9* dev, Draw draw) {
     o.SetVertexShader(dev, static_cast<IDirect3DVertexShader9*>(g_curVS));
     g_vsUnbound = false;
   }
+  dump_car_diag(ffClass, ff ? L"FF" : L"VCAP");
   const bool litOff = ff && g_lighting && SUCCEEDED(o.SetRenderState(dev, D3DRS_LIGHTING, FALSE));   // no normals
   if (ff) ++g_ffDraws;
   IDirect3DVertexDeclaration9* nn = ff && !carFf && !g_ffNormals && g_vin == kVinDecl && g_curDecl
