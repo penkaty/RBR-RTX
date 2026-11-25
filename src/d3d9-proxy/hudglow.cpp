@@ -73,6 +73,58 @@ std::string g_uiList;
 bool g_uiDirty = false;
 decltype(IDirect3DDevice9Vtbl::SetTexture) g_setTexture = nullptr;
 decltype(IDirect3DDevice9Vtbl::SetPixelShaderConstantB) g_setPsB = nullptr;
+decltype(IDirect3DDevice9Vtbl::CreatePixelShader) g_createPs = nullptr;
+std::unordered_map<const void*, bool> g_psUsesS15;
+
+// Scan D3D9 SM2/SM3 pixel shader bytecode for DCL of sampler s15 (D3DSIO_DCL, D3DSPR_SAMPLER == 10, reg 15).
+// Only RBRHUD's CarTextureNoDirtEmMask.pso declares s15; other car/interior shaders must never inherit a stale mask.
+bool ps_bytecode_uses_s15(const DWORD* words, UINT maxWords) {
+  if (!words || maxWords < 2 || (words[0] >> 16) != 0xFFFFu || ((words[0] >> 8) & 0xFFu) < 2u) return false;
+  UINT i = 1;
+  while (i < maxWords) {
+    const DWORD op = words[i], code = op & 0xFFFFu;
+    if (code == 0xFFFFu) break;
+    if (code == 0xFFFEu) { i += 1u + ((op >> 16) & 0x7FFFu); continue; }
+    const UINT toks = (op >> 24) & 0xFu;
+    if (code == 0x001Fu && toks >= 2u && i + 2u < maxWords) {
+      const DWORD dst = words[i + 2u];
+      const DWORD regType = ((dst >> 28) & 0x7u) | (((dst >> 11) & 0x3u) << 3);
+      const DWORD regNum = dst & 0x7FFu;
+      if (regType == 10u && regNum == 15u) return true;
+    }
+    i += 1u + toks;
+  }
+  return false;
+}
+
+bool current_ps_uses_s15(IDirect3DDevice9* dev) {
+  IDirect3DPixelShader9* ps = nullptr;
+  if (FAILED(dev->lpVtbl->GetPixelShader(dev, &ps)) || !ps) return false;
+  auto it = g_psUsesS15.find(ps);
+  if (it == g_psUsesS15.end()) {
+    bool uses = false;
+    UINT bytes = 0;
+    if (SUCCEEDED(ps->lpVtbl->GetFunction(ps, nullptr, &bytes)) && bytes >= 8 && bytes <= 65536) {
+      std::vector<DWORD> buf(bytes / 4, 0);
+      if (SUCCEEDED(ps->lpVtbl->GetFunction(ps, buf.data(), &bytes)))
+        uses = ps_bytecode_uses_s15(buf.data(), static_cast<UINT>(buf.size()));
+    }
+    if (g_psUsesS15.size() > 4096) g_psUsesS15.clear();
+    it = g_psUsesS15.emplace(ps, uses).first;
+  }
+  const bool uses = it->second;
+  ps->lpVtbl->Release(ps);
+  return uses;
+}
+
+HRESULT STDMETHODCALLTYPE hk_CreatePixelShader(IDirect3DDevice9* dev, const DWORD* pFunction, IDirect3DPixelShader9** ppShader) {
+  const HRESULT hr = g_createPs(dev, pFunction, ppShader);
+  if (SUCCEEDED(hr) && ppShader && *ppShader && pFunction) {
+    if (g_psUsesS15.size() > 4096) g_psUsesS15.clear();
+    g_psUsesS15[*ppShader] = ps_bytecode_uses_s15(pFunction, 16384u);
+  }
+  return hr;
+}
 
 // The render target on s0, null for anything else. A mask RBRHUD leaves on s15 must not light other draws.
 RtInfo* s0_render_target(IDirect3DDevice9* dev) {
@@ -167,6 +219,7 @@ void rbrrtx_hudglow_init(void* device, bool runtimeHasProtocol) {
   IDirect3DDevice9Vtbl* vt = static_cast<IDirect3DDevice9*>(device)->lpVtbl;
   patch(&vt->SetTexture, &hk_SetTexture, g_setTexture);
   patch(&vt->SetPixelShaderConstantB, &hk_SetPsB, g_setPsB);
+  patch(&vt->CreatePixelShader, &hk_CreatePixelShader, g_createPs);
 }
 
 // A car draw (known car shader, or RBRHUD's own unknown one): is its render target a layer over the gauges?
@@ -196,7 +249,7 @@ void* rbrrtx_hudglow_layer_bind(void* device, unsigned frame) {
   if (!g_snapshot) return nullptr;
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
   RtInfo* i = s0_render_target(dev);
-  if (!i || (!i->tagged && !g_s15)) return nullptr;      // a layer, or a display copy lit through RBRHUD's mask
+  if (!i || (!i->tagged && !(g_s15 && current_ps_uses_s15(dev)))) return nullptr;      // a layer, or a display copy lit through RBRHUD's mask
   IDirect3DBaseTexture9* t = nullptr;
   if (FAILED(dev->lpVtbl->GetTexture(dev, 0, &t)) || !t) return nullptr;
   IDirect3DTexture9* src = reinterpret_cast<IDirect3DTexture9*>(t);
@@ -229,6 +282,8 @@ void* rbrrtx_hudglow_layer_bind(void* device, unsigned frame) {
 void rbrrtx_hudglow_device_lost() {
   for (auto& kv : g_copies) if (kv.second.tex) kv.second.tex->lpVtbl->Release(kv.second.tex);
   g_copies.clear();
+  g_s15 = nullptr;
+  g_psUsesS15.clear();
 }
 
 // The list for rtx.worldSpaceUiTextures when it has grown, once; else null.
@@ -243,6 +298,7 @@ void rbrrtx_hudglow_before(void* device) {
   const bool lamps = rbrrtx_headlights_on();
   if (!lamps && !g_alphaWithoutLamps) return;
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
+  if (!current_ps_uses_s15(dev)) return;
   if (!s0_render_target(dev)) return;
   // Layers drawn over the gauge face (the E30's 2048x512 needle layer: transparent but for the needles) are blended or
   // alpha-tested. Run 20261101-130413 showed the E30 gauges black with the glow on: the protocol material made the layer
@@ -251,8 +307,11 @@ void rbrrtx_hudglow_before(void* device) {
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHATESTENABLE, &test);
   if (blend || test) { ++g_layerSkips; return; }
+  IDirect3DBaseTexture9* s15 = nullptr;
+  if (FAILED(dev->lpVtbl->GetTexture(dev, 15, &s15)) || !s15) { g_s15 = nullptr; return; }
   dev->lpVtbl->GetTexture(dev, g_slot, &g_prevSlot);
-  g_setTexture(dev, g_slot, g_s15);
+  g_setTexture(dev, g_slot, s15);
+  s15->lpVtbl->Release(s15);
   // Always keep mask.a (displays/needles) on when alpha_without_lamps=1, and switch mask.rgb (backlit dials /
   // interior ambient lights) directly with our headlights regardless of stage Car_Ambient_Lighting (game b1).
   const DWORD mod = 0u | (0xFu << 4) | (g_slot << 8) | (0xFu << 12) | kGlowTimesAlbedo |
@@ -276,7 +335,7 @@ void rbrrtx_hudglow_after(void* device) {
   g_applied = false;
 }
 
-void rbrrtx_hudglow_forget() { g_isRt.clear(); }    // textures created/released: pointers may be reused
+void rbrrtx_hudglow_forget() { g_isRt.clear(); g_s15 = nullptr; }    // textures created/released: pointers may be reused
 
 void rbrrtx_hudglow_log() {
   if (!g_on) return;

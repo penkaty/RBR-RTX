@@ -1346,6 +1346,16 @@ void compose(const Placed& a, const float* W, float C[16]) {
   }
 }
 
+// A true model-root matrix C = A * W has rigid unit-length axes (scale 1); scaled sub-nodes like
+// fabia_rs_rally2 / C3_r5 e_parts (0.188x) composed with g_car.body (1.0x) must be rejected.
+bool unit_axes(const float C[16]) {
+  for (int r = 0; r < 3; ++r) {
+    const float l = len(row(C, r));
+    if (!(l > 0.92f && l < 1.08f)) return false;
+  }
+  return true;
+}
+
 // The car pose C (model root -> world) from RBR's car movement object (0x8EF660, block from +0x100):
 // +0x110 is a 3x3 rotation, 9 floats, rows = the car's axes; +0x140 the car position; physics space = render world
 // with Y and Z swapped (decoded 2026-10-23 01:43 from "pose sample" lines: the body draw's rows are
@@ -1552,6 +1562,7 @@ bool match_body(float out[16]) {
     if (g.prims < 200 || n >= 24) continue;
     Cand& c = cand[n];
     compose(g_car.body, g.m, c.C);
+    if (!unit_axes(c.C)) continue;
     bool axes = true;
     for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(c.C, r)), norm(row(P, r))) > 0.985f;
     if (!axes) continue;
@@ -1605,6 +1616,7 @@ void measure_frame() {
     if (g.prims < 200) continue;
     for (const Placed& pl : g_car.parts) {
       compose(pl, g.m, C);
+      if (!unit_axes(C)) continue;
       bool axes = true;
       for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(Q, r))) > 0.999f;
       if (!axes) continue;
@@ -1923,6 +1935,7 @@ void drawn_root(const float* world) {
   float bestErr = 0.35f;
   for (const Placed& pl : { g_car.body }) {
     compose(pl, world, C);
+    if (!unit_axes(C)) continue;
     bool axes = true;
     for (int r = 0; r < 3 && axes; ++r) axes = dot(norm(row(C, r)), norm(row(g_pred, r))) > 0.995f;
     const float err = len(row(C, 3) - row(g_pred, 3));
@@ -2386,6 +2399,7 @@ bool menu_root(const std::vector<Group>& groups, float out[16]) {
     for (const Placed& pl : g_car.parts) {
       Cand k;
       compose(pl, groups[j].m, k.C);
+      if (!unit_axes(k.C)) continue;
       k.p = row(k.C, 3);
       k.group = j;
       c.push_back(k);
@@ -2424,6 +2438,7 @@ bool menu_root(const std::vector<Group>& groups, float out[16]) {
     if (g.prims < 200 || g.prims <= bodyPrims) continue;
     float C[16];
     compose(g_car.body, g.m, C);
+    if (!unit_axes(C)) continue;
     bool close = len(row(C, 3) - row(best->C, 3)) < 0.3f;
     for (int r = 0; r < 3 && close; ++r) close = dot(norm(row(C, r)), norm(row(best->C, r))) > 0.985f;
     if (!close) continue;
