@@ -45,6 +45,9 @@ The menus
             Debug        switch single parts of the mod on and off to compare
             Save         writes your values to rbr-rtx\config\menu.ini
   Alt+X   Remix's own menu (graphics settings, texture flags, weather presets under Sky > Weather)
+  DLSS-RR on RTX 20/30 or laptops: double-click rbr-rtx\dlss-rr-model.bat to switch between the default
+          Transformer DLL (310.9.x) and the bundled CNN-compatible DLL (310.2.x, unlocks faster Presets A/B/C
+          in Alt+X -> Rendering -> DLSS Ray Reconstruction).
 
 Keys (change them in rbr-rtx\config\keys.ini if they clash with your controls)
   Only while the game window is active. Letter keys are all Alt+<letter> except L. You need none of them to drive.

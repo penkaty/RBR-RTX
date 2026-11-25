@@ -20,7 +20,7 @@
   .\build.ps1 -Pack                    # also dist\RBR-RTX-<Version>.7z and .zip
   .\build.ps1 -Remix D:\downloads\remix-1.5.2
 #>
-param([string]$Remix = '', [switch]$SkipProxy, [switch]$Diagnostics, [string]$Version = '0.4.0', [switch]$Pack)
+param([string]$Remix = '', [string]$DlssCnn = '', [switch]$SkipProxy, [switch]$Diagnostics, [string]$Version = '0.4.0', [switch]$Pack)
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $dist = Join-Path $here 'dist\RBR-RTX'
@@ -90,6 +90,23 @@ Get-ChildItem $remixDst -Recurse -Force -File | Where-Object { $n = $_.Name; $le
 Get-ChildItem $remixDst -Recurse -Force -Directory -Filter 'reshade-shaders' |
   ForEach-Object { "left out (dev-run leftover): $($_.FullName.Substring($remixDst.Length + 1))\"; Remove-Item $_.FullName -Recurse -Force }
 
+# Bundle both DLSS Ray Reconstruction DLLs under .trex\dlss-rr\ so users can switch models with dlss-rr-model.bat:
+# Transformer (310.9.x, active default) and CNN-compatible (< 310.4, e.g. 310.2.1.0 from remix-1.5.2 for RTX 20/30/mobile).
+$dlssDir = Join-Path $remixDst '.trex\dlss-rr'
+New-Item -ItemType Directory -Force $dlssDir | Out-Null
+$dlssActive = Join-Path $remixDst '.trex\nvngx_dlssd.dll'
+if (Test-Path $dlssActive) {
+  Copy-Item $dlssActive (Join-Path $dlssDir 'nvngx_dlssd_transformer.dll') -Force
+} else { Write-Warning "Runtime has no .trex\nvngx_dlssd.dll: DLSS-RR Transformer backup omitted." }
+if (-not $DlssCnn) { $DlssCnn = Join-Path $here '..\remix\runtime\remix-1.5.2\.trex\nvngx_dlssd.dll' }
+if (Test-Path $DlssCnn) {
+  Copy-Item $DlssCnn (Join-Path $dlssDir 'nvngx_dlssd_cnn.dll') -Force
+  $vT = if (Test-Path $dlssActive) { $vi = (Get-Item $dlssActive).VersionInfo; "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)" } else { 'missing' }
+  $viC = (Get-Item $DlssCnn).VersionInfo
+  $vC = "$($viC.FileMajorPart).$($viC.FileMinorPart).$($viC.FileBuildPart).$($viC.FilePrivatePart)"
+  "DLSS-RR DLLs: active/transformer v$vT, cnn v$vC -> rbr-rtx\remix\.trex\dlss-rr\"
+} else { Write-Warning "CNN-compatible nvngx_dlssd.dll not found at $DlssCnn; only Transformer DLL bundled." }
+
 if ($Diagnostics) {
   @('RBR-RTX diagnostics mode (test build).',
     'While this file exists, RBR-RTX writes its own log from the start of the game, plus crash dumps, to rbr-rtx\logs,',
@@ -97,7 +114,9 @@ if ($Diagnostics) {
     'Windows user name in file paths and your GPU/driver; nothing is sent anywhere automatically.',
     'Delete this file to stop the extra logging.') | Set-Content -Encoding UTF8 (Join-Path $dist 'rbr-rtx\diagnostics.txt')
 }
-$rev = (git -C $here describe --always --dirty 2>$null)
+$ErrorActionPreference = 'Continue'
+$rev = ((git -C $here describe --always --dirty 2>$null) | Out-String).Trim()
+$ErrorActionPreference = 'Stop'
 if ($Diagnostics) { $rev += ' (diagnostics)' }
 @("RBR-RTX $Version ($rev), built $(Get-Date -Format 'yyyy-MM-dd HH:mm')", "RTX Remix runtime: $(Split-Path (Split-Path $Remix -Parent) -Leaf)") |
   Set-Content -Encoding UTF8 (Join-Path $dist 'rbr-rtx\version.txt')

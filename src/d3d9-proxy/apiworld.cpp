@@ -765,6 +765,7 @@ bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float wor
   ii.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
   ii.pNext = &bl;
   ii.mesh = it->second.mesh;
+  ii.categoryFlags |= REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_ANTI_CULLING;
   ii.doubleSided = it->second.sway ? 1 : 0;
   for (int r = 0; r < 3; ++r)                          // D3D row vectors (p x W) -> Remix 3x4, translation in column 3
     for (int c = 0; c < 4; ++c) ii.transform.matrix[r][c] = world[c * 4 + r];
@@ -908,6 +909,7 @@ bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world
   ii.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
   ii.pNext = &bl;
   ii.mesh = mesh;
+  ii.categoryFlags |= REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_ANTI_CULLING;
   ii.doubleSided = cull == D3DCULL_NONE ? 1 : 0;
   for (int r = 0; r < 3; ++r)
     for (int c = 0; c < 4; ++c) ii.transform.matrix[r][c] = world[c * 4 + r];
