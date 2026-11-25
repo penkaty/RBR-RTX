@@ -2837,6 +2837,13 @@ bool rbrrtx_headlights_is_brake_lens(unsigned numV) {
   return std::find(g_car.brakeLensVerts.begin(), g_car.brakeLensVerts.end(), numV) != g_car.brakeLensVerts.end();
 }
 
+static const float* draw_test_root(bool& exact) {
+  if (g_rootThisFrame) { exact = true; return g_rootM; }
+  if (!g_haveRoot) { exact = false; return nullptr; }
+  exact = (g_track < 0);                               // menu car stays still; stage/replay g_lastRoot is 1 frame behind
+  return g_lastRoot;
+}
+
 int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* needPos) {
   int role = 0;
   bool mixed = false, partial = false;
@@ -2849,10 +2856,13 @@ int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* need
   const bool byBlock = !role && partial && !g_lampCounts.count(numV);
   if (needPos) *needPos = mixed || byBlock;
   if (!mixed && !byBlock) return role;
-  if (!worldPos || !g_haveRoot) return 0;
-  const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(g_lastRoot, 3);
+  if (!worldPos) return -1;
+  bool exact = false;
+  const float* root = draw_test_root(exact);
+  if (!root) return -1;
+  const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(root, 3);
   V3 l = {};                                           // root frame (rows of the root matrix are its axes)
-  const V3 ax[3] = { row(g_lastRoot, 0), row(g_lastRoot, 1), row(g_lastRoot, 2) };
+  const V3 ax[3] = { row(root, 0), row(root, 1), row(root, 2) };
   float* lc[3] = { &l.x, &l.y, &l.z };
   for (int k = 0; k < 3; ++k) { const float s = dot(ax[k], ax[k]); *lc[k] = s > 1e-8f ? dot(d, ax[k]) / s : 0.0f; }
   // The centre of a lens lies in (or within 10 cm of) its own box; a block of a bigger part within 3 cm of it.
@@ -2864,32 +2874,36 @@ int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* need
     const float dist = len(c - l);
     if (dist < best) { best = dist; role = r.role; }
   }
-  return role;
+  if (role > 0) return role;
+  return exact ? 0 : -1;
 }
 
 // A draw is a head lamp part: by its vertex count, else (a draw of fewer vertices than a head lamp part: one face block of
 // it) by its centre inside (or within 3 cm of) that part's box. needPos: the place decides, call again with worldPos.
-bool rbrrtx_headlights_head_lamp_at(unsigned numV, const float* worldPos, bool* needPos) {
+// Returns 1 = yes, 0 = definitive no, -1 = root pose not ready yet (retry on a later draw/frame).
+int rbrrtx_headlights_head_lamp_at(unsigned numV, const float* worldPos, bool* needPos) {
   if (needPos) *needPos = false;
   bool partial = false;
   for (const RearPart& h : g_headParts) {
-    if (h.n == numV) return true;
+    if (h.n == numV) return 1;
     if (numV >= 3 && numV < h.n) partial = true;
   }
-  if (!partial) return false;
-  if (!worldPos) { if (needPos) *needPos = true; return false; }
-  if (!g_haveRoot) return false;
-  const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(g_lastRoot, 3);
+  if (!partial) return 0;
+  if (!worldPos) { if (needPos) *needPos = true; return 0; }
+  bool exact = false;
+  const float* root = draw_test_root(exact);
+  if (!root) return -1;
+  const V3 d = V3{ worldPos[0], worldPos[1], worldPos[2] } - row(root, 3);
   V3 l = {};
-  const V3 ax[3] = { row(g_lastRoot, 0), row(g_lastRoot, 1), row(g_lastRoot, 2) };
+  const V3 ax[3] = { row(root, 0), row(root, 1), row(root, 2) };
   float* lc[3] = { &l.x, &l.y, &l.z };
   for (int k = 0; k < 3; ++k) { const float s = dot(ax[k], ax[k]); *lc[k] = s > 1e-8f ? dot(d, ax[k]) / s : 0.0f; }
   for (const RearPart& h : g_headParts) {
     if (numV >= h.n) continue;
     const V3 c = { std::clamp(l.x, h.box.lo.x, h.box.hi.x), std::clamp(l.y, h.box.lo.y, h.box.hi.y), std::clamp(l.z, h.box.lo.z, h.box.hi.z) };
-    if (len(c - l) < 0.03f) return true;
+    if (len(c - l) < 0.03f) return 1;
   }
-  return false;
+  return exact ? 0 : -1;
 }
 
 int rbrrtx_headlights_lamp_end(const float worldPos[3]) {

@@ -56,6 +56,7 @@ Path tracing for **Richard Burns Rally**, through [Remix Plus](https://github.co
 
 **Updating from an older version:** read [Installation](docs/installation.md) first. Old saved settings override the new defaults.
 **Uninstall:** double-click `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
+**DLSS Ray Reconstruction model:** run `rbr-rtx\dlss-rr-model.bat` to switch between the default **Transformer** model (`310.9.x`, sharper image and better motion clarity) and the bundled **CNN-compatible** model (`310.2.x`, unlocks faster Presets A/B/C in `Alt+X` for better performance on RTX 20/30 and laptop GPUs at the cost of softer image clarity and more artifacts).
 
 <div align="center">
 <img src=".github/img/release66.webp" alt="Rallysprint Hondarribia 2011, BMW M3 E30" width="90%">

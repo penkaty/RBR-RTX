@@ -185,7 +185,7 @@ bool rbrrtx_headlights_is_brake_lens(unsigned numV);            // a draw of thi
 // A rear lens of the model: 1 tail lens (e_light_lb / _rb), 2 unlit brake lens, 0 none / not known. When a tail and a
 // brake lens share the vertex count (*needPos = true) only the draw's place (world, its vertices' centre) tells them apart.
 int rbrrtx_headlights_rear_lens(unsigned numV, const float* worldPos, bool* needPos);
-bool rbrrtx_headlights_head_lamp_at(unsigned numV, const float* worldPos, bool* needPos);
+int rbrrtx_headlights_head_lamp_at(unsigned numV, const float* worldPos, bool* needPos);
 bool rbrrtx_headlights_is_lamp_count(unsigned numV);            // a lamp part of the model (e_*light* / *lamp*) has this vertex count   // + one face block of a head lamp part, by place
 const wchar_t* rbrrtx_car_model_path();                         // the player's car model (.sgc), empty off a stage
 bool rbrrtx_menu_sun_elevation(float* el);                     // menu sun height under NUMOS (comp.cpp); false off the menu

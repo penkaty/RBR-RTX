@@ -1,4 +1,4 @@
-RBR-RTX 0.4.0 - path tracing for Richard Burns Rally (RSF) through Remix Plus, as a removable add-on
+RBR-RTX 0.4.1 - path tracing for Richard Burns Rally (RSF) through Remix Plus, as a removable add-on
 Full documentation, changelog and updates: https://github.com/penkaty/RBR-RTX
 
 REQUIREMENTS (read this first)
@@ -46,8 +46,9 @@ The menus
             Save         writes your values to rbr-rtx\config\menu.ini
   Alt+X   Remix's own menu (graphics settings, texture flags, weather presets under Sky > Weather)
   DLSS-RR on RTX 20/30 or laptops: double-click rbr-rtx\dlss-rr-model.bat to switch between the default
-          Transformer DLL (310.9.x) and the bundled CNN-compatible DLL (310.2.x, unlocks faster Presets A/B/C
-          in Alt+X -> Rendering -> DLSS Ray Reconstruction).
+          Transformer DLL (310.9.x — better motion clarity and image quality) and the bundled CNN-compatible DLL
+          (310.2.x — unlocks faster Presets A/B/C in Alt+X -> Rendering -> DLSS Ray Reconstruction for higher frame
+          rates at the cost of softer image clarity and more artifacts).
 
 Keys (change them in rbr-rtx\config\keys.ini if they clash with your controls)
   Only while the game window is active. Letter keys are all Alt+<letter> except L. You need none of them to drive.

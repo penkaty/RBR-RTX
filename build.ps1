@@ -20,7 +20,7 @@
   .\build.ps1 -Pack                    # also dist\RBR-RTX-<Version>.7z and .zip
   .\build.ps1 -Remix D:\downloads\remix-1.5.2
 #>
-param([string]$Remix = '', [string]$DlssCnn = '', [switch]$SkipProxy, [switch]$Diagnostics, [string]$Version = '0.4.0', [switch]$Pack)
+param([string]$Remix = '', [string]$DlssCnn = '', [switch]$SkipProxy, [switch]$Diagnostics, [string]$Version = '0.4.1', [switch]$Pack)
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $dist = Join-Path $here 'dist\RBR-RTX'

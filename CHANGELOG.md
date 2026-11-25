@@ -3,6 +3,21 @@
 Each entry says what changed and why it was done that way. Newest first. Measurements are frame times on an
 RTX 2080 Ti at 1080p (RTX Remix 1.5.2 up to 0.3.0, Remix Plus from 0.4.0), same view, repeated runs agreeing within 0.1 ms.
 
+## 0.4.1 (2026-11-25)
+
+### Runtime & Weather (Remix Plus upstream sync)
+- **Synced Remix Plus and NUMOS sky with upstream** (`RemixProjGroup/dxvk-remix` `dev` and `Kim2091/numos-sky`): depth-aware haze upsampling, cheaper cloud pass, cirrus clouds, night star/moonlight split, light gobos, in-menu Weather Presets UI, FSR Frame Generation and DLSS-NR NaN fixes, and 32-bit bridge API mesh/light updates (`CreateMesh` / `UpdateLightDefinition`).
+
+### Performance & DLSS Ray Reconstruction Model Switcher
+- **Bundled both DLSS Ray Reconstruction models (`rbr-rtx\dlss-rr-model.bat` / `.ps1`):** ships both the default **Transformer** DLL (`310.9.1.0`) for better motion clarity and image quality, and the **CNN-compatible** DLL (`310.2.1.0`, unlocks Presets A/B/C in `Alt+X -> Rendering -> DLSS Ray Reconstruction`) for higher performance on RTX 20/30 and laptop GPUs at the cost of softer image clarity and more artifacts (`-3.1 to -3.4 ms` on the `UpscalingOrRayReconstruction` pass at 1080p on an RTX 2080 Ti).
+
+### RBRHUD, Car Lights & Fixes
+- **RBRHUD always-on vs headlight-switched gauge glow (`hudglow.cpp`):** `emissive_mask` alpha (`mask.a`, digital dashes and gear indicators) now stays lit day and night, while `mask.rgb` (dash/console backlights) switches with the headlights.
+- **Smooth moving headlights:** `remixapi_UpdateLightDefinition` now emits immediately on the command stream instead of batching across frames, fixing headlight beams stalling or disappearing when moving.
+- **Moving/replay head-lamp and rear-lens face-block detection (`headlights.cpp`, `litparts.cpp`):** use the current frame's drawn model root when available and avoid locking multi-block lamps to unlit on frame 1 or while moving (fixes Skoda Fabia RS Rally2 and similar split-block cars on replays).
+- **Reduced stale trailing brake/lamp meshes (`rtx_translator_lifetime.h`, `rtx_draw_call_tracker.cpp`):** capped unseen lifetime to 1 frame for moving objects, `IgnoreAntiCulling` instances, and single-frame D3D9 swaps so momentary brake/lamp meshes clear cleanly.
+- **Config fixes (`rtx.conf`):** removed Skoda Fabia RS Rally2's opaque/glass external atlases (`0xC84C9BE5E651C0C7` and `0x7F2019735C19AE38`) from `rtx.decalTextures` (fixes black front headlight housings day and night), and added the cracked windshield texture (`0x355169658E1DCD3F`) to `rtx.decalTextures` to stop banner Z-fighting flicker after damage.
+
 ## 0.4.0 (release candidate, 2026-11-14)
 
 The big change: RBR-RTX now runs on **Remix Plus** instead of RTX Remix 1.5.2. That brought a new sky and weather system, wet roads, a material per kind of surface, every game effect as real particles, and car lamps that sit on the car's own lamp parts. What each system is: [How it works](docs/how-it-works.md). What we found on the way: [technical notes](docs/release-0.4.0.md).

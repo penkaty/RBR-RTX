@@ -938,7 +938,7 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
     else if (needPos) {
       float w[3];
       role = draw_centre(dev, base, minIdx, numV, world, w) ? rbrrtx_headlights_rear_lens(numV, w, nullptr) : -1;
-      if (role < 0 && ++p.rearTries > 120) role = 0;   // never placed: no role
+      if (role < 0 && ++p.rearTries > 300) role = 0;   // never placed: no role
     }
     if (role >= 0) {
       p.rearRole = role;
@@ -952,11 +952,11 @@ void* rbrrtx_litparts_draw(void* device, int base, unsigned minIdx, unsigned num
   if (!p.named && (p.rearRole > 0 || p.head > 0 || rbrrtx_headlights_is_lamp_count(numV))) p.named = true;
   if (p.head < 0) {                                      // a head lamp part of the model: by vertex count, or by place
     bool needPos = false;
-    int head = rbrrtx_headlights_head_lamp_at(numV, nullptr, &needPos) ? 1 : 0;
+    int head = rbrrtx_headlights_head_lamp_at(numV, nullptr, &needPos);
     if (needPos) {
       float w[3];
-      head = draw_centre(dev, base, minIdx, numV, world, w) ? (rbrrtx_headlights_head_lamp_at(numV, w, nullptr) ? 1 : 0) : -1;
-      if (head < 0 && ++p.headTries > 120) head = 0;
+      head = draw_centre(dev, base, minIdx, numV, world, w) ? rbrrtx_headlights_head_lamp_at(numV, w, nullptr) : -1;
+      if (head < 0 && ++p.headTries > 300) head = 0;
       if (head > 0) llog(L"lit parts: a %u-triangle draw (%u vertices) is a face block of a head lamp part by its place", prims, numV);
     }
     p.head = head;
