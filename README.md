@@ -9,9 +9,9 @@
 [![AMD / Intel](https://img.shields.io/badge/AMD%20%7C%20Intel-experimental-orange)](#requirements)
 [![Issues](https://img.shields.io/github/issues/penkaty/RBR-RTX?label=open%20issues)](https://github.com/penkaty/RBR-RTX/issues)
 
-Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork by [Kim2091](https://www.patreon.com/cw/sparkles1), of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
+Path tracing for **Richard Burns Rally**, through [Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), the community fork by [Kim2091](https://www.patreon.com/cw/sparkles1), of NVIDIA's [RTX Remix](https://github.com/NVIDIAGameWorks/rtx-remix).
 
-<img src=".github/img/aston_030.webp" alt="Aston Martin, path traced, 0.3.0" width="90%">
+<img src=".github/img/release44.webp" alt="Main Menu" width="90%">
 
 **This is not a remaster.** The mod only enables RTX Remix functionality within the game.
 
@@ -34,7 +34,7 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Pl
 
 
 <div align="center">
-<img src=".github/img/bmw_030.webp" alt="BMW, path traced, 0.3.0" width="90%">
+<img src=".github/img/release33.webp" alt="Gestel I, Mitsubishi Lancer Evo II" width="90%">
 </div>
 
 ## Requirements
@@ -43,7 +43,7 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Pl
 |---|---|
 | **System** | Windows 10 or 11 |
 | **GPU** | NVIDIA RTX card (20-series or newer) with driver **610.47 or newer**. For playable framerate at 1080p the minimum is RTX 2070/3060/4050 and RX 6700XT/7600XT and Arc A750/B570 |
-| **AMD / Intel** | **Experimental**, not tested by us: a GPU with Vulkan ray tracing (Radeon RX 6000 or Intel Arc and newer). DLSS and Ray Reconstruction are NVIDIA only, so choose FSR or XeSS in the Alt+X menu. Expect a lower frame rate and some differences in the picture. |
+| **AMD / Intel** | **Experimental**, not tested: a GPU with Vulkan ray tracing (Radeon RX 6000 or Intel Arc and newer). DLSS and Ray Reconstruction are NVIDIA only, so choose FSR or XeSS in the Alt+X menu. Expect a lower frame rate and some differences in the picture. |
 | **Game** | Richard Burns Rally with a current RallySimFans install, **Graphics mode = Normal** (the Vulkan, dgVoodoo and VR modes bring their own `d3d9.dll`) |
 | **Must NOT be installed** | **ReShade** and the **RBR Lights Plugin**. With either one in the game, Remix will not run properly. |
 
@@ -58,7 +58,7 @@ Path tracing for **Richard Burns Rally + RallySimFans (RSF)**, through [Remix Pl
 **Uninstall:** double-click `rbr-rtx\uninstall.cmd`. It removes everything RBR-RTX added.
 
 <div align="center">
-<img src=".github/img/azov_030.webp" alt="Azov, path traced, 0.3.0" width="90%">
+<img src=".github/img/release66.webp" alt="Rallysprint Hondarribia 2011, BMW M3 E30" width="90%">
 </div>
 
 ## The hotkeys worth knowing
@@ -118,6 +118,10 @@ How to send them: [Troubleshooting](docs/troubleshooting.md).
 | [Changelog](CHANGELOG.md) | What changed in each version, and why |
 | [Contributing](CONTRIBUTING.md) | Reports, sun fixes, code, building from source |
 
+| Before (DirectX9) | After (RTX Remix) |
+| :---: | :---: |
+| ![Before](.github/img/SardianDX9.png) | ![After](.github/img/SardianRTX.png) |
+
 ### What runs under the hood
 
 Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock runtime did not have. Each one is explained in [How it works](docs/how-it-works.md).
@@ -136,7 +140,10 @@ Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock run
 
 **Still in progress:** unusual weather, some modern stages can look wrong, see [Known issues](docs/known-issues.md). Bob's Track Builder (BTB) stages are currently not supported.
 
-<details>
+<div align="center">
+<img src=".github/img/release22.webp" alt="Zlin SS1, Skoda Fabia R5 Evo" width="90%">
+</div>
+
 <summary><b>Credits</b></summary>
 
 - [Kim2091](https://github.com/Kim2091) (sparkles): **Remix Plus** ([RemixProjGroup/dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix)),
@@ -165,8 +172,6 @@ Since 0.4.0 the mod runs on Remix Plus, and that opened up systems the stock run
   [RemixProjGroup dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix), [Hooking-DX9-Present](https://github.com/bo3b/Hooking-DX9-Present) (bo3b)
 - [RallySimFans](https://www.rallysimfans.hu/) for keeping RBR alive. Richard Burns Rally belongs to its owners;
   this mod contains none of its files.
-
-</details>
 
 ## Support the project
 
