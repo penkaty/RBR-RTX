@@ -71,7 +71,7 @@ struct Entry {
 struct Material { remixapi_MaterialHandle h = nullptr; bool failed = false; };
 
 const RbrApiExt* g_ext = nullptr;
-PFN_remixapi_CreateMeshBatched g_createMesh = nullptr;
+PFN_remixapi_CreateMesh g_createMesh = nullptr;
 PFN_remixapi_DestroyMesh g_destroyMesh = nullptr;
 PFN_remixapi_CreateMaterial g_createMat = nullptr;
 PFN_remixapi_DestroyMaterial g_destroyMat = nullptr;
@@ -82,7 +82,8 @@ PFN_remixapi_UpdateRetainedInstances g_updateInst = nullptr;
 PFN_remixapi_DestroyRetainedInstances g_destroyInst = nullptr;
 PFN_remixapi_DrawRetainedInstances g_replay = nullptr;
 
-bool g_avail = false;                                  // runtime + bridge can do it
+bool g_avail = false;                                  // runtime + bridge can do retained static scenery
+bool g_availObjects = false;                           // runtime + bridge can do CreateMesh + D3D9 texture import (drivers, lamps)
 bool g_cfgOn = true, g_cfgSway = true, g_cfgStatic = true, g_flat = true, g_cfgObjects = true;
 int g_mode = 0;                                        // key: 0 = as configured, 1 = foliage only, 2 = off
 bool g_active = true;                                  // comp layer on, ray tracing on
@@ -376,7 +377,7 @@ void rbrrtx_apiworld_init(const RbrApiExt* ext) {
   g_mode = g_cfgOn ? 0 : 2;                            // enabled = 0: starts off, Alt+W still turns it on
   g_cfgOn = true;
   if (ext) {
-    g_createMesh = reinterpret_cast<PFN_remixapi_CreateMeshBatched>(ext->createMeshBatched);
+    g_createMesh = reinterpret_cast<PFN_remixapi_CreateMesh>(ext->createMesh ? ext->createMesh : ext->createMeshBatched);
     g_destroyMesh = reinterpret_cast<PFN_remixapi_DestroyMesh>(ext->destroyMesh);
     g_createMat = reinterpret_cast<PFN_remixapi_CreateMaterial>(ext->createMaterial);
     g_destroyMat = reinterpret_cast<PFN_remixapi_DestroyMaterial>(ext->destroyMaterial);
@@ -387,20 +388,23 @@ void rbrrtx_apiworld_init(const RbrApiExt* ext) {
     g_destroyInst = reinterpret_cast<PFN_remixapi_DestroyRetainedInstances>(ext->destroyRetained);
     g_replay = reinterpret_cast<PFN_remixapi_DrawRetainedInstances>(ext->drawRetained);
   }
-  const bool calls = g_createMesh && g_destroyMesh && g_createMat && g_import && g_createInst && g_updateInst &&
-                     g_destroyInst && g_replay;
+  const bool meshCalls = g_createMesh && g_destroyMesh && g_createMat && g_import;
+  const bool retainedCalls = meshCalls && g_createInst && g_updateInst && g_destroyInst && g_replay;
   // Capability probe (remix_c.h): SUCCESS when an import could be made now.
-  const remixapi_ErrorCode probe = calls ? g_import(nullptr, 0, 0, 0, nullptr) : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  const remixapi_ErrorCode probe = meshCalls ? g_import(nullptr, 0, 0, 0, nullptr) : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
   // Not a gate: at device creation the bridge may not have registered the device yet; a texture the import refuses
   // later keeps its draws on D3D9 (logged).
-  g_avail = calls;
+  g_availObjects = meshCalls;
+  g_avail = retainedCalls;
   wlog(L"api world (materials.ini [api_world]): %s; static scenery %s, foliage %s, %s normals, budget %u meshes / %u "
        L"vertices per frame, hide after %u frames in view not drawn%s",
-       g_mode == 2 && g_avail ? L"off at start (Alt+W turns it on)" : g_avail ? L"ON (retained instances, D3D9 texture import)"
-       : L"unavailable (runtime/bridge without retained instances or D3D9 import)",
+       g_mode == 2 && g_avail ? L"off at start (Alt+W turns it on)"
+       : g_avail ? L"ON (retained instances, D3D9 texture import)"
+       : g_availObjects ? L"objects/lamps ON (CreateMesh, D3D9 texture import; retained static world unavailable)"
+       : L"unavailable (runtime/bridge without CreateMesh or D3D9 import)",
        g_cfgStatic ? L"yes" : L"no", g_cfgSway ? L"yes" : L"no", g_flat ? L"flat" : L"smooth", g_maxBuilds, g_maxVerts,
-       g_hideFrames, calls && probe != REMIXAPI_ERROR_CODE_SUCCESS ? L" (import probe not yet ready)" : L"");
-  if (calls && probe != REMIXAPI_ERROR_CODE_SUCCESS) wlog(L"api world: D3D9 import probe at start: error %d", static_cast<int>(probe));
+       g_hideFrames, meshCalls && probe != REMIXAPI_ERROR_CODE_SUCCESS ? L" (import probe not yet ready)" : L"");
+  if (meshCalls && probe != REMIXAPI_ERROR_CODE_SUCCESS) wlog(L"api world: D3D9 import probe at start: error %d", static_cast<int>(probe));
 }
 
 bool rbrrtx_apiworld_wants(bool sway) { return mode_takes(sway); }
@@ -656,7 +660,7 @@ void lamps_reset() {
 
 bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float world[16]) {
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
-  if (!g_cfgObjects || !g_avail || !g_active || !g_ext || !g_ext->drawInstance || !world) return false;
+  if (!g_cfgObjects || !g_availObjects || !g_active || !g_ext || !g_ext->drawInstance || !world) return false;
   DWORD blend = FALSE, at = FALSE, func = D3DCMP_ALWAYS, ref = 0, cull = D3DCULL_CCW, wu = D3DTADDRESS_WRAP, wv = D3DTADDRESS_WRAP;
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
   if (blend) return false;
@@ -774,7 +778,7 @@ bool rbrrtx_apiworld_object(void* device, const RbrWorldDraw& d, const float wor
 // (row vectors, D3D). False = not taken (the caller draws it as D3D9).
 bool rbrrtx_apiworld_lamp(void* device, const RbrWorldDraw& d, const float world[16], const RbrLampLook& look) {
   IDirect3DDevice9* dev = static_cast<IDirect3DDevice9*>(device);
-  if (!g_avail || !g_active || !g_ext || !g_ext->drawInstance || !world || !g_createMat) return false;
+  if (!g_availObjects || !g_active || !g_ext || !g_ext->drawInstance || !world || !g_createMat) return false;
   DWORD blend = FALSE, at = FALSE, func = D3DCMP_ALWAYS, ref = 0, cull = D3DCULL_CCW, wu = D3DTADDRESS_WRAP, wv = D3DTADDRESS_WRAP;
   DWORD src = D3DBLEND_ONE, dst = D3DBLEND_ZERO, zw = TRUE;
   dev->lpVtbl->GetRenderState(dev, D3DRS_ALPHABLENDENABLE, &blend);
@@ -928,12 +932,13 @@ void rbrrtx_apiworld_replay() {
 
 // Present. viewProj = this frame's world view * projection (D3D row-vector order); null without a world camera.
 void rbrrtx_apiworld_frame_end(const float* viewProj, bool active) {
-  if (!g_avail) return;
+  if (!g_avail && !g_availObjects) return;
   if (active != g_active) {                            // comp layer off / raster: the game's draws come back
     g_active = active;
     if (!active) for (auto& kv : g_entries) queue_visibility(kv.second, false);
-    wlog(L"api world: %s", active ? L"active again" : L"paused (comp layer off or raster): every world draw is D3D9");
+    if (g_avail) wlog(L"api world: %s", active ? L"active again" : L"paused (comp layer off or raster): every world draw is D3D9");
   }
+  if (!g_avail) return;
   if (g_mode != 0) {                                   // key: hide what the current mode no longer takes
     for (auto& kv : g_entries)
       if (kv.second.visible && !mode_takes(kv.second.sway)) queue_visibility(kv.second, false);

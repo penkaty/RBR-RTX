@@ -23,10 +23,8 @@
 // Lights: Remix 1.5.2 keys API lights by hash; re-creating one overwrites it (its RTXDI index resets either way,
 // rtx_lights.cpp copyFrom), and through the bridge every CreateLight takes a new handle, so a moved lamp is
 // destroyed and created again (as the sun) and drawn every frame (DrawLightInstance is per frame).
-// Remix Plus (2026-10-29): re-creating a live hash keeps the light's buffer slot and identity, so there a moved lamp is
-// only created again (one light for its life, no destroy). Cost: the bridge server keeps one ~40-byte handle entry per
-// update until DestroyLight (bridge util_remixapi.h Handle), about 50 MB an hour with four lamps moving every frame,
-// until the bridge forwards UpdateLightDefinition (a stub in Remix Plus 2.0.0's bridge client).
+// Remix Plus (upstream/dev): remixplus_api.cpp calls UpdateLightDefinition in-place on live light handles (falling back to
+// CreateLight when needed), keeping buffer slots/history intact without leaking bridge handles.
 //
 // Rear (user 2026-10-23): two red spots at Point_light_brake_lb / _rb (on all 109 models; Point_light_lb is broken on
 // some, Fabia R5 evo x = 0), aimed backwards. Tail lights while the headlights are on; brake lights, brighter, whenever

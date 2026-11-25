@@ -140,7 +140,7 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size);
 unsigned rbrrtx_remixplus_converted();                         // pNext chains rebuilt for Remix Plus so far
 // Remix Plus calls beyond NVIDIA's table (Kim's header types; null = the runtime/bridge lacks it). For the API world.
 struct RbrApiExt {
-  void *createRetained, *updateRetained, *destroyRetained, *drawRetained, *importD3D9Texture, *createMeshBatched,
+  void *createRetained, *updateRetained, *destroyRetained, *drawRetained, *importD3D9Texture, *createMesh, *createMeshBatched,
        *setupCamera, *createMaterial, *drawInstance, *destroyMesh, *destroyMaterial, *destroyTexture, *setGameValue, *getGameValue;
   unsigned long long version;                                  // the API version the library accepted
 };

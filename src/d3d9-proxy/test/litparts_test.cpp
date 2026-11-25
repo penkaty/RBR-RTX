@@ -42,6 +42,7 @@ bool rbrrtx_headlights_is_lamp_glass(unsigned) { return false; }
 bool rbrrtx_headlights_is_aux_glass(unsigned) { return false; }
 bool rbrrtx_headlights_has_aux_glass() { return false; }
 bool rbrrtx_dds_neutral_mask(const wchar_t*, const wchar_t*) { return false; }
+bool rbrrtx_dds_bright_mask(const wchar_t*, const wchar_t*) { return false; }
 bool rbrrtx_car_body_draw(float*) { return false; }
 bool rbrrtx_player_car_gear(int*) { return false; }
 

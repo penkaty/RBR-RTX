@@ -34,6 +34,7 @@ void rbrrtx_report_event(const wchar_t*) {}
 bool rbrrtx_stage_info(RbrStageInfo*) { return false; }
 bool rbrrtx_menu_sun_elevation(float*) { return false; }
 float rbrrtx_numos_lux_per_unit() { return 0.0f; }
+const wchar_t* rbrrtx_sky_name(int) { return L""; }
 float g_testRaw[20] = {};                              // RBR's car block (+0x100); position at [16..18], Y/Z swapped
 bool g_testPhysOn = false;
 bool rbrrtx_player_car_brake(float*) { return false; }

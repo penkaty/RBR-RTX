@@ -56,20 +56,17 @@
 #define REMIXAPI_VERSION_GET_MINOR(version) (((uint64_t)(version) >> 16) & (uint64_t)0xFFFFFFFF)
 #define REMIXAPI_VERSION_GET_PATCH(version) (((uint64_t)(version)      ) & (uint64_t)0xFFFF)
 
-// Remix Plus carries its own ABI line, distinct from stock NVIDIA dxvk-remix
-// (which is 0.6.x). The reserved MINOR (1000) marks Remix Plus and, because the
-// compat check treats every minor as breaking while MAJOR==0, makes the runtime
-// reject binaries built against stock Remix 0.6.x or older Remix Plus 0.6.x —
-// the struct layout and category-bit ABI differ. Bump MINOR again on any
-// further breaking ABI change.
-//
-// PATCH 1 tracks upstream 0.6.5: remixapi_MaterialInfoOpaqueEXT grew by the four
-// DLSS control-mask fields. The runtime (and the bridge client) only read those
-// fields from callers reporting >= 0.1000.1, so binaries built against 0.1000.0
-// keep working and receive upstream's defaults.
-#define REMIXAPI_VERSION_MAJOR 0
-#define REMIXAPI_VERSION_MINOR 1000
-#define REMIXAPI_VERSION_PATCH 1
+// Remix Plus has its own ABI line, MAJOR 1, distinct from NVIDIA dxvk-remix
+// (0.x) and from other forks. remixapi_InitializeLibrary accepts a caller whose
+// MAJOR equals the runtime's and whose MINOR is at most the runtime's. It also
+// accepts 0.1000.x callers (rebased-9-19 and rc1), whose interface table and
+// structs are the same as 1.0's, and rejects every other 0.x caller.
+// Bump MINOR for additions (new structs, exports or appended table entries) and
+// MAJOR for any change to an existing layout. PATCH does not affect the check.
+// See docs/RemixApi-Migration.md, "Version and compatibility".
+#define REMIXAPI_VERSION_MAJOR 1
+#define REMIXAPI_VERSION_MINOR 0
+#define REMIXAPI_VERSION_PATCH 0
 
 
 // External
@@ -154,10 +151,15 @@ extern "C" {
     // sType cannot collide with them.
     REMIXAPI_STRUCT_TYPE_CAMERA_INFO_FRAME_EVENTS_EXT         = 0x4E560001,
     REMIXAPI_STRUCT_TYPE_ASSET_KEY_EXT                        = 0x4E560002,
-    // The terrain-layers struct type lives in a separate range, so upstream additions can never collide with it.
-    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TERRAIN_LAYERS_EXT     = 0x7F000001,
-    // 0x4E560003 is reserved for REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT.
+    REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT                   = 0x4E560003,
     REMIXAPI_STRUCT_TYPE_COLOR_GRADE_EXT                      = 0x4E560004,
+    REMIXAPI_STRUCT_TYPE_CONFIG_LAYER_INFO_EXT                = 0x4E560005,
+    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TEXTURE_TRANSFORM_EXT  = 0x4E560006,
+    REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_DECAL_ORDER_EXT        = 0x4E560007,
+    REMIXAPI_STRUCT_TYPE_MESH_INFO_SECONDARY_TEXCOORD_EXT     = 0x4E560008,
+    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_DETAIL_LAYERS_EXT = 0x4E560009,
+    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_CLEAR_COAT_EXT  = 0x4E56000A,
+    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_DETAIL_LAYER_WEIGHTS_EXT = 0x4E56000B,
     // NOTE: if adding a new struct, register it in 'rtx_remix_specialization.inl'
     //       and only extend this enum by appending, never adjust the order of these 
     //       as that will break backwards compatibility.
@@ -191,6 +193,11 @@ extern "C" {
     REMIXAPI_ERROR_CODE_HRESULT_VK_CREATE_INSTANCE_FAIL       = 0x88960004,
     REMIXAPI_ERROR_CODE_HRESULT_VK_CREATE_DEVICE_FAIL         = 0x88960005,
     REMIXAPI_ERROR_CODE_HRESULT_GRAPHICS_QUEUE_FAMILY_MISSING = 0x88960006,
+    // Remix Plus error codes live from 0x4E560000 on, like the Remix Plus struct types.
+    // The device or the current output does not support the requested feature.
+    REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE                   = 0x4E560001,
+    // The output buffer is too small. The call reports the size it needs.
+    REMIXAPI_ERROR_CODE_BUFFER_TOO_SMALL                      = 0x4E560002,
   } remixapi_ErrorCode;
 
   typedef uint32_t remixapi_Bool;
@@ -358,6 +365,104 @@ extern "C" {
   typedef uint32_t(REMIXAPI_PTR* PFN_remixapi_GetMaterialAlbedoTintVersion)(void);
   REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetMaterialAlbedoTintVersion(void);
 
+  // Valid only if remixapi_MaterialInfo contains remixapi_MaterialInfoOpaqueEXT in its pNext chain. Two layers over
+  // the base material, both read with the mesh's second texture coordinate set (remixapi_MeshInfoSecondaryTexcoordEXT).
+  // The base material keeps the first set. A mesh without a second set reads the layers with the first one.
+  // The layers add surface detail that is mapped apart from the base material, such as wear, grime or a second finish.
+  //   Detail normal: a tangent-space normal map blended over the base normal (reoriented normal mapping). It is
+  //     encoded like the base normal map: Remix's octahedral encoding, or tangent XY for a texture imported with
+  //     REMIXAPI_TEXTURE_ENCODING_NORMAL_TANGENT_XY. detailNormalStrength 0 or no texture disables it.
+  //   Masked layer: mask = (texture ? the layerMaskChannel channel of the texture : 1) * layerMaskStrength. The
+  //     albedo, roughness and metallic blend towards layerAlbedo (gamma), layerRoughness and layerMetallic by the
+  //     mask, for example worn edges that expose a different material. layerMaskStrength 0 disables it.
+  // Each texture's coordinates are the second set times its *TexcoordScale. The material's sampler is used.
+  // Check remixapi_GetSecondaryTexcoordVersion() before chaining it: a runtime that predates it ignores the struct.
+  // See documentation/SecondaryTexcoordLayers.md.
+  typedef struct remixapi_MaterialInfoOpaqueDetailLayersEXT {
+    remixapi_StructType sType;                     // REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_DETAIL_LAYERS_EXT
+    void*               pNext;
+    remixapi_Path       detailNormalTexture;
+    float               detailNormalStrength;      // 0..1
+    remixapi_Float2D    detailNormalTexcoordScale; // (0, 0) is read as (1, 1).
+    remixapi_Path       layerMaskTexture;
+    uint32_t            layerMaskChannel;          // 0: red, 1: green, 2: blue, 3: alpha.
+    float               layerMaskStrength;         // 0..1
+    remixapi_Float3D    layerAlbedo;               // Gamma-encoded, 0..1.
+    float               layerRoughness;            // Perceptual, 0..1.
+    float               layerMetallic;             // 0..1
+    remixapi_Float2D    layerTexcoordScale;        // (0, 0) is read as (1, 1).
+  } remixapi_MaterialInfoOpaqueDetailLayersEXT;
+
+  typedef enum remixapi_DetailLayerWeightFlagBits {
+    // detailNormalStrength is multiplied by the vertex colour's detailNormalWeightChannel.
+    REMIXAPI_DETAIL_LAYER_WEIGHT_FLAG_DETAIL_NORMAL        = 1 << 0,
+    // The layer mask is thresholded by the vertex colour's layerMaskWeightChannel.
+    REMIXAPI_DETAIL_LAYER_WEIGHT_FLAG_LAYER_MASK_THRESHOLD = 1 << 1,
+  } remixapi_DetailLayerWeightFlagBits;
+
+  typedef uint32_t remixapi_DetailLayerWeightFlags;
+
+  // Valid only if remixapi_MaterialInfo contains remixapi_MaterialInfoOpaqueDetailLayersEXT in its pNext chain.
+  // Weights the detail layers per vertex by the mesh's interpolated vertex colour (remixapi_HardcodedVertex::color,
+  // each channel read as a linear 0..1 value, before the baked lighting normalization). w is the chosen channel.
+  // The weights apply before the layers' strengths.
+  //   REMIXAPI_DETAIL_LAYER_WEIGHT_FLAG_DETAIL_NORMAL: the detail normal's strength is w * detailNormalStrength.
+  //   REMIXAPI_DETAIL_LAYER_WEIGHT_FLAG_LAYER_MASK_THRESHOLD: the mask is
+  //     smoothstep(t - e, t + e, m) * layerMaskStrength, with the per-vertex threshold t = (1 - w) * (1 + 2e) - e and
+  //     e = layerMaskEdgeWidth / 2, where m is the mask texture's channel, or 1 without a texture.
+  //     The layer shows where m is above t, so w 0 shows none of it and w 1 shows all of it.
+  //     layerMaskEdgeWidth 0 makes the edge a hard step.
+  //     Without the flag, the mask is m * layerMaskStrength.
+  // The struct does not change how the vertex colour affects the albedo.
+  // Check remixapi_GetSecondaryTexcoordVersion() >= 2 before chaining it: an older runtime ignores the struct and
+  // renders the layers unweighted. See documentation/SecondaryTexcoordLayers.md.
+  typedef struct remixapi_MaterialInfoOpaqueDetailLayerWeightsEXT {
+    remixapi_StructType             sType;                     // REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_DETAIL_LAYER_WEIGHTS_EXT
+    void*                           pNext;
+    remixapi_DetailLayerWeightFlags flags;                     // remixapi_DetailLayerWeightFlagBits
+    uint32_t                        detailNormalWeightChannel; // 0: red, 1: green, 2: blue, 3: alpha.
+    uint32_t                        layerMaskWeightChannel;    // 0: red, 1: green, 2: blue, 3: alpha.
+    float                           layerMaskEdgeWidth;        // 0..1. The width of the fade around t. 0 is a hard step.
+  } remixapi_MaterialInfoOpaqueDetailLayerWeightsEXT;
+
+  // Valid only if remixapi_MaterialInfo contains remixapi_MaterialInfoOpaqueEXT in its pNext chain. Layers for coated
+  // and lacquered surfaces, such as varnished wood, glazed ceramics, coated plastics or automotive finishes:
+  //   Clear coat: a second, dielectric GGX specular lobe over the base (index of refraction 1.5, so 4% reflectance at
+  //     normal incidence). The coat's Fresnel-weighted share of the light goes to the coat and the rest reaches the
+  //     base. It reads the base's shading normal. clearCoatWeight 0 disables it.
+  //   Pearlescent: the albedo turns from the base colour at normal incidence towards pearlescentColor (gamma) at
+  //     grazing angles, by pearlescentWeight * (1 - n.v)^pearlescentExponent. pearlescentWeight 0 disables it.
+  // Check remixapi_GetClearCoatMaterialVersion() before chaining it: a runtime that predates it ignores the struct and
+  // renders the base material alone. See documentation/ClearCoatMaterial.md.
+  typedef struct remixapi_MaterialInfoOpaqueClearCoatEXT {
+    remixapi_StructType sType;                // REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_CLEAR_COAT_EXT
+    void*               pNext;
+    float               clearCoatWeight;      // 0..1
+    float               clearCoatRoughness;   // Perceptual, 0..1.
+    remixapi_Float3D    pearlescentColor;     // Gamma-encoded, 0..1.
+    float               pearlescentWeight;    // 0..1
+    float               pearlescentExponent;  // 0.1..32. 0 is read as 3.
+  } remixapi_MaterialInfoOpaqueClearCoatEXT;
+  // Returns the supported revision of remixapi_MaterialInfoOpaqueClearCoatEXT (currently 1). Optional named export;
+  // absent on older runtimes.
+  typedef uint32_t(REMIXAPI_PTR* PFN_remixapi_GetClearCoatMaterialVersion)(void);
+  REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetClearCoatMaterialVersion(void);
+
+  // Chained onto remixapi_MaterialInfo, next to remixapi_MaterialInfoOpaqueEXT or
+  // remixapi_MaterialInfoTranslucentEXT, to scale, rotate, offset and scroll all of the material's textures.
+  // A zero-initialized struct with textureScale_hasvalue false is the identity. A runtime that predates
+  // the struct ignores it and renders the textures untransformed. See documentation/TextureTransforms.md.
+  typedef struct remixapi_MaterialInfoTextureTransformEXT {
+    remixapi_StructType sType;              // REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TEXTURE_TRANSFORM_EXT
+    void*               pNext;
+    float               textureScrollRate;  // UV units per second. 0 disables scrolling.
+    float               textureScrollAngle; // Degrees: 0 is positive U, 90 is positive V.
+    remixapi_Bool       textureScale_hasvalue;
+    remixapi_Float2D    textureScale_value; // Per-axis scale applied before rotation. Default: (1, 1).
+    remixapi_Float2D    textureOffset;      // UV units, added after scale and rotation.
+    float               textureRotation;    // Degrees around the UV origin, after scale and before offset.
+  } remixapi_MaterialInfoTextureTransformEXT;
+
   typedef struct remixapi_MaterialInfoTranslucentEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -369,38 +474,6 @@ extern "C" {
     float               thinWallThickness_value;
     remixapi_Bool       useDiffuseLayer;
   } remixapi_MaterialInfoTranslucentEXT;
-
-#define REMIXAPI_TERRAIN_MAX_LAYERS 8
-
-  // Multi-layer terrain blended per hit in the opaque material shader. Valid only if remixapi_MaterialInfo
-  // contains remixapi_MaterialInfoOpaqueEXT in its pNext chain (MaterialInfo -> OpaqueEXT -> TerrainLayersEXT).
-  // Per hit, with uv = the mesh texcoord and weightUV = uv * weightUvScale + weightUvOffset:
-  //   w0123 = weightTextures[0](weightUV), w4567 = weightTextures[1](weightUV)   (bilinear, clamp to edge)
-  //   albedo = sum_i w_i * albedoTextures[i](uv)                                (not renormalised)
-  //   albedo *= tintTexture(weightUV).rgb                                        (if present)
-  //   albedo = max(albedo, 0)            (layers and tint may be float textures, see TextureInfoHostImportEXT.vkFormat)
-  //   normal = normalize(sum_i w_i * decode(normalTextures[i](uv)))             (missing normal layer = (0,0,1))
-  // Roughness/metallic come from the OpaqueEXT constants. Set MaterialInfo.albedoTexture to layer 0 as a fallback.
-  // Parallax (POM), when any heightTextures[i] is set and OpaqueEXT.displaceIn/displaceOut > 0: the march runs on the
-  //   blended height field depth(uv) = sum_i w_i * (1 - heightTextures[i](uv).r) / sum_i w_i, with the weights read once
-  //   at the undisplaced weightUV (a layer without a height map counts as flat, i.e. white = the surface itself).
-  //   Depth comes from OpaqueEXT.displaceIn/displaceOut; always the raymarch POM (QuadtreePOM needs one texture).
-  // Textures: "0x%016llX" of a remixapi_TextureInfo.hash passed to CreateTexture, or file paths; NULL/"" = none.
-  typedef struct remixapi_MaterialInfoTerrainLayersEXT {
-    remixapi_StructType sType;
-    void*               pNext;
-    uint32_t            layerCount;                                   // 1..REMIXAPI_TERRAIN_MAX_LAYERS
-    remixapi_Path       albedoTextures[REMIXAPI_TERRAIN_MAX_LAYERS];
-    remixapi_Path       normalTextures[REMIXAPI_TERRAIN_MAX_LAYERS];
-    remixapi_Path       weightTextures[2];                            // RGBA UNORM: [0] = layers 0-3, [1] = layers 4-7
-    remixapi_Path       tintTexture;                                  // optional RGB multiplier (UNORM)
-    remixapi_Float2D    weightUvScale;
-    remixapi_Float2D    weightUvOffset;
-    remixapi_Bool       normalsRgbTangentSpace;                       // 1: RGB 0.5-biased DirectX tangent space, 0: octahedral
-    // Optional per-layer height maps (terrain POM), R channel, white = top. NULL/"" = flat layer.
-    // Client, bridge and runtime must be built from the same header (the bridge serialises every field).
-    remixapi_Path       heightTextures[REMIXAPI_TERRAIN_MAX_LAYERS];
-  } remixapi_MaterialInfoTerrainLayersEXT;
 
   typedef struct remixapi_MaterialInfoPortalEXT {
     remixapi_StructType sType;
@@ -484,8 +557,8 @@ extern "C" {
   // of ignoring the repeated registration.
   //
   // Intended for CPU-deformed geometry whose topology is fixed but whose vertex
-  // positions are rewritten by the host every few frames (e.g. Fallout 4 FaceGen
-  // morphs for lip sync, blinks, and expressions). Re-using the hash is what
+  // positions are rewritten by the host every few frames (e.g. facial morphs
+  // for lip sync, blinks, and expressions). Re-using the hash is what
   // makes this work: the mesh handle IS the hash, and the handle feeds both
   // ExternalDrawState::computeExternalDrawIdentityHash and the spatial-map hash,
   // so minting a fresh hash per update would hand the scene manager a brand-new
@@ -506,6 +579,32 @@ extern "C" {
     remixapi_StructType sType;
     void*               pNext;
   } remixapi_MeshInfoRefreshGeometryEXT;
+
+  // The second texture coordinate set of one surface: one coordinate per vertex, in the surface's vertex order.
+  // A surface with texcoords_values NULL, or with texcoords_count other than its vertices_count, has no second set.
+  typedef struct remixapi_MeshInfoSurfaceSecondaryTexcoord {
+    const remixapi_Float2D* texcoords_values;
+    uint64_t                texcoords_count;
+  } remixapi_MeshInfoSurfaceSecondaryTexcoord;
+
+  // Link into remixapi_MeshInfo::pNext to give the mesh a second texture coordinate set, which the layers of
+  // remixapi_MaterialInfoOpaqueDetailLayersEXT read. surfaces_values[i] belongs to remixapi_MeshInfo::surfaces_values[i].
+  // Surfaces past surfaces_count have no second set. The coordinates are not transformed by the material's texture
+  // transform. The set is interpolated with the hit like the first one, and a mesh without it costs nothing extra.
+  // Check remixapi_GetSecondaryTexcoordVersion() before relying on it: a runtime that predates it ignores the struct.
+  // See documentation/SecondaryTexcoordLayers.md.
+  typedef struct remixapi_MeshInfoSecondaryTexcoordEXT {
+    remixapi_StructType                              sType;   // REMIXAPI_STRUCT_TYPE_MESH_INFO_SECONDARY_TEXCOORD_EXT
+    void*                                            pNext;
+    const remixapi_MeshInfoSurfaceSecondaryTexcoord* surfaces_values;
+    uint32_t                                         surfaces_count;
+  } remixapi_MeshInfoSecondaryTexcoordEXT;
+  // Returns the supported revision of remixapi_MeshInfoSecondaryTexcoordEXT and the detail layers (currently 2).
+  // Revision 1 has remixapi_MeshInfoSecondaryTexcoordEXT and remixapi_MaterialInfoOpaqueDetailLayersEXT.
+  // Revision 2 adds remixapi_MaterialInfoOpaqueDetailLayerWeightsEXT.
+  // Optional named export; absent on older runtimes.
+  typedef uint32_t(REMIXAPI_PTR* PFN_remixapi_GetSecondaryTexcoordVersion)(void);
+  REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetSecondaryTexcoordVersion(void);
 
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_CreateMesh)(
     const remixapi_MeshInfo*  info,
@@ -558,17 +657,10 @@ extern "C" {
   //   ORIGIN_SHIFT: every render-space position moved by originShift this frame (new = old + originShift), because
   //     the host moved its render origin. The camera history is shifted with it, so the move is neither camera
   //     motion nor a camera cut. (Retained instances follow the origin given to DrawRetainedInstances.)
-  //   FALLBACK: the camera is only the host's statement of the frame's view, for a frame whose draws give the
-  //     runtime no Main camera of their own (a D3D9 host whose world reached the scene through the API, so the
-  //     frame has no world draw to infer a camera from). WORLD type only. It is held, and at the frame's ray
-  //     tracing applied as the Main camera exactly as a D3D9 draw's camera would be -- only if no draw set one
-  //     this frame; it never replaces or competes with a draw's camera. It carries no origin and the other flags
-  //     are ignored with it: the D3D9 camera's origin handling applies. A held camera expires after one frame.
   // A runtime that predates the struct ignores it.
   #define REMIXAPI_CAMERA_FRAME_EVENT_CAMERA_CUT      0x1u
   #define REMIXAPI_CAMERA_FRAME_EVENT_HISTORY_INVALID 0x2u
   #define REMIXAPI_CAMERA_FRAME_EVENT_ORIGIN_SHIFT    0x8u
-  #define REMIXAPI_CAMERA_FRAME_EVENT_FALLBACK        0x10u
   typedef struct remixapi_CameraInfoFrameEventsEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -580,8 +672,7 @@ extern "C" {
   // key mods, captures and caches use for this asset instead of the default (the mesh hash / the material's runtime
   // content hash), and aliases, the keys older host versions produced, so mods made against them keep matching.
   // Replacements are looked up by key, then by each alias in order. 0 is never a key. assetName is optional (logs,
-  // captures). Honoured while the runtime option rtx.scene.assetKeys is on; a runtime that predates the struct
-  // ignores it.
+  // captures). A runtime that predates the struct ignores it.
   typedef struct remixapi_AssetKeyEXT {
     remixapi_StructType sType;
     void*               pNext;
@@ -1158,6 +1249,26 @@ extern "C" {
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_PrepareD3D11TextureEx(
     void* texture2D, uint32_t dxgiFormat, uint32_t maxDimension, remixapi_D3D11TextureToken* out_token);
 
+  // D3D9 texture import: register a texture created on the registered D3D9
+  // device as a Remix API texture by sampling the game's own image in place.
+  // Only non-dynamic, non-RT/DS, single-layer 2D textures (MANAGED or DEFAULT)
+  // are accepted. A call with texture == NULL and out_handle == NULL is a
+  // capability probe. Optional named export ("remixapi_ImportD3D9Texture").
+  #define REMIXAPI_D3D9_TEXTURE_IMPORT_SRGB         0x1u
+  #define REMIXAPI_D3D9_TEXTURE_IMPORT_OPAQUE_ALPHA 0x2u
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_ImportD3D9Texture)(
+    IDirect3DBaseTexture9*  texture,
+    uint64_t                hash,
+    uint32_t                flags,
+    uint32_t                encoding,
+    remixapi_TextureHandle* out_handle);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_ImportD3D9Texture(
+    IDirect3DBaseTexture9*  texture,
+    uint64_t                hash,
+    uint32_t                flags,
+    uint32_t                encoding,
+    remixapi_TextureHandle* out_handle);
+
   // Host settings: a host (game plugin) exposes its own options as live
   // controls in the developer menu's "Host Settings" tab. Optional named
   // exports; the versioned Interface table is unchanged. Probe with
@@ -1226,23 +1337,9 @@ extern "C" {
     remixapi_HostSettingHandle handle, double value);
   REMIXAPI void REMIXAPI_CALL remixapi_ClearHostSettings(void);
 
-  // Bridge client only (32-bit hosts, where every call above is a round trip
-  // to NvRemixBridge.exe); the runtime does not export it. *out_generation
-  // receives the current generation and, only when it differs from
-  // last_generation, out_values[i] receives the value of handles[i] (NaN for
-  // a handle the runtime does not know). With an unchanged generation
-  // out_values is left untouched. An unchanged generation is answered from
-  // the copy the server publishes at each Present, without a round trip; a
-  // changed one (or last_generation ~0) costs one synchronous round trip.
-  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_PollHostSettings)(
-    uint64_t last_generation, uint64_t* out_generation, double* out_values,
-    const remixapi_HostSettingHandle* handles, uint32_t count);
-  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_PollHostSettings(
-    uint64_t last_generation, uint64_t* out_generation, double* out_values,
-    const remixapi_HostSettingHandle* handles, uint32_t count);
-  // Colour grading: the grade the tone mapper applies to the linear scene colour before the tone curve.
+  // Color grading: the grade the tone mapper applies to the linear scene color before the tone curve.
   // Optional named exports; the versioned Interface table is unchanged. Probe with
-  // GetProcAddress(dll, "remixapi_SetColorGradePreset") and so on. See docs/RemixApi.md, "Colour grading".
+  // GetProcAddress(dll, "remixapi_SetColorGradePreset") and so on. See docs/RemixApi.md, "Color grading".
   //
   // The grade runs in this order, and the default values below are the neutral grade, which changes nothing:
   //   color = matrix * color                                      matrix: row-major 3x3, identity
@@ -1309,6 +1406,165 @@ extern "C" {
     const char* name, const remixapi_ColorGradeEXT* grade);
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SaveColorGradePreset(
     const char* name, const remixapi_ColorGradeEXT* grade);
+
+  // Changes a live material's parameters and textures and keeps its handle. An optional named export; the versioned
+  // Interface table is unchanged. See docs/RemixApi.md, "UpdateMaterial".
+  // info->hash is 0 or the handle. Applied in command-stream order, so it takes effect in the frame it is issued in.
+  // Any thread.
+  // A change of plain parameters or of textures other than the albedo rebuilds nothing.
+  // A change of the alpha test, blend state, opacity, albedo texture, sampler, sprite sheet, displacement, subsurface
+  // profile or asset key rebuilds the material's users, and still returns REMIXAPI_ERROR_CODE_SUCCESS.
+  // Returns REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS for a bad struct, a handle that is not live, or a change of material
+  // type (opaque, translucent, portal), and leaves the material as it was.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_UpdateMaterial)(
+    remixapi_MaterialHandle handle, const remixapi_MaterialInfo* info);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateMaterial(
+    remixapi_MaterialHandle handle, const remixapi_MaterialInfo* info);
+
+  // Partial texture updates. An optional named export; the versioned Interface table is unchanged.
+  // See docs/RemixApi.md, "UpdateTexture".
+  typedef struct remixapi_TextureUpdateRect {
+    // Position and size at mip 0.
+    uint32_t    x;
+    uint32_t    y;
+    uint32_t    width;
+    uint32_t    height;
+    // Bytes between the starts of rows. 0 means tightly packed.
+    uint32_t    rowPitch;
+    // In the texture's own format.
+    const void* pixels;
+  } remixapi_TextureUpdateRect;
+
+  typedef struct remixapi_TextureUpdateInfo {
+    remixapi_TextureHandle            texture;
+    const remixapi_TextureUpdateRect* rects_values;
+    uint32_t                          rects_count;
+  } remixapi_TextureUpdateInfo;
+
+  // Writes rectangles of texture mip 0 and regenerates the lower mips of the changed area. The pixels are copied before
+  // the call returns, and the writes apply in command-stream order. Materials, meshes and BLASes are untouched. Any thread.
+  // Returns REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS for a null array with a count, a null pixel pointer, a rectangle
+  // outside the texture, a row pitch shorter than a row, or a handle CreateTexture did not make or that is not live.
+  // Returns REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE for a compressed format, an imported D3D11 texture, or mips in a
+  // format the device cannot filter.
+  // Any error applies nothing from the batch.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_UpdateTexture)(
+    const remixapi_TextureUpdateInfo* infos, uint32_t count);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateTexture(
+    const remixapi_TextureUpdateInfo* infos, uint32_t count);
+
+  // Config layers: a sparse .conf loaded as an option layer that the host fades. Optional named exports; the versioned
+  // Interface table is unchanged. See docs/RemixApi.md, "Config layers (named exports)".
+  // These are for authored looks such as weather or interiors, not for values computed per frame.
+  // One option of an in-memory layer, written as in a .conf file.
+  typedef struct remixapi_ConfigLayerValue {
+    const char* key;
+    const char* value;
+  } remixapi_ConfigLayerValue;
+
+  // A layer comes from either confPath, or values with layerName. Set the other source to null and 0.
+  typedef struct remixapi_ConfigLayerInfoEXT {
+    remixapi_StructType sType;
+    void*               pNext;
+    remixapi_Path       confPath;
+    // Copied during the call. Such a layer is never written to a file.
+    const remixapi_ConfigLayerValue* values_values;
+    uint32_t            values_count;
+    // Shown in the developer menu's Option Layers view. Not empty, at most 128 characters, and without a path separator
+    // or a .conf ending.
+    const char*         layerName;
+    // Higher values are blended over lower ones. Clamped to 100..10000000, which ranks the layer above
+    // rtx.conf and below user settings and quality presets.
+    uint32_t            priority;
+    // Clamped to 0..1. Floats blend by strength, and other types apply once strength reaches threshold.
+    float               initialStrength;
+    float               initialThreshold;
+  } remixapi_ConfigLayerInfoEXT;
+
+  // One handle's blend. Strength and threshold are clamped to 0..1.
+  typedef struct remixapi_ConfigLayerBlend {
+    uint64_t handle;
+    float    strength;
+    float    threshold;
+  } remixapi_ConfigLayerBlend;
+
+  // Loads the file on the calling thread and adds the layer in command-stream order. It takes effect at the end of the
+  // current frame. Any thread.
+  // The same path and priority, or the same name, priority and values, share one layer with its reference count, and
+  // the layer blends with the highest strength and lowest threshold among its handles.
+  // Returns REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS for a bad struct, a non-finite value, both sources or neither, a bad
+  // name, an empty value list, or an unknown key or invalid value in the list. Nothing changes then.
+  // Returns REMIXAPI_ERROR_CODE_ALREADY_EXISTS for a name in use with another priority or other values.
+  // Returns REMIXAPI_ERROR_CODE_GENERAL_FAILURE for a missing or unreadable file.
+  // A file may name options this runtime does not have, which are ignored. A value a known option cannot parse is
+  // dropped with a warning in the log.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_CreateConfigLayer)(
+    const remixapi_ConfigLayerInfoEXT* info, uint64_t* out_handle);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateConfigLayer(
+    const remixapi_ConfigLayerInfoEXT* info, uint64_t* out_handle);
+
+  // Sets each handle's blend, which persists until the next call for that handle. Later entries for one handle win.
+  // It takes effect at the end of the current frame. Any thread.
+  // Returns REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS for a null array with a count, a non-finite value or a handle that
+  // is not live, and then applies nothing.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_SetConfigLayerBlends)(
+    const remixapi_ConfigLayerBlend* blends, uint32_t count);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetConfigLayerBlends(
+    const remixapi_ConfigLayerBlend* blends, uint32_t count);
+
+  // Releases the handle's reference. The layer leaves at the end of the current frame when no reference is left.
+  // Any thread.
+  // Returns REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS for a handle that is not live.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_DestroyConfigLayer)(uint64_t handle);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyConfigLayer(uint64_t handle);
+
+  // Writes the option's resolved value as .conf text, with its terminator. It sees changes from the last completed frame
+  // on. Any thread.
+  // A null value only reports the size, including the terminator, in *inout_size.
+  // Returns REMIXAPI_ERROR_CODE_BUFFER_TOO_SMALL when the value does not fit, and reports the size it needs.
+  // Returns REMIXAPI_ERROR_CODE_GENERAL_FAILURE for an unknown key.
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_GetConfigValue)(
+    const char* key, char* value, uint32_t* inout_size);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetConfigValue(
+    const char* key, char* value, uint32_t* inout_size);
+
+  // External frame: the presented image, shared with another Vulkan device or process without a CPU readback.
+  // An optional named export; the versioned Interface table is unchanged. Probe with
+  // GetProcAddress(dll, "remixapi_ConfigureExternalFrame"). See docs/RemixApi.md, "External frame".
+  //
+  // Call it after Startup, on the thread that calls Present. On success, every Present copies the frame (after
+  // tone mapping and upscaling, without the developer menu) into the shared image, releases the image to
+  // VK_QUEUE_FAMILY_EXTERNAL in VK_IMAGE_LAYOUT_GENERAL and signals readySemaphore. The copy after the first one waits
+  // on releasedSemaphore on the GPU, so the consumer must answer every ready with a released. When Present returns,
+  // the submission that signals readySemaphore is in the Vulkan queue, so the consumer can wait on it at once.
+  //
+  // The image is 2D, R8G8B8A8_UNORM, one mip and one layer, optimal tiling, exclusive sharing, no create flags, usage
+  // TRANSFER_SRC | TRANSFER_DST | SAMPLED, in a dedicated allocation. Its values are the presented, display-encoded
+  // values. The three handles are new NT handles (OPAQUE_WIN32) owned by the caller. The semaphores are binary.
+  //
+  // frame == NULL stops the export. Calling it again replaces the image and the semaphores, for example after the
+  // window was resized. The consumer keeps whatever it imported from the old set.
+  // Returns REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE when the device cannot export memory or semaphores, or when the
+  // output cannot be expressed as R8G8B8A8_UNORM.
+  typedef struct remixapi_ExternalFrameEXT {
+    remixapi_StructType sType;              // REMIXAPI_STRUCT_TYPE_EXTERNAL_FRAME_EXT
+    void*               pNext;
+    uint32_t            version;            // in: 1
+    uint32_t            width;              // out: the back buffer width
+    uint32_t            height;             // out: the back buffer height
+    uint32_t            format;             // out: VkFormat, VK_FORMAT_R8G8B8A8_UNORM
+    uint32_t            memoryTypeIndex;    // out
+    uint64_t            allocationSize;     // out
+    uint8_t             deviceUUID[16];     // out: VkPhysicalDeviceIDProperties::deviceUUID
+    void*               memoryHandle;       // out: NT handle, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+    void*               readySemaphore;     // out: NT handle, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT
+    void*               releasedSemaphore;  // out: NT handle, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT
+  } remixapi_ExternalFrameEXT;
+
+  #define REMIXAPI_EXTERNAL_FRAME_VERSION 1u
+
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_ConfigureExternalFrame)(remixapi_ExternalFrameEXT* frame);
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_ConfigureExternalFrame(remixapi_ExternalFrameEXT* frame);
 
   // Screen overlay API
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_DrawScreenOverlay)(
@@ -1728,36 +1984,6 @@ typedef remixapi_ErrorCode (REMIXAPI_CALL* PFN_remixapi_DrawScreenOverlayD3D11Ex
 typedef remixapi_ErrorCode (REMIXAPI_CALL* PFN_remixapi_ReplaceD3D11TextureEx)(
   remixapi_D3D11TextureToken token, remixapi_TextureHandle handle, uint32_t encoding);
 
-// D3D9 texture import: register a texture of the registered D3D9 device
-// (remixapi_dxvk_RegisterD3D9Device) as a Remix API texture under `hash`,
-// sampling the game's own image in place -- no pixel copy, no second VRAM
-// copy. The result is used exactly like a CreateTexture'd texture: materials
-// name it by the "0x%016llX" pseudo-path of `hash`, and DestroyTexture
-// (handle = hash) releases it. Remix holds a reference to the image, so the
-// host may release the D3D9 texture at any time; the memory lives until
-// DestroyTexture.
-// Accepted: a 2D IDirect3DTexture9 in D3DPOOL_MANAGED or D3DPOOL_DEFAULT
-// without RENDERTARGET / DEPTHSTENCIL / DYNAMIC / AUTOGENMIPMAP usage. A
-// MANAGED texture's pending uploads are submitted first (D3D9 uploads managed
-// textures lazily, at their first draw). Ordering: the import is queued on the
-// device's command stream, so every write issued to the texture before the
-// call is visible to Remix. Writes issued AFTER the call (LockRect on a
-// MANAGED texture, UpdateTexture into a DEFAULT one) also reach the imported
-// texture: only import textures whose content will not change.
-// flags: REMIXAPI_D3D9_TEXTURE_IMPORT_*. encoding: REMIXAPI_TEXTURE_ENCODING_*.
-// Returns GENERAL_FAILURE while rtx.hostImport.enableD3D9TextureImport is off,
-// INVALID_ARGUMENTS for a texture it cannot share (other device, pool or
-// usage above, SYSTEMMEM, a format with no sRGB view when SRGB is asked for).
-// A call with texture == NULL and out_handle == NULL is a capability probe: it
-// returns SUCCESS when an import could be made now, otherwise the error an
-// import would get (device not registered, option off). Optional named export
-// ("remixapi_ImportD3D9Texture"); its presence is the capability check.
-#define REMIXAPI_D3D9_TEXTURE_IMPORT_SRGB         0x1u  // sample through the texture's sRGB view
-#define REMIXAPI_D3D9_TEXTURE_IMPORT_OPAQUE_ALPHA 0x2u  // alpha reads as 1 (e.g. DXT1 as an opaque BC1)
-typedef remixapi_ErrorCode (REMIXAPI_CALL* PFN_remixapi_ImportD3D9Texture)(
-  IDirect3DBaseTexture9* texture, uint64_t hash, uint32_t flags, uint32_t encoding,
-  remixapi_TextureHandle* out_handle);
-
 // Per-instance material override. Chain on remixapi_InstanceInfo (DrawInstance,
 // CreateRetainedInstance, UpdateRetainedInstance). Every surface of the mesh is
 // shaded with `material` instead of the material the mesh was created with, so
@@ -1781,6 +2007,23 @@ typedef struct remixapi_InstanceInfoMaterialOverrideEXT {
 // Returns the supported revision of remixapi_InstanceInfoMaterialOverrideEXT
 // (currently 1). Optional named export ("remixapi_GetInstanceMaterialOverrideVersion").
 typedef uint32_t (REMIXAPI_CALL* PFN_remixapi_GetInstanceMaterialOverrideVersion)(void);
+
+// Decal draw order. Chain on remixapi_InstanceInfo (DrawInstance,
+// CreateRetainedInstance(s), UpdateRetainedInstance) of an instance with a
+// DECAL_* category bit. Where decals overlap, they are composited from the
+// lowest sortOrder up, so a higher order lands on top. sortOrder is 0..255.
+// A larger value makes the call return INVALID_ARGUMENTS, with or without a
+// decal category. Without the struct a decal gets an order from the runtime:
+// retained instances by creation, DrawInstance by draw order within the frame,
+// both wrapping at 256. Instances without a decal category ignore it.
+// UpdateRetainedInstance replaces the whole description, so an update without
+// the struct returns the instance to a runtime order. The 32-bit bridge does
+// not forward it. A runtime that predates it ignores the struct.
+typedef struct remixapi_InstanceInfoDecalOrderEXT {
+  remixapi_StructType sType;      // REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_DECAL_ORDER_EXT
+  void*               pNext;
+  uint32_t            sortOrder;  // 0..255
+} remixapi_InstanceInfoDecalOrderEXT;
 
 // Device-local memory pressure as seen by the runtime's VRAM budget
 // (rtx.vramBudget). budgetBytes is the driver's budget for the whole process

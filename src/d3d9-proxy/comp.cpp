@@ -683,9 +683,9 @@ void init_remix_api() {
            ? L"on: the sun, weather and fog go to rtx.atmosphere.* / rtx.weather.*, no proxy sun light"
            : L"off (rtx.skyMode is not 1): the proxy's own sun and haze as on Remix 1.5.2");
       if (x)
-        clog(L"Remix API through the bridge: retained instances %s, batched meshes %s, D3D9 texture import %s, camera %s, "
+        clog(L"Remix API through the bridge: retained instances %s, meshes %s, D3D9 texture import %s, camera %s, "
              L"materials %s, per-frame instances %s", x->createRetained && x->drawRetained ? L"yes" : L"NO",
-             x->createMeshBatched ? L"yes" : L"NO", x->importD3D9Texture ? L"yes" : L"NO", x->setupCamera ? L"yes" : L"NO",
+             x->createMesh ? L"yes" : L"NO", x->importD3D9Texture ? L"yes" : L"NO", x->setupCamera ? L"yes" : L"NO",
              x->createMaterial ? L"yes" : L"NO", x->drawInstance ? L"yes" : L"NO");
     }
   } else if (g_apiOk) clog(L"sun: Remix API ready");
@@ -7826,7 +7826,7 @@ HRESULT STDMETHODCALLTYPE hk_CreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVT
   rbrrtx_world_lights_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_custom_init(g_apiOk ? &g_api : nullptr);
   rbrrtx_apiworld_init(g_apiOk && g_remixPlus ? rbrrtx_api_ext() : nullptr);
-  rbrrtx_hudglow_init(dev, g_apiOk && g_remixPlus && rbrrtx_api_ext() && rbrrtx_api_ext()->createRetained);
+  rbrrtx_hudglow_init(dev, g_apiOk && g_remixPlus && rbrrtx_api_ext() && rbrrtx_api_ext()->importD3D9Texture);
   load_skip_textures();
   load_glass_split();
   rbrrtx_particles_init(g_apiOk ? &g_api : nullptr);

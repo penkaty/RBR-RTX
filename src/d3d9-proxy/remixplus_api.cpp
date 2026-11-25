@@ -150,10 +150,17 @@ remixapi_ErrorCode REMIXAPI_CALL rp_CreateLight(const remixapi_LightInfo* info, 
   l.radiance = nv->radiance;
   l.isDynamic = 1;
   l.ignoreViewModel = 0;
+  const auto prev = g_callerHandle.find(caller);
+  if (prev != g_callerHandle.end() && g_rp.UpdateLightDefinition) {
+    const remixapi_LightHandle hPrev = reinterpret_cast<remixapi_LightHandle>(prev->second);
+    if (g_rp.UpdateLightDefinition(hPrev, &l) == REMIXAPI_ERROR_CODE_SUCCESS) {
+      if (out) *out = hPrev;
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
+  }
   const remixapi_ErrorCode err = g_rp.CreateLight(&l, out);
   if (err != REMIXAPI_ERROR_CODE_SUCCESS || !out) return err;
   g_liveHash[caller] = h;
-  const auto prev = g_callerHandle.find(caller);       // the caller keeps only its newest handle
   if (prev != g_callerHandle.end()) g_handleHash.erase(prev->second);
   g_callerHandle[caller] = reinterpret_cast<uintptr_t>(*out);
   g_handleHash[reinterpret_cast<uintptr_t>(*out)] = caller;
@@ -191,15 +198,11 @@ int rbrrtx_remixplus_init(HMODULE backend, void* nvTable, size_t size) {
     err = init(&info, &g_rp);
   }
   if (err != REMIXAPI_ERROR_CODE_SUCCESS) return err;
-  // Calls beyond the table (bridge named exports; their presence is the capability check): the API world's retained
-  // scenery, batched meshes, game textures imported without a copy (rbrrtx_api_ext).
+  // Calls beyond NVIDIA's table: standard CreateMesh + imported D3D9 textures (retained/batched extensions are
+  // left null because upstream/dev retired them).
   g_ext = {};
-  g_ext.createRetained = GetProcAddress(backend, "remixapi_CreateRetainedInstances");
-  g_ext.updateRetained = GetProcAddress(backend, "remixapi_UpdateRetainedInstances");
-  g_ext.destroyRetained = GetProcAddress(backend, "remixapi_DestroyRetainedInstances");
-  g_ext.drawRetained = GetProcAddress(backend, "remixapi_DrawRetainedInstances");
   g_ext.importD3D9Texture = GetProcAddress(backend, "remixapi_ImportD3D9Texture");
-  g_ext.createMeshBatched = reinterpret_cast<void*>(g_rp.CreateMeshBatched);
+  g_ext.createMesh = reinterpret_cast<void*>(g_rp.CreateMesh);
   g_ext.setupCamera = reinterpret_cast<void*>(g_rp.SetupCamera);
   g_ext.createMaterial = reinterpret_cast<void*>(g_rp.CreateMaterial);
   g_ext.drawInstance = reinterpret_cast<void*>(g_rp.DrawInstance);
